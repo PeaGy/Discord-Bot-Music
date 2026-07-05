@@ -25,7 +25,7 @@ YDL_OPTIONS = {
     "quiet": True,
     "noplaylist": True,
     "default_search": "ytsearch",
-    "cookies": "cookies.txt",  # Đã cấu hình cookies
+    "cookies": "cookies.txt",  #cookies.txt file path
     "extractor_args": {"youtube": ["player_client=ios,android,web", "player_skip=webpage"]},
 }
 
