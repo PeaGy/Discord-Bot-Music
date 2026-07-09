@@ -61,10 +61,8 @@ Dưới đây là danh sách các lệnh có sẵn trong bot này.:
    TOKEN = "Your-Discord-Bot-Token"
 3. **Install dependence libaries:**
    ```bash
-   pip install -U "discord.py[voice]"
-   pip install davey
-   pip install pynacl
+   pip install -r requirements.txt
    winget install ffmpeg
 4. **Run**
     ```
-    python bot.py
+    run.bat
