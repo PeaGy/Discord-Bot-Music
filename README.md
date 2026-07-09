@@ -59,7 +59,7 @@ Dưới đây là danh sách các lệnh có sẵn trong bot này.:
 2. **Paste this from your config.py**
    ```bash
    TOKEN = "Your-Discord-Bot-Token"
-3. **Install dependence libaries:**
+3. **Install dependency libraries:**
    ```bash
    pip install -r requirements.txt
    winget install ffmpeg
