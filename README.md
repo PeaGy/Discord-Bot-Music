@@ -1,4 +1,4 @@
-ALL THE CREDIT GOES TO Ryuz-V.
+This project might be fork from Ryuz-V but it got deleted.
 CHECK HIM HERE 👉 https://github.com/Ryuz-V
 
 # Discord Music Bot
@@ -59,12 +59,10 @@ Dưới đây là danh sách các lệnh có sẵn trong bot này.:
 2. **Paste this from your config.py**
    ```bash
    TOKEN = "Your-Discord-Bot-Token"
-3. **Install dependence libaries:**
+3. **Install dependency libraries:**
    ```bash
-   pip install -U "discord.py[voice]"
-   pip install davey
-   pip install pynacl
+   pip install -r requirements.txt
    winget install ffmpeg
 4. **Run**
     ```
-    python bot.py
+    run.bat
