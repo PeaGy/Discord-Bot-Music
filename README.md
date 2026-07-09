@@ -1,4 +1,4 @@
-ALL THE CREDIT GOES TO Ryuz-V.
+This project might be fork from Ryuz-V but it got deleted.
 CHECK HIM HERE 👉 https://github.com/Ryuz-V
 
 # Discord Music Bot
