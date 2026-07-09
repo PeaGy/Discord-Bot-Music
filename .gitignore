@@ -9,9 +9,7 @@ ENV/
 *.db
 *.sqlite3
 *.log
-requirements.txt
 .cache/
 .cache
 .txt
 cookies.txt
-discloud.config
