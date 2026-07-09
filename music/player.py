@@ -275,15 +275,22 @@ async def play_next(
             asyncio.run_coroutine_threadsafe(play_next(bot, vc, channel), bot.loop)
 
 # ▶️ PLAY AUDIO
-    # Logic phân loại: Radio / nhạc thì chơi Cache
-    if song.get("source") == "radio":
-        # RADIO: Stream trực tiếp từ URL (không qua Cache)
+    # Tính toán điều kiện: Radio hoặc bài dài > 600 giây (10 phút)
+    duration = int(song.get("duration", 0))
+    is_radio = song.get("source") == "radio"
+    is_too_long = duration > 600
+
+    if is_radio or is_too_long:
+        # Phát trực tiếp từ URL (không tải cache)
+        # In ra console để bạn biết nó đang phát trực tiếp
+        print(f"📡 [STREAMING DIRECT] Phát trực tiếp: {song.get('title')} ({duration}s)")
         base_source = discord.FFmpegPCMAudio(song['url'], **FFMPEG_OPTIONS)
     else:
-        # MUSIC: Tải về Cache nếu chưa có
+        # Tải về Cache nếu là nhạc ngắn (< 10p)
+        print(f"💾 [CACHING] Đang xử lý cache cho: {song.get('title')} ({duration}s)")
         base_source = await get_audio_source(song['url'])
     
-    # Bọc qua VolumeTransformer (giữ nguyên tính năng chỉnh âm lượng)
+    # Bọc qua VolumeTransformer (giữ nguyên âm lượng đã chỉnh)
     audio_source = discord.PCMVolumeTransformer(base_source)
     audio_source.volume = getattr(vc, 'current_volume', 1.0)
 
