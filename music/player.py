@@ -274,11 +274,16 @@ async def play_next(
         else:
             asyncio.run_coroutine_threadsafe(play_next(bot, vc, channel), bot.loop)
 
-# ▶️ PLAY AUDIO (Use cache)
-    # 1. Gọi hàm cache (nó sẽ tự quyết định lấy file ổ cứng hay tải mới)
-    base_source = await get_audio_source(song['url'])
+# ▶️ PLAY AUDIO
+    # Logic phân loại: Radio / nhạc thì chơi Cache
+    if song.get("source") == "radio":
+        # RADIO: Stream trực tiếp từ URL (không qua Cache)
+        base_source = discord.FFmpegPCMAudio(song['url'], **FFMPEG_OPTIONS)
+    else:
+        # MUSIC: Tải về Cache nếu chưa có
+        base_source = await get_audio_source(song['url'])
     
-    # 2. Bọc qua VolumeTransformer
+    # Bọc qua VolumeTransformer (giữ nguyên tính năng chỉnh âm lượng)
     audio_source = discord.PCMVolumeTransformer(base_source)
     audio_source.volume = getattr(vc, 'current_volume', 1.0)
 
