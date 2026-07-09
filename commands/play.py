@@ -19,7 +19,7 @@ def is_youtube_url(text: str) -> bool:
 
 
 # ==============================
-# ⏱ FORMAT DURASI
+# ⏱ FORMAT DURATION
 # ==============================
 def format_duration(seconds):
     if not seconds:
@@ -51,7 +51,7 @@ def get_song_info(query: str):
         elif is_youtube_url(query):
             info = ydl.extract_info(query, download=False)
 
-        # 🔍 BUKAN LINK → YouTube search ONLY
+        # 🔍 TÌM LINK → YouTube search ONLY
         else:
             info = ydl.extract_info(
                 f"ytsearch1:{query}",
@@ -82,7 +82,7 @@ class Play(commands.Cog):
     async def play(self, interaction: discord.Interaction, query: str):
         await interaction.response.defer(thinking=True)
 
-        # 🔒 USER HARUS DI VOICE
+        # 🔒 Nguoi dung can o trong voice chat
         if not interaction.user.voice:
             embed = discord.Embed(
                 title="Bạn cần ở kênh voice chat dumbass",
@@ -92,7 +92,7 @@ class Play(commands.Cog):
         user_channel = interaction.user.voice.channel
         vc = interaction.guild.voice_client
 
-        # 🔒 BOT DI VC LAIN
+        # 🔒 BOT dang o kenh vc khac
         if vc and vc.channel != user_channel:
             embed = discord.Embed(
                 title="❌ Tôi đang ở kênh voice khác rùi",
@@ -100,7 +100,7 @@ class Play(commands.Cog):
             )
             return await interaction.followup.send(embed=embed)
 
-        # 🔌 CONNECT JIKA BELUM
+        # 🔌 loi connect
         if not vc:
             try:
                 vc = await user_channel.connect(self_deaf=True)
@@ -129,7 +129,7 @@ class Play(commands.Cog):
                 )
                 return await interaction.followup.send(embed=embed)
         else:
-            # 🔎 AMBIL INFO LAGU NON-SPOTIFY
+            # 🔎 tim info spotify
             song = await loop.run_in_executor(None, get_song_info, query)
 
         queue.append({

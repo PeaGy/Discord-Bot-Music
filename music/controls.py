@@ -4,17 +4,44 @@ import urllib.parse
 import re
 
 class MusicControl(discord.ui.View):
-    def __init__(self, vc):
+    def __init__(self, vc, track, current_time=0):
         super().__init__(timeout=None)
         self.vc = vc
+        self.track = track
+        self.current_time = current_time
 
-    # 🔒 HÀM BẢO MẬT: Kiểm tra xem người bấm có ở chung phòng Voice không
+    # ==========================================
+    # HÀM TẠO THANH TIẾN TRÌNH & ĐỊNH DẠNG
+    # ==========================================
+    def format_time(self, seconds):
+        if not seconds: return "0:00"
+        m, s = divmod(int(seconds), 60)
+        h, m = divmod(m, 60)
+        if h > 0:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m}:{s:02d}"
+
+    def get_platform_emoji(self, platform):
+        emojis = {
+            'youtube': '🔴',
+            'spotify': '🟢',
+            'soundcloud': '🟠',
+            'direct': '🔗'
+        }
+        return emojis.get(platform.lower() if platform else '', '🎵')
+
+    # ==========================================
+    # HÀM BẢO MẬT VOICE
+    # ==========================================
     async def check_voice(self, interaction: discord.Interaction):
         if not interaction.user.voice or interaction.user.voice.channel.id != self.vc.channel.id:
-            await interaction.response.send_message("❌ **Bạn phải ở cùng kênh Voice với mình mới điều khiển được nhé!**", ephemeral=True)
+            await interaction.response.send_message("❌ **Sussy baka**", ephemeral=True)
             return False
         return True
 
+    # ==========================================
+    # ROW 1: CÁC NÚT ĐIỀU KHIỂN CHÍNH
+    # ==========================================
     @discord.ui.button(label="Back", emoji="⏮️", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
@@ -37,97 +64,106 @@ class MusicControl(discord.ui.View):
 
         await interaction.response.defer()
 
-    @discord.ui.button(label="Pause", emoji="⏸️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Pause", emoji="⏸️", style=discord.ButtonStyle.secondary, row=0)
     async def pause(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
-        
         if self.vc.is_playing():
             self.vc.pause()
             button.label = "Resume"
-            button.emoji = discord.PartialEmoji.from_str("▶️")
-            button.style = discord.ButtonStyle.success # Đổi sang màu Xanh khi tạm dừng
+            button.emoji = "▶️"
+            button.style = discord.ButtonStyle.success
         else:
             self.vc.resume()
             button.label = "Pause"
-            button.emoji = discord.PartialEmoji.from_str("⏸️")
-            button.style = discord.ButtonStyle.secondary # Trở lại màu xám khi phát
-
+            button.emoji = "⏸️"
+            button.style = discord.ButtonStyle.secondary
         await interaction.response.edit_message(view=self)
 
-    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger) # Đổi nút Stop thành màu Đỏ
+    @discord.ui.button(label="Skip", emoji="⏭️", style=discord.ButtonStyle.secondary, row=0)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self.check_voice(interaction): return
+        if self.vc.is_playing() or self.vc.is_paused():
+            self.vc.skip_request = True
+            self.vc.stop()
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, row=0)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
         from music.player import queue, now_playing_messages
-
         msg = now_playing_messages.pop(interaction.guild.id, None)
         queue.clear()
-
-        # Vô hiệu hóa tất cả các nút khi bot dừng
+        
         for child in self.children:
             child.disabled = True
 
         if self.vc.is_playing() or self.vc.is_paused():
             self.vc.stop_request = True
             self.vc.stop()
-
         if self.vc.is_connected():
             await self.vc.disconnect()
-
+            
         if msg:
-            embed = discord.Embed(description="⏹️ **Đã dừng phát nhạc và rời kênh**", color=0x2b2d31)
+            embed = discord.Embed(description="⏹️ **Đã cút**", color=0xFF6B6B)
             try:
-                await msg.edit(embed=embed, view=self) # Cập nhật view đã disabled
-            except:
-                pass
-
+                await msg.edit(embed=embed, view=self)
+            except: pass
         await interaction.response.defer()
 
-    @discord.ui.button(label="Skip", emoji="⏭️", style=discord.ButtonStyle.secondary)
-    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.check_voice(interaction): return
-        
-        if self.vc.is_playing() or self.vc.is_paused():
-            self.vc.skip_request = True
-            self.vc.stop()
-
-        await interaction.response.defer()
-
-    @discord.ui.button(label="Loop", emoji="🔂", style=discord.ButtonStyle.secondary)
-    async def loop(self, interaction: discord.Interaction, button: discord.ui.Button):
+    # ==========================================
+    # ROW 2: TÍNH NĂNG BỔ SUNG
+    # ==========================================
+    @discord.ui.button(label="Loop Off", emoji="➡️", style=discord.ButtonStyle.secondary, row=1)
+    async def loop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
         bot = interaction.client
-        
-        if not hasattr(bot, "looping"):
-            bot.looping = False
+        if not hasattr(bot, "loop_mode"):
+            bot.loop_mode = "off"
 
-        bot.looping = not bot.looping
-        
-        # Cập nhật màu sắc nút thay vì gửi tin nhắn rác
-        button.style = discord.ButtonStyle.success if bot.looping else discord.ButtonStyle.secondary
+        # Chu kỳ: off -> track -> queue -> off
+        if bot.loop_mode == "off":
+            bot.loop_mode = "track"
+            button.label = "Loop Track"
+            button.emoji = "🔂"
+            button.style = discord.ButtonStyle.success
+            msg = "🔂 **Lặp lại bài hiện tại**"
+        elif bot.loop_mode == "track":
+            bot.loop_mode = "queue"
+            button.label = "Loop Queue"
+            button.emoji = "🔁"
+            button.style = discord.ButtonStyle.success
+            msg = "🔁 **Lặp lại toàn bộ danh sách (Queue)**"
+        else:
+            bot.loop_mode = "off"
+            button.label = "Loop Off"
+            button.emoji = "➡️"
+            button.style = discord.ButtonStyle.secondary
+            msg = "➡️ **Đã tắt chế độ lặp**"
+
         await interaction.response.edit_message(view=self)
-        await interaction.followup.send("✅ **Bật lặp lại**" if bot.looping else "❌ **Tắt lặp lại**", ephemeral=True)
+        await interaction.followup.send(msg, ephemeral=True)
 
-    @discord.ui.button(label="Autoplay", emoji="🔀", style=discord.ButtonStyle.secondary)
-    async def autoplay(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Autoplay Off", emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
+    async def autoplay_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
         from music.player import autoplay_guilds
-
         guild_id = interaction.guild.id
 
         if guild_id in autoplay_guilds:
             autoplay_guilds.remove(guild_id)
+            button.label = "Autoplay Off"
             button.style = discord.ButtonStyle.secondary
             msg = "❌ **Tắt Autoplay**"
         else:
             autoplay_guilds.add(guild_id)
+            button.label = "Autoplay On"
             button.style = discord.ButtonStyle.success
             msg = "✅ **Bật Autoplay**"
 
-        # Cập nhật trạng thái màu của nút
         await interaction.response.edit_message(view=self)
         await interaction.followup.send(msg, ephemeral=True)
 
-    @discord.ui.button(label="Lyric", emoji="📝", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Lyric", emoji="📝", style=discord.ButtonStyle.secondary, row=1)
     async def lyric(self, interaction: discord.Interaction, button: discord.ui.Button):
         from music.player import history
 
@@ -186,95 +222,56 @@ class MusicControl(discord.ui.View):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    # ==========================================
+    # HÀM RENDER EMBED CHÍNH
+    # ==========================================
+    def generate_embed(self, queue_length=0, requester_mention=None):
+        embed = discord.Embed(
+            title="Now Playing 🍐",
+            description=f"**[{self.track.get('title', 'Unknown Track')}]({self.track.get('url', '')})**",
+            color=0x2b2d31 # Màu đen nhạt
+        )
 
-class RadioControl(discord.ui.View):
-    def __init__(self, vc):
-        super().__init__(timeout=None)
-        self.vc = vc
+        # 1. Artist Field
+        embed.add_field(
+            name="Artist",
+            value=self.track.get('author', 'Unknown Artist'),
+            inline=True
+        )
 
-    async def check_voice(self, interaction: discord.Interaction):
-        if not interaction.user.voice or interaction.user.voice.channel.id != self.vc.channel.id:
-            await interaction.response.send_message("❌ **Bạn phải ở cùng kênh Voice với mình mới điều khiển được nhé!**", ephemeral=True)
-            return False
-        return True
-        
-    @discord.ui.button(label="Down", emoji="🔉", style=discord.ButtonStyle.secondary, row=0)
-    async def vol_down(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.check_voice(interaction): return
-        
-        if self.vc.source and isinstance(self.vc.source, discord.PCMVolumeTransformer):
-            self.vc.source.volume = max(0.0, self.vc.source.volume - 0.1)
-            self.vc.current_volume = self.vc.source.volume
-            await interaction.response.send_message(f"🔉 Âm lượng: **{int(self.vc.source.volume * 100)}%**", ephemeral=True)
-        else:
-            await interaction.response.send_message("Volume control not available", ephemeral=True)
+        # 2. Duration Field
+        embed.add_field(
+            name="Duration",
+            value=self.format_time(self.track.get('duration', 0)),
+            inline=True
+        )
 
-    @discord.ui.button(label="Pause", emoji="⏸️", style=discord.ButtonStyle.secondary, row=0)
-    async def pause(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.check_voice(interaction): return
-        
-        if self.vc.is_playing():
-            self.vc.pause()
-            button.label = "Resume"
-            button.emoji = discord.PartialEmoji.from_str("▶️")
-            button.style = discord.ButtonStyle.success
-        else:
-            self.vc.resume()
-            button.label = "Pause"
-            button.emoji = discord.PartialEmoji.from_str("⏸️")
-            button.style = discord.ButtonStyle.secondary
-        await interaction.response.edit_message(view=self)
+        # 3. Platform Field
+        platform = self.track.get('source', 'youtube').lower()
+        platform_name = platform.capitalize()
+        emoji = self.get_platform_emoji(platform)
+        embed.add_field(
+            name="Platform",
+            value=f"{emoji} {platform_name}",
+            inline=True
+        )
 
-    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, row=0)
-    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.check_voice(interaction): return
-        from music.player import queue, now_playing_messages
-        
-        msg = now_playing_messages.pop(interaction.guild.id, None)
-        queue.clear()
-        
-        for child in self.children:
-            child.disabled = True
+        # 6. Requested By
+        if requester_mention:
+            embed.add_field(
+                name="Requested by",
+                value=requester_mention,
+                inline=True
+            )
 
-        if self.vc.is_playing() or self.vc.is_paused():
-            self.vc.stop_request = True
-            self.vc.stop()
-            
-        if self.vc.is_connected():
-            await self.vc.disconnect()
-            
-        if msg:
-            embed = discord.Embed(description="⏹️ **Đã dừng phát Radio**", color=0x2b2d31)
-            try:
-                await msg.edit(embed=embed, view=self)
-            except:
-                pass
-                
-        await interaction.response.defer()
+        # 7. Thumbnail
+        if self.track.get('thumbnail'):
+            embed.set_thumbnail(url=self.track.get('thumbnail'))
 
-    @discord.ui.button(label="Up", emoji="🔊", style=discord.ButtonStyle.secondary, row=0)
-    async def vol_up(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.check_voice(interaction): return
-        
-        if self.vc.source and isinstance(self.vc.source, discord.PCMVolumeTransformer):
-            self.vc.source.volume = min(2.0, self.vc.source.volume + 0.1)
-            self.vc.current_volume = self.vc.source.volume
-            await interaction.response.send_message(f"🔊 Âm lượng: **{int(self.vc.source.volume * 100)}%**", ephemeral=True)
-        else:
-            await interaction.response.send_message("Volume control not available", ephemeral=True)
+        # 8. Footer Queue Info
+        footer_text = "Only chuds can control the panel."
+        if queue_length > 0:
+            footer_text += f" • {queue_length} more songs in queue"
+        embed.set_footer(text=footer_text)
 
-    @discord.ui.button(label="Change", emoji="↪️", style=discord.ButtonStyle.primary, row=1)
-    async def change(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.check_voice(interaction): return
-        await interaction.response.defer(ephemeral=True)
-        
-        from commands.radio import RadioView
-        view = RadioView(interaction, is_change=True)
-        await view.fetch_stations()
-        
-        if not view.stations:
-            embed = discord.Embed(description="No radio stations found.", color=0x2b2d31)
-            return await interaction.followup.send(embed=embed, ephemeral=True)
-            
-        view.update_components()
-        await interaction.followup.send(embed=view.generate_embed(), view=view, ephemeral=True)
+        return embed

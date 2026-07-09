@@ -13,3 +13,4 @@ ENV/
 .cache
 .txt
 cookies.txt
+audio_cache

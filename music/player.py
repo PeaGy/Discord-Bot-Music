@@ -4,6 +4,7 @@ import asyncio
 import random
 from collections import deque
 from music.controls import MusicControl
+from cache_manager import get_audio_source
 
 # ==============================
 # GLOBAL STATE
@@ -31,7 +32,7 @@ YDL_OPTIONS = {
 
 FFMPEG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "options": "-vn",
+    "options": "-vn -b:a 128k -bufsize 2048k -af loudnorm=I=-16:TP=-1.5:LRA=11",
 }
 
 # ==============================
@@ -273,8 +274,12 @@ async def play_next(
         else:
             asyncio.run_coroutine_threadsafe(play_next(bot, vc, channel), bot.loop)
 
-    # ▶️ PLAY AUDIO
-    audio_source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(source, **FFMPEG_OPTIONS))
+# ▶️ PLAY AUDIO (Use cache)
+    # 1. Gọi hàm cache (nó sẽ tự quyết định lấy file ổ cứng hay tải mới)
+    base_source = await get_audio_source(song['url'])
+    
+    # 2. Bọc qua VolumeTransformer
+    audio_source = discord.PCMVolumeTransformer(base_source)
     audio_source.volume = getattr(vc, 'current_volume', 1.0)
 
     vc.play(
@@ -283,44 +288,40 @@ async def play_next(
     )
 
     # ==============================
-    # NOW PLAYING EMBED (ĐÃ ĐƯỢC FIX LỖI)
+    # NOW PLAYING EMBED (GIAO DIỆN MỚI)
     # ==============================
     try:
-        embed_title = "🍐 RADIO PANEL" if song.get("source") == "radio" else "🍐 MUSIC PANEL"
-        embed = discord.Embed(
-            title=embed_title,
-            description=f"**{song.get('title', 'Unknown')}**",
-            color=0x2b2d31
-        )
+        # 1. Kiểm tra xem có phải là Radio không
+        if song.get("source") == "radio":
+            try:
+                from music.controls import RadioControl
+                view = RadioControl(vc)
+            except ImportError:
+                view = None
+                
+            embed = discord.Embed(
+                title="🍐 RADIO PANEL",
+                description=f"**{song.get('title', 'Unknown')}**",
+                color=0x2b2d31
+            )
+            if song.get("thumbnail"):
+                embed.set_thumbnail(url=song["thumbnail"])
+            embed.add_field(name="Requested By", value=requester.mention if requester else "Autoplay", inline=True)
+            
+        else:
+            # 2. ÁP DỤNG GIAO DIỆN MỚI CHO MUSIC
+            from music.controls import MusicControl
+            
+            # Khởi tạo View mới (Truyền session voice và thông tin bài hát vào)
+            view = MusicControl(vc, track=song, current_time=0)
+            
+            # Gọi hàm sinh giao diện từ controls.py
+            requester_mention = requester.mention if requester else "Autoplay"
+            
+            # Vì queue là biến Global, ta truyền thẳng len(queue) vào luôn
+            embed = view.generate_embed(queue_length=len(queue), requester_mention=requester_mention)
 
-        if song.get("thumbnail"):
-            embed.set_thumbnail(url=song["thumbnail"])
-
-        embed.add_field(
-            name="Requested By",
-            value=requester.mention if requester else "Autoplay",
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Duration",
-            value=f"{song.get('duration', 'Unknown')} sec",
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Author",
-            value=song.get("author") or info.get("uploader", "Unknown"),
-            inline=True,
-        )
-
-        # Tránh lỗi sập chương trình nếu file controls.py thiếu class RadioControl
-        try:
-            from music.controls import RadioControl
-            view = RadioControl(vc) if song.get("source") == "radio" else MusicControl(vc)
-        except ImportError:
-            view = MusicControl(vc)
-
+        # 3. Logic gửi/chỉnh sửa tin nhắn
         existing_msg = now_playing_messages.get(vc.guild.id)
         
         if existing_msg:
