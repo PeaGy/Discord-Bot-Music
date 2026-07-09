@@ -41,6 +41,8 @@ Dưới đây là danh sách các lệnh có sẵn trong bot này.:
 | `/resume` | `resume.py` | Resumes a paused track. |
 | `/skip` | `skip.py` | Skips the current track and plays the next one in the queue. |
 | `/stop` | `stop.py` | Stops the music completely and clears the queue. |
+| `/search` | `search.py` | Search for music on YouTube. |
+| `/queue` | `queue.py` | Display a list of songs in the queue. |
 
 ## 🛠️ Technologies Used
 
