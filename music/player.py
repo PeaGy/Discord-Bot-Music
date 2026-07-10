@@ -194,7 +194,7 @@ async def play_next(
         if msg:
             embed = discord.Embed(
                 title="Queue Ended!",
-                description="Tất cả nhạc đã được phát! You can add songs again\nusing `/play` command.",
+                description="Tất cả nhạc đã được phát! You can add songs again\nusing `/play` or `/search` command.",
                 color=0x2b2d31
             )
             if bot.user.display_avatar:
@@ -214,7 +214,7 @@ async def play_next(
     history.append(song)
     requester = song.get("requester")
 
-    # AMBIL STREAM URL TANPA MEMBLOCK LOOP
+    # LẤY URL STREAM KHÔNG BỊ BLOCK LOOP
     def extract_stream():
         with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
             query = song.get("search_query") or song["url"]
@@ -275,18 +275,17 @@ async def play_next(
             asyncio.run_coroutine_threadsafe(play_next(bot, vc, channel), bot.loop)
 
 # ▶️ PLAY AUDIO
-    # Tính toán điều kiện: Radio hoặc bài dài > 600 giây (10 phút)
-    duration = int(song.get("duration", 0))
+    # Lấy duration an toàn (tránh lỗi NoneType nếu yt_dlp không quét được thời gian)
+    duration = int(song.get("duration") or 0)
     is_radio = song.get("source") == "radio"
     is_too_long = duration > 600
 
     if is_radio or is_too_long:
-        # Phát trực tiếp từ URL (không tải cache)
-        # In ra console để bạn biết nó đang phát trực tiếp
+        # SỬ DỤNG `source` (link stream gốc) THAY VÌ `song['url']` (link youtube HTML)
         print(f"📡 [STREAMING DIRECT] Phát trực tiếp: {song.get('title')} ({duration}s)")
-        base_source = discord.FFmpegPCMAudio(song['url'], **FFMPEG_OPTIONS)
+        base_source = discord.FFmpegPCMAudio(source, **FFMPEG_OPTIONS)
     else:
-        # Tải về Cache nếu là nhạc ngắn (< 10p)
+        # Nhạc ngắn thì tải Cache (hàm này tự biết dùng yt_dlp để bóc link)
         print(f"💾 [CACHING] Đang xử lý cache cho: {song.get('title')} ({duration}s)")
         base_source = await get_audio_source(song['url'])
     
