@@ -2,6 +2,7 @@ import discord
 import yt_dlp
 import asyncio
 import random
+import time
 from collections import deque
 from music.controls import MusicControl
 from cache_manager import get_audio_source
@@ -292,6 +293,12 @@ async def play_next(
     # Bọc qua VolumeTransformer (giữ nguyên âm lượng đã chỉnh)
     audio_source = discord.PCMVolumeTransformer(base_source)
     audio_source.volume = getattr(vc, 'current_volume', 1.0)
+
+    # Reset mốc thời gian phát cho bài mới (dùng để tính progress bar on-demand
+    # trong controls.py -> get_current_time()
+    vc.play_start_time = time.time()
+    vc.total_paused_duration = 0
+    vc.paused_at = None
 
     vc.play(
         audio_source,

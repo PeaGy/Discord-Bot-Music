@@ -2,13 +2,16 @@ import discord
 import aiohttp
 import urllib.parse
 import re
+import time
 
 class MusicControl(discord.ui.View):
-    def __init__(self, vc, track, current_time=0):
+    def __init__(self, vc, track, current_time=0, queue_length=0, requester_mention=None):
         super().__init__(timeout=None)
         self.vc = vc
         self.track = track
         self.current_time = current_time
+        self.queue_length = queue_length
+        self.requester_mention = requester_mention
 
     # ==========================================
     # HÀM TẠO THANH TIẾN TRÌNH & ĐỊNH DẠNG
@@ -29,6 +32,49 @@ class MusicControl(discord.ui.View):
             'direct': '🔗'
         }
         return emojis.get(platform.lower() if platform else '', '🎵')
+
+    # ==========================================
+    # THỜI GIAN PHÁT HIỆN TẠI (giống player.getCurrentTime() bên JS)
+    # ==========================================
+    def get_current_time(self):
+        """
+        Tính số giây đã phát của bài hiện tại, dựa vào các mốc thời gian
+        được set trên self.vc (vc.play_start_time / vc.total_paused_duration /
+        vc.paused_at) trong player.py. Đây là tính "on-demand" tại thời điểm
+        gọi, giống hệt cách JS tính currentTime mỗi khi /nowplaying được gọi
+        hoặc embed được cập nhật lại — KHÔNG có timer nào tự chạy nền.
+        """
+        start = getattr(self.vc, "play_start_time", None)
+        if not start:
+            return 0
+
+        paused_total = getattr(self.vc, "total_paused_duration", 0)
+        elapsed = time.time() - start - paused_total
+
+        paused_at = getattr(self.vc, "paused_at", None)
+        if paused_at:
+            elapsed -= (time.time() - paused_at)
+
+        return max(0, elapsed)
+
+    def create_progress_bar(self, current, total, length=15):
+        """Vẽ thanh tiến trình, port trực tiếp từ createProgressBar() bên nowplaying.js"""
+        if not total:
+            return "▬" * length
+
+        progress = min(current / total, 1)
+        filled_length = round(progress * length)
+
+        filled = "▬" * filled_length
+        empty = "▬" * (length - filled_length)
+        indicator = "🔘"
+
+        if filled_length == 0:
+            return indicator + empty
+        elif filled_length >= length:
+            return filled + indicator
+        else:
+            return filled + indicator + empty[1:]
 
     # ==========================================
     # HÀM BẢO MẬT VOICE
@@ -69,15 +115,23 @@ class MusicControl(discord.ui.View):
         if not await self.check_voice(interaction): return
         if self.vc.is_playing():
             self.vc.pause()
+            self.vc.paused_at = time.time()
             button.label = "Resume"
             button.emoji = "▶️"
             button.style = discord.ButtonStyle.success
         else:
+            paused_at = getattr(self.vc, "paused_at", None)
+            if paused_at:
+                self.vc.total_paused_duration = getattr(self.vc, "total_paused_duration", 0) + (time.time() - paused_at)
+                self.vc.paused_at = None
             self.vc.resume()
             button.label = "Pause"
             button.emoji = "⏸️"
             button.style = discord.ButtonStyle.secondary
-        await interaction.response.edit_message(view=self)
+
+        # Vẽ lại embed để thanh tiến trình đúng tại thời điểm pause/resume này
+        embed = self.generate_embed(queue_length=self.queue_length, requester_mention=self.requester_mention)
+        await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Skip", emoji="⏭️", style=discord.ButtonStyle.secondary, row=0)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -225,7 +279,13 @@ class MusicControl(discord.ui.View):
     # ==========================================
     # HÀM RENDER EMBED CHÍNH
     # ==========================================
-    def generate_embed(self, queue_length=0, requester_mention=None):
+    def generate_embed(self, queue_length=None, requester_mention=None):
+        # Lưu lại để lần gọi sau (vd: từ pause()) không cần truyền lại vẫn dùng đúng giá trị
+        if queue_length is not None:
+            self.queue_length = queue_length
+        if requester_mention is not None:
+            self.requester_mention = requester_mention
+
         embed = discord.Embed(
             title="Now Playing 🍐",
             description=f"**[{self.track.get('title', 'Unknown Track')}]({self.track.get('url', '')})**",
@@ -256,11 +316,22 @@ class MusicControl(discord.ui.View):
             inline=True
         )
 
+        # 4. Progress Field tính on-demand tại thời điểm embed được vẽ
+        duration = self.track.get('duration', 0)
+        if duration:
+            current = self.get_current_time()
+            bar = self.create_progress_bar(current, duration)
+            embed.add_field(
+                name="Progress",
+                value=f"{self.format_time(current)} / {self.format_time(duration)}\n{bar}",
+                inline=False
+            )
+
         # 6. Requested By
-        if requester_mention:
+        if self.requester_mention:
             embed.add_field(
                 name="Requested by",
-                value=requester_mention,
+                value=self.requester_mention,
                 inline=True
             )
 
@@ -270,8 +341,8 @@ class MusicControl(discord.ui.View):
 
         # 8. Footer Queue Info
         footer_text = "Only chuds can control the panel."
-        if queue_length > 0:
-            footer_text += f" • {queue_length} more songs in queue"
+        if self.queue_length > 0:
+            footer_text += f" • {self.queue_length} more songs in queue"
         embed.set_footer(text=footer_text)
 
         return embed
