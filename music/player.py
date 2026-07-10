@@ -32,8 +32,15 @@ YDL_OPTIONS = {
 }
 
 FFMPEG_OPTIONS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "options": "-vn -b:a 128k -bufsize 2048k -af loudnorm=I=-16:TP=-1.5:LRA=11",
+    "before_options": (
+        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+        "-reconnect_at_eof 1 -reconnect_on_network_error 1"
+    ),
+    # ⚠️ Đây là stream SỐNG (radio) -> không có file để đo loudness trước (2-pass
+    # loudnorm không khả thi). Dùng dynaudnorm với cửa sổ dài (f=500) + giới hạn
+    # gain thấp (m=10) để đỡ "bơm" âm lượng hơn nhiều so với loudnorm real-time
+    # mặc định (loudnorm real-time là nguyên nhân chính gây pumping trước đây).
+    "options": "-vn -af dynaudnorm=f=500:g=31:m=10:s=0",
 }
 
 # ==============================
@@ -279,16 +286,60 @@ async def play_next(
     # Lấy duration an toàn (tránh lỗi NoneType nếu yt_dlp không quét được thời gian)
     duration = int(song.get("duration") or 0)
     is_radio = song.get("source") == "radio"
-    is_too_long = duration > 600
 
-    if is_radio or is_too_long:
-        # SỬ DỤNG `source` (link stream gốc) THAY VÌ `song['url']` (link youtube HTML)
-        print(f"📡 [STREAMING DIRECT] Phát trực tiếp: {song.get('title')} ({duration}s)")
-        base_source = discord.FFmpegPCMAudio(source, **FFMPEG_OPTIONS)
-    else:
-        # Nhạc ngắn thì tải Cache (hàm này tự biết dùng yt_dlp để bóc link)
-        print(f"💾 [CACHING] Đang xử lý cache cho: {song.get('title')} ({duration}s)")
-        base_source = await get_audio_source(song['url'])
+    # ==============================
+    # LOADING EMBED (hiện ngay trong lúc tải/cache/normalize nhạc)
+    # ==============================
+    loading_msg = None
+    if not is_radio:
+        loading_embed = discord.Embed(
+            description=f"⏳ **Đang tải nhạc:** {song.get('title', 'Unknown')}\nVui lòng đợi chút xíu...",
+            color=0x2b2d31
+        )
+        if song.get("thumbnail"):
+            loading_embed.set_thumbnail(url=song["thumbnail"])
+
+        existing_msg = now_playing_messages.get(vc.guild.id)
+        try:
+            if existing_msg:
+                await existing_msg.edit(embed=loading_embed, view=None)
+                loading_msg = existing_msg
+            else:
+                loading_msg = await channel.send(embed=loading_embed)
+        except Exception as e:
+            print(f"[DEBUG] Không thể hiện loading embed: {e}")
+
+        if loading_msg:
+            now_playing_messages[vc.guild.id] = loading_msg
+
+    try:
+        if is_radio:
+            # SỬ DỤNG `source` (link stream gốc) THAY VÌ `song['url']` (link youtube HTML)
+            # Chỉ radio sống mới đi thẳng qua network vì không thể cache một stream vô hạn.
+            print(f"📡 [STREAMING DIRECT] Phát trực tiếp: {song.get('title')} ({duration}s)")
+            base_source = discord.FFmpegPCMAudio(source, **FFMPEG_OPTIONS)
+        else:
+            # Luôn tải + normalize (2-pass loudnorm) trước khi phát, kể cả bài dài.
+            # 2 lợi ích: (1) hết giật vì phát từ file local, không còn phụ thuộc
+            # throttle của CDN YouTube giữa chừng; (2) loudness đều nhau giữa mọi
+            # bài vì đều đi qua cùng một bước normalize trong cache_manager.py.
+            print(f"💾 [CACHING] Đang tải + normalize cho: {song.get('title')} ({duration}s)")
+            base_source = await get_audio_source(song['url'])
+    except Exception as e:
+        # Tải/normalize lỗi (mạng, video bị gỡ, cookies hết hạn...) -> báo lỗi
+        # ngay trên chính embed loading, rồi tự động bỏ qua sang bài kế tiếp
+        # thay vì làm cả play_next() crash và kẹt ở màn hình "Đang tải nhạc".
+        print(f"[ERROR] Không thể tạo nguồn phát cho {song.get('title')}: {e}")
+        if loading_msg:
+            error_embed = discord.Embed(
+                description=f"❌ **Không thể phát:** {song.get('title', 'Unknown')}\nBỏ qua bài này...",
+                color=0xFF6B6B
+            )
+            try:
+                await loading_msg.edit(embed=error_embed, view=None)
+            except Exception:
+                pass
+        return await play_next(bot, vc, channel)
     
     # Bọc qua VolumeTransformer (giữ nguyên âm lượng đã chỉnh)
     audio_source = discord.PCMVolumeTransformer(base_source)
