@@ -5,7 +5,7 @@ import random
 import time
 from collections import deque
 from music.controls import MusicControl
-from cache_manager import get_audio_source
+from cache_manager import get_audio_source, preload_audio
 
 # ==============================
 # GLOBAL STATE
@@ -104,14 +104,13 @@ def build_autoplay_query(song: dict) -> str:
 
     return " ".join(keywords)
 
-async def handle_autoplay(bot, vc, channel, song, guild_id):
+async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
     from music.player import history, queue, autoplay_guilds
+    import re
 
     loop = bot.loop
 
     def fetch_autoplay_data():
-        import re
-        # 1. Lấy danh sách các ID video đã phát trong History để không random trùng lại
         played_ids = []
         for h_song in history:
             h_url = h_song.get("url", "")
@@ -124,7 +123,7 @@ async def handle_autoplay(bot, vc, channel, song, guild_id):
         match = re.search(r"(?:v=|/)([0-9A-Za-z_-]{11}).*", url)
         if match:
             video_id = match.group(1)
-            played_ids.append(video_id) # Tránh lặp lại chính bài hiện tại
+            played_ids.append(video_id)
 
         def fallback_autoplay():
             query = build_autoplay_query(song)
@@ -137,25 +136,22 @@ async def handle_autoplay(bot, vc, channel, song, guild_id):
             mix_url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
             opts = YDL_OPTIONS.copy()
             opts["extract_flat"] = True
-            opts["playlist_end"] = 20 # Tăng lên 20 để có nhiều lựa chọn hơn sau khi lọc
+            opts["playlist_end"] = 20
             opts["noplaylist"] = False
             
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(mix_url, download=False)
-                    # 2. Lọc: Bỏ qua những bài không có title VÀ những bài đã nằm trong history
                     entries = [e for e in info.get("entries", []) if e.get("id") not in played_ids and e.get("title")]
             except:
                 pass
         
         if not entries:
             entries = fallback_autoplay()
-            # Lọc lại history cho fallback
             entries = [e for e in entries if e.get("id") not in played_ids]
             
         return entries
 
-    # 3. Đưa quá trình fetch yt-dlp vào executor để không làm lag bot
     try:
         entries = await loop.run_in_executor(None, fetch_autoplay_data)
         
@@ -168,7 +164,7 @@ async def handle_autoplay(bot, vc, channel, song, guild_id):
             elif picked.get("thumbnails") and len(picked["thumbnails"]) > 0:
                 thumb = picked["thumbnails"][0]["url"]
                 
-            queue.append({
+            next_song = {
                 "title": picked.get("title"),
                 "author": picked.get("uploader") or picked.get("channel") or "Unknown",
                 "url": picked.get("url") or picked.get("webpage_url"),
@@ -176,14 +172,31 @@ async def handle_autoplay(bot, vc, channel, song, guild_id):
                 "thumbnail": thumb,
                 "requester": None,
                 "source": "youtube",
-            })
+            }
+            
+            # ĐƯA VÀO QUEUE ĐỂ TIÊN TRI
+            if not queue:
+                queue.append(next_song)
+                print(f"🔮 [AUTOPLAY PREDICT] Đã tìm thấy bài tiếp theo: {next_song['title']}")
+                
+                # KHỞI ĐỘNG TẢI NGẦM LUÔN!
+                duration = int(next_song.get("duration") or 0)
+                if duration <= 600:
+                    from cache_manager import preload_audio
+                    await preload_audio(next_song['url'])
+                
+                # Nếu bot đang dừng (do user skip quá nhanh hoặc API chậm) -> Ép phát luôn
+                if not vc.is_playing() and not vc.is_paused():
+                    trigger_play = True
+                    
+                if trigger_play:
+                    await play_next(bot, vc, channel)
         else:
-            print("[AUTOPLAY] Failed: No new entries found (might be stuck in a loop).")
+            print("[AUTOPLAY] Failed: No new entries found.")
+            if trigger_play: await play_next(bot, vc, channel)
     except Exception as e:
         print(f"[AUTOPLAY ERROR]: {e}")
-
-    # 4. GỌI NEXT SONG SAU KHI ĐÃ CÓ DATA
-    await play_next(bot, vc, channel)
+        if trigger_play: await play_next(bot, vc, channel)
 # ==============================
 # ▶️ PLAY NEXT SONG
 # ==============================
@@ -272,26 +285,25 @@ async def play_next(
 
         # 🤖 AUTOPLAY MODE
         elif guild_id in autoplay_guilds and not queue and not is_prev:
-            # GỌI HÀM ASYNC Ở BACKGROUND (Không block luồng)
             asyncio.run_coroutine_threadsafe(
-                handle_autoplay(bot, vc, channel, song, guild_id), 
+                handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=True), 
                 bot.loop
             )
         
         # ➡️ BÌNH THƯỜNG (CÒN QUEUE HOẶC SKIP)
         else:
             asyncio.run_coroutine_threadsafe(play_next(bot, vc, channel), bot.loop)
-
 # ▶️ PLAY AUDIO
-    # Lấy duration an toàn (tránh lỗi NoneType nếu yt_dlp không quét được thời gian)
+    # Lấy duration an toàn, thêm điều kiện > 10 phút (600 giây)
     duration = int(song.get("duration") or 0)
     is_radio = song.get("source") == "radio"
+    is_too_long = duration > 600
 
     # ==============================
     # LOADING EMBED (hiện ngay trong lúc tải/cache/normalize nhạc)
     # ==============================
     loading_msg = None
-    if not is_radio:
+    if not is_radio and not is_too_long:
         loading_embed = discord.Embed(
             description=f"⏳ **Đang tải nhạc:** {song.get('title', 'Unknown')}\nVui lòng đợi chút xíu...",
             color=0x2b2d31
@@ -313,22 +325,14 @@ async def play_next(
             now_playing_messages[vc.guild.id] = loading_msg
 
     try:
-        if is_radio:
-            # SỬ DỤNG `source` (link stream gốc) THAY VÌ `song['url']` (link youtube HTML)
-            # Chỉ radio sống mới đi thẳng qua network vì không thể cache một stream vô hạn.
+        # Nếu là Radio HOẶC Nhạc dài hơn 10 phút -> Phóng thẳng luồng Stream trực tiếp
+        if is_radio or is_too_long:
             print(f"📡 [STREAMING DIRECT] Phát trực tiếp: {song.get('title')} ({duration}s)")
             base_source = discord.FFmpegPCMAudio(source, **FFMPEG_OPTIONS)
         else:
-            # Luôn tải + normalize (2-pass loudnorm) trước khi phát, kể cả bài dài.
-            # 2 lợi ích: (1) hết giật vì phát từ file local, không còn phụ thuộc
-            # throttle của CDN YouTube giữa chừng; (2) loudness đều nhau giữa mọi
-            # bài vì đều đi qua cùng một bước normalize trong cache_manager.py.
             print(f"💾 [CACHING] Đang tải + normalize cho: {song.get('title')} ({duration}s)")
             base_source = await get_audio_source(song['url'])
     except Exception as e:
-        # Tải/normalize lỗi (mạng, video bị gỡ, cookies hết hạn...) -> báo lỗi
-        # ngay trên chính embed loading, rồi tự động bỏ qua sang bài kế tiếp
-        # thay vì làm cả play_next() crash và kẹt ở màn hình "Đang tải nhạc".
         print(f"[ERROR] Không thể tạo nguồn phát cho {song.get('title')}: {e}")
         if loading_msg:
             error_embed = discord.Embed(
@@ -341,12 +345,11 @@ async def play_next(
                 pass
         return await play_next(bot, vc, channel)
     
-    # Bọc qua VolumeTransformer (giữ nguyên âm lượng đã chỉnh)
+    # Bọc qua VolumeTransformer
     audio_source = discord.PCMVolumeTransformer(base_source)
     audio_source.volume = getattr(vc, 'current_volume', 1.0)
 
-    # Reset mốc thời gian phát cho bài mới (dùng để tính progress bar on-demand
-    # trong controls.py -> get_current_time()
+    # Reset mốc thời gian
     vc.play_start_time = time.time()
     vc.total_paused_duration = 0
     vc.paused_at = None
@@ -356,6 +359,23 @@ async def play_next(
         after=after_playing,
     )
 
+    # ==============================
+    # ⚡ TÍNH NĂNG SMART PRE-CACHING
+    # ==============================
+    # Ngay khi bài hiện tại bắt đầu hát, tự động kiểm tra bài số 2 trong Queue
+    if len(queue) > 0:
+        # Nếu đã có bài sẵn trong hàng đợi -> Preload bài đó
+        next_song = queue[0]
+        next_duration = int(next_song.get("duration") or 0)
+        next_is_radio = next_song.get("source") == "radio"
+        if not next_is_radio and next_duration <= 600:
+            from cache_manager import preload_audio
+            asyncio.create_task(preload_audio(next_song['url']))
+            
+    elif vc.guild.id in autoplay_guilds:
+        # Nếu hàng đợi trống trơn NHƯNG Autoplay đang bật 
+        # -> Gọi handle_autoplay để nó tự tìm bài mới và Preload ngầm!
+        asyncio.create_task(handle_autoplay(bot, vc, channel, song, vc.guild.id, trigger_play=False))
     # ==============================
     # NOW PLAYING EMBED (GIAO DIỆN MỚI)
     # ==============================

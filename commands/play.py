@@ -6,6 +6,7 @@ import asyncio
 
 from music.spotify import is_spotify_url, get_spotify_info
 from music.player import queue, play_next
+from cache_manager import preload_audio
 
 
 # ==============================
@@ -136,6 +137,15 @@ class Play(commands.Cog):
             **song,
             "requester": interaction.user
         })
+        # ==============================
+        # ⚡ KÍCH HOẠT TẢI NGẦM NGAY LẬP TỨC
+        # ==============================
+        duration = int(song.get("duration") or 0)
+        is_radio = song.get("source") == "radio"
+        
+        # Nếu bot đang hát bài khác, và bài vừa thêm < 10 phút -> Tải nền luôn!
+        if (vc.is_playing() or vc.is_paused()) and not is_radio and duration <= 600:
+            asyncio.create_task(preload_audio(song['url']))
 
         # 📩 EMBED QUEUE
         embed = discord.Embed(

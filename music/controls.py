@@ -200,7 +200,11 @@ class MusicControl(discord.ui.View):
     @discord.ui.button(label="Autoplay Off", emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
     async def autoplay_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
-        from music.player import autoplay_guilds
+        
+        # IMPORT thêm queue và handle_autoplay để xử lý tiên tri
+        from music.player import autoplay_guilds, queue, handle_autoplay
+        import asyncio
+
         guild_id = interaction.guild.id
 
         if guild_id in autoplay_guilds:
@@ -213,6 +217,17 @@ class MusicControl(discord.ui.View):
             button.label = "Autoplay On"
             button.style = discord.ButtonStyle.success
             msg = "✅ **Bật Autoplay**"
+            
+            # ==============================
+            # ⚡ KÍCH HOẠT TIÊN TRI NGAY LẬP TỨC
+            # ==============================
+            # Nếu hàng đợi trống và bot đang hát -> Gọi hàm tiên tri ngầm luôn!
+            if not queue and (self.vc.is_playing() or self.vc.is_paused()):
+                bot = interaction.client
+                # self.track chính là bài hát đang phát hiện tại
+                asyncio.create_task(
+                    handle_autoplay(bot, self.vc, interaction.channel, self.track, guild_id, trigger_play=False)
+                )
 
         await interaction.response.edit_message(view=self)
         await interaction.followup.send(msg, ephemeral=True)

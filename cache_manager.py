@@ -134,3 +134,23 @@ async def get_audio_source(url):
 
     print(f"✅ Đã cache + normalize xong, bắt đầu phát!")
     return discord.FFmpegPCMAudio(final_path, options="-vn")
+
+
+async def preload_audio(url):
+    """
+    Hàm tải trước nhạc vào nền (Background Task).
+    Chỉ kiểm tra và tải, không trả về Audio Source để tránh block bot.
+    """
+    raw_outtmpl, final_path = get_cache_paths(url)
+
+    # Nếu đã có sẵn trong ổ cứng thì bỏ qua luôn
+    if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+        return 
+
+    print(f"🔄 [PRELOAD] Đang âm thầm tải trước bài hát vào Cache...")
+    try:
+        # Tải ngầm bằng asyncio to_thread
+        await asyncio.to_thread(build_cache_sync, url, raw_outtmpl, final_path)
+        print(f"✅ [PRELOAD] Tải trước thành công! Bài tiếp theo đã sẵn sàng.")
+    except Exception as e:
+        print(f"❌ [PRELOAD LỖI]: Không thể tải trước - {e}")
