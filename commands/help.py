@@ -11,6 +11,7 @@ class HelpDropdown(discord.ui.View):
         options=[
             discord.SelectOption(label="Information", emoji="📢", value="info"),
             discord.SelectOption(label="Commands", emoji="❗", value="commands"),
+            discord.SelectOption(label="Art & AI", emoji="🎨", value="art_ai"),
         ]
     )
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
@@ -53,9 +54,35 @@ class HelpDropdown(discord.ui.View):
                     "`/latency` : Kiểm tra độ trễ (Ping)\n"
                 )
             )
+        elif value == "art_ai":
+            embed = discord.Embed(
+                description=(
+                    "🎨 **Art & AI Features**\n\n"
+                    "```ansi\n"
+                    "\u001b[35mDanbooru Art System:\u001b[0m\n"
+                    "```\n"
+                    "`/art` : Tìm ảnh anime (SFW - An toàn)\n"
+                    "`/wallpaper` : Ảnh chất lượng siêu cao làm hình nền\n"
+                    "`/artecchi` : Tìm ảnh gợi cảm (Ecchi) - **Chỉ kênh NSFW**\n"
+                    "`/artnsfw` : Tìm ảnh 18+ hạng nặng - **Chỉ kênh NSFW**\n"
+                    "`/artinfo` : Tra cứu chi tiết nghệ sĩ/tags theo ID bài post\n\n"
+                    "```ansi\n"
+                    "\u001b[36mAI Chat Assistant (Peto):\u001b[0m\n"
+                    "```\n"
+                    "🗣️ **Không cần dùng lệnh!** Bạn chỉ cần **Tag bot (@Peto)** hoặc **Reply tin nhắn** của bot để bắt đầu trò chuyện.\n\n"
+                    "💡 *Tính năng tự động:* Peto có thể tự tra cứu thông tin thời tiết, thời sự trên web, hoặc tự động bắt lệnh điều khiển nhạc (mở nhạc, skip bài...) ngay trong lúc chat với bạn!\n\n"
+                    "```ansi\n"
+                    "\u001b[33mAI Memory Control:\u001b[0m\n"
+                    "```\n"
+                    "`/resetmemory` : 🧹 Xoá lịch sử chat của bạn với AI[cite: 8]\n"
+                    "`/resetmemoryall` : 🧹 [Admin] Xoá trí nhớ chat của mọi người TRONG SERVER NÀY[cite: 8]\n"
+                    "`/resetmemoryglobal` : 🧹 [Chỉ dev] Xoá TOÀN BỘ trí nhớ, mọi server, mọi người[cite: 8]\n"
+                )
+            )
         
         embed.set_image(url="https://cdn.discordapp.com/attachments/1461031433689759826/1470602546371493950/uma-musume-agnes-tachyon.gif")
         await interaction.response.edit_message(embed=embed, view=self)
+
 
 class Help(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -74,7 +101,8 @@ class Help(commands.Cog):
                 "**⭐ Available Categories**\n"
                 "ℹ️ **:** Information\n"
                 "❗ **:** Commands\n"
-                    )
+                "🎨 **:** Art & AI\n"
+            )
         )
         embed.set_image(url="https://cdn.discordapp.com/attachments/1461031433689759826/1470602546371493950/uma-musume-agnes-tachyon.gif")
         await interaction.response.send_message(embed=embed, view=HelpDropdown())

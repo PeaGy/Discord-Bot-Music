@@ -198,6 +198,65 @@ async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
         print(f"[AUTOPLAY ERROR]: {e}")
         if trigger_play: await play_next(bot, vc, channel)
 # ==============================
+# 🎯 HÀM DÙNG CHUNG: THÊM BÀI + PHÁT (không phụ thuộc discord.Interaction)
+# ==============================
+# Được /play (commands/play.py) và Gemini function calling
+# (commands/gemini_chat.py) cùng gọi vào -> tránh lặp code, chỉ 1 nơi giữ
+# logic thêm bài vào queue. Import trễ (bên trong hàm) để né circular import
+# vì commands/play.py có import ngược lại từ music/player.py.
+async def play_song_by_query(
+    bot: discord.Client,
+    guild: discord.Guild,
+    voice_channel: discord.VoiceChannel,
+    text_channel: discord.TextChannel,
+    requester,
+    query: str,
+) -> dict:
+    from commands.play import get_song_info, is_spotify_url
+    from music.spotify import get_spotify_info
+    from cache_manager import preload_audio
+
+    vc = guild.voice_client
+    if vc and vc.channel != voice_channel:
+        return {"ok": False, "reason": f"Bot đang ở kênh voice khác: {vc.channel.name}"}
+
+    if not vc:
+        try:
+            vc = await voice_channel.connect(self_deaf=True)
+        except Exception as e:
+            return {"ok": False, "reason": f"Không kết nối được voice: {e}"}
+
+    loop = bot.loop
+    if is_spotify_url(query):
+        song = await loop.run_in_executor(None, get_spotify_info, query)
+        if not song:
+            return {"ok": False, "reason": "Không lấy được thông tin bài hát Spotify"}
+    else:
+        song = await loop.run_in_executor(None, get_song_info, query)
+
+    queue.append({**song, "requester": requester})
+
+    duration = int(song.get("duration") or 0)
+    is_radio = song.get("source") == "radio"
+    if (vc.is_playing() or vc.is_paused()) and not is_radio and duration <= 600:
+        asyncio.create_task(preload_audio(song["url"]))
+
+    if not vc.is_playing() and not vc.is_paused():
+        await play_next(bot, vc, text_channel)
+
+    return {"ok": True, "song": song}
+
+
+def skip_current(guild: discord.Guild) -> dict:
+    vc = guild.voice_client
+    if not vc or not (vc.is_playing() or vc.is_paused()):
+        return {"ok": False, "reason": "Không có nhạc nào đang phát"}
+    vc.skip_request = True
+    vc.stop()
+    return {"ok": True}
+
+
+# ==============================
 # ▶️ PLAY NEXT SONG
 # ==============================
 async def play_next(
@@ -279,8 +338,16 @@ async def play_next(
             return
 
         # 🔁 LOOP MODE
-        if getattr(bot, "looping", False) and not is_skip and not is_prev:
+        loop_mode = getattr(vc, "loop_mode", "off")
+        
+        if loop_mode == "track" and not is_skip and not is_prev:
+            # Lặp bài hiện tại: Nhét lại ngay lên đầu hàng đợi
             queue.appendleft(song)
+            asyncio.run_coroutine_threadsafe(play_next(bot, vc, channel), bot.loop)
+            
+        elif loop_mode == "queue" and not is_skip and not is_prev:
+            # Lặp danh sách: Nhét bài vừa hát xong xuống cuối hàng đợi
+            queue.append(song)
             asyncio.run_coroutine_threadsafe(play_next(bot, vc, channel), bot.loop)
 
         # 🤖 AUTOPLAY MODE

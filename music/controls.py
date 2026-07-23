@@ -12,7 +12,47 @@ class MusicControl(discord.ui.View):
         self.current_time = current_time
         self.queue_length = queue_length
         self.requester_mention = requester_mention
+        # ==========================================
+        # FIX LỖI 1: ĐỒNG BỘ TRẠNG THÁI NÚT BẤM KHI RENDER LẠI UI
+        # ==========================================
+        # Khởi tạo biến loop_mode cho vc nếu chưa có
+        if not hasattr(self.vc, "loop_mode"):
+            self.vc.loop_mode = "off"
 
+        # Import autoplay_guilds để check trạng thái autoplay
+        try:
+            from music.player import autoplay_guilds
+            guild_id = self.vc.guild.id
+        except ImportError:
+            autoplay_guilds = set()
+            guild_id = None
+
+        # Duyệt qua các nút và cập nhật hiển thị theo đúng biến hệ thống
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                # Đồng bộ nút Loop
+                if child.label and "Loop" in child.label:
+                    if self.vc.loop_mode == "track":
+                        child.label = "Loop Track"
+                        child.emoji = "🔂"
+                        child.style = discord.ButtonStyle.success
+                    elif self.vc.loop_mode == "queue":
+                        child.label = "Loop Queue"
+                        child.emoji = "🔁"
+                        child.style = discord.ButtonStyle.success
+                    else:
+                        child.label = "Loop Off"
+                        child.emoji = "➡️"
+                        child.style = discord.ButtonStyle.secondary
+                
+                # Đồng bộ nút Autoplay
+                if child.label and "Autoplay" in child.label and guild_id:
+                    if guild_id in autoplay_guilds:
+                        child.label = "Autoplay On"
+                        child.style = discord.ButtonStyle.success
+                    else:
+                        child.label = "Autoplay Off"
+                        child.style = discord.ButtonStyle.secondary
     # ==========================================
     # HÀM TẠO THANH TIẾN TRÌNH & ĐỊNH DẠNG
     # ==========================================
@@ -170,25 +210,26 @@ class MusicControl(discord.ui.View):
     @discord.ui.button(label="Loop Off", emoji="➡️", style=discord.ButtonStyle.secondary, row=1)
     async def loop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
-        bot = interaction.client
-        if not hasattr(bot, "loop_mode"):
-            bot.loop_mode = "off"
+        
+        # FIX LỖI 2: Lưu trạng thái vào self.vc thay vì bot
+        if not hasattr(self.vc, "loop_mode"):
+            self.vc.loop_mode = "off"
 
         # Chu kỳ: off -> track -> queue -> off
-        if bot.loop_mode == "off":
-            bot.loop_mode = "track"
+        if self.vc.loop_mode == "off":
+            self.vc.loop_mode = "track"
             button.label = "Loop Track"
             button.emoji = "🔂"
             button.style = discord.ButtonStyle.success
             msg = "🔂 **Lặp lại bài hiện tại**"
-        elif bot.loop_mode == "track":
-            bot.loop_mode = "queue"
+        elif self.vc.loop_mode == "track":
+            self.vc.loop_mode = "queue"
             button.label = "Loop Queue"
             button.emoji = "🔁"
             button.style = discord.ButtonStyle.success
             msg = "🔁 **Lặp lại toàn bộ danh sách (Queue)**"
         else:
-            bot.loop_mode = "off"
+            self.vc.loop_mode = "off"
             button.label = "Loop Off"
             button.emoji = "➡️"
             button.style = discord.ButtonStyle.secondary

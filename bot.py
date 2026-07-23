@@ -28,9 +28,16 @@ class MusicBot(commands.Bot):
         self.idle_tasks = {}
 
     async def setup_hook(self):
-        for file in os.listdir("./commands"):
-            if file.endswith(".py") and not file.startswith("_"):
-                await self.load_extension(f"commands.{file[:-3]}")
+        # commands/  -> slash command thật (/play, /skip...)
+        # features/  -> Cog dạng lắng nghe sự kiện, không phải slash command
+        #                (vd: gemini_chat.py xử lý on_message)
+        extension_folders = ["commands", "features"]
+        for folder in extension_folders:
+            if not os.path.isdir(f"./{folder}"):
+                continue
+            for file in os.listdir(f"./{folder}"):
+                if file.endswith(".py") and not file.startswith("_"):
+                    await self.load_extension(f"{folder}.{file[:-3]}")
 
         await self.tree.sync()
         print("✅ Slash commands synced")
