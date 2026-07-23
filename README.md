@@ -23,11 +23,14 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 ### Trợ lý AI Peto
 
 - Trò chuyện bằng cách mention bot hoặc reply tin nhắn của bot, không cần slash command.
-- Sử dụng Groq với model `openai/gpt-oss-120b`.
+- Sử dụng Google Gemini thông qua SDK `google-genai`.
+- Có thể đổi model bằng biến `GEMINI_MODEL`; cấu hình mẫu hiện dùng `gemini-3.6-flash`.
+- Cho phép chọn ngưỡng safety filter bằng `GEMINI_SAFETY_THRESHOLD`.
 - Có thể tìm thông tin mới trên web thông qua Tavily.
 - Có thể gọi công cụ để phát nhạc hoặc bỏ qua bài ngay trong hội thoại.
 - Lưu lịch sử theo người dùng và kênh bằng SQLite.
-- Tạo bản tóm tắt trí nhớ dài hạn định kỳ; dữ liệu vẫn còn sau khi bot khởi động lại.
+- Giữ tối đa 15 tin nhắn gần nhất làm ngữ cảnh và cập nhật tóm tắt trí nhớ dài hạn sau mỗi 20 lượt tương tác.
+- Dữ liệu hội thoại vẫn còn sau khi bot khởi động lại.
 - Có lệnh để người dùng, admin server hoặc chủ bot xóa dữ liệu ở phạm vi phù hợp.
 
 ### Danbooru
@@ -43,9 +46,9 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Python 3.10 trở lên.
 - FFmpeg có `libopus` và có thể gọi bằng lệnh `ffmpeg`.
 - Một Discord Bot Token.
-- Groq API key.
+- Google Gemini API key.
 - Tavily API key.
-- Kết nối internet tới Discord, YouTube/Spotify/SoundCloud, LRCLIB, Radio Browser, Danbooru, Groq và Tavily.
+- Kết nối internet tới Discord, YouTube/Spotify/SoundCloud, LRCLIB, Radio Browser, Danbooru, Gemini và Tavily.
 
 Bot dùng trực tiếp `discord.py` voice client, `yt-dlp` và FFmpeg; dự án hiện tại **không dùng Lavalink/Wavelink**.
 
@@ -60,10 +63,9 @@ py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-pip install aiosqlite
 ```
 
-`user_memory.py` đang sử dụng `aiosqlite` nhưng package này chưa có trong `requirements.txt`, vì vậy cần cài thêm bằng lệnh ở trên.
+`requirements.txt` đã bao gồm SDK Gemini, Tavily, SQLite async, discord.py voice và các thư viện phát nhạc cần thiết.
 
 Trên Linux/macOS, dùng `python3` và kích hoạt môi trường bằng:
 
@@ -72,7 +74,6 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-pip install aiosqlite
 ```
 
 ### 2. Cài FFmpeg
@@ -102,24 +103,63 @@ Kiểm tra sau khi cài:
 ffmpeg -version
 ```
 
-### 3. Tạo `config.py`
+### 3. Tạo `.env`
 
-Tạo file `config.py` tại thư mục gốc:
+Sao chép file cấu hình mẫu:
 
-```python
-TOKEN = "DISCORD_BOT_TOKEN_CUA_BAN"
+```powershell
+Copy-Item .env.example .env
 ```
 
-### 4. Tạo `.env`
+Trên Linux/macOS:
 
-Tạo file `.env` tại thư mục gốc:
+```bash
+cp .env.example .env
+```
+
+Sau đó điền các giá trị thật:
 
 ```dotenv
-GROQ_API_KEY=groq_api_key_cua_ban
+DISCORD_TOKEN=discord_bot_token_cua_ban
+GEMINI_API_KEY=google_ai_studio_api_key_cua_ban
 TAVILY_API_KEY=tavily_api_key_cua_ban
+
+GEMINI_MODEL=gemini-3.6-flash
+GEMINI_SAFETY_THRESHOLD=BLOCK_ONLY_HIGH
 ```
 
-Module AI được tự động nạp khi bot khởi động. Với mã nguồn hiện tại, thiếu một trong hai API key trên sẽ làm quá trình khởi động thất bại.
+`GEMINI_API_KEY` cũng có thể được cung cấp qua biến `GOOGLE_API_KEY`. `GEMINI_MODEL` và `GEMINI_SAFETY_THRESHOLD` là tùy chọn; nếu không khai báo, mã nguồn dùng giá trị mặc định.
+
+Các giá trị hợp lệ cho `GEMINI_SAFETY_THRESHOLD`:
+
+- `BLOCK_ONLY_HIGH`
+- `BLOCK_MEDIUM_AND_ABOVE`
+- `BLOCK_LOW_AND_ABOVE`
+- `BLOCK_NONE`
+- `OFF`
+
+Module AI được tự động nạp khi bot khởi động. Thiếu `DISCORD_TOKEN`, Gemini API key hoặc `TAVILY_API_KEY` sẽ làm quá trình khởi động thất bại.
+
+### 4. Tạo `config.py`
+
+`config.py` đang nằm trong `.gitignore`, vì vậy bản clone mới có thể chưa có file này. Nếu thiếu, hãy tạo `config.py` tại thư mục gốc:
+
+```python
+import os
+
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
+    raise RuntimeError(
+        "Thiếu DISCORD_TOKEN trong file .env hoặc biến môi trường hệ thống."
+    )
+```
+
+File này chỉ đọc token từ môi trường; không đặt Discord token trực tiếp trong mã nguồn.
 
 ### 5. Cấu hình Discord Developer Portal
 
@@ -142,7 +182,7 @@ Các lệnh ecchi và explicit chỉ hoạt động trong Discord channel đã b
 
 Cấu hình phát nhạc hiện tại đọc file `cookies.txt` tại thư mục gốc. Khi YouTube yêu cầu đăng nhập hoặc xác minh, hãy xuất cookie theo định dạng Netscape và lưu vào file này.
 
-Không chia sẻ hoặc commit `config.py`, `.env` và `cookies.txt`. Các file này đã được đưa vào `.gitignore`.
+Không chia sẻ hoặc commit `.env` và `cookies.txt`. Các file này đã được đưa vào `.gitignore`. `config.py` cũng đang được ignore nhưng chỉ chứa mã đọc `DISCORD_TOKEN`, không chứa token trực tiếp.
 
 ## Chạy bot
 
@@ -249,7 +289,7 @@ Nếu đã có bài hợp lệ trong `audio_cache/`, bot phát lại file cục 
 ├── bot.py                  # Điểm khởi động, nạp extension và đồng bộ lệnh
 ├── commands/               # Các slash command
 ├── features/
-│   └── groq_chat.py        # AI chat, Tavily và tool calling
+│   └── ai_chat.py          # Gemini, Tavily, safety và tool calling
 ├── music/
 │   ├── player.py           # Hàng đợi, autoplay, phát nhạc và radio
 │   ├── controls.py         # Music Panel và các nút tương tác
@@ -259,8 +299,9 @@ Nếu đã có bài hợp lệ trong `audio_cache/`, bot phát lại file cục 
 ├── user_memory.py          # Bộ nhớ SQLite của AI
 ├── requirements.txt
 ├── run.bat
-├── config.py               # Token Discord, không commit
-├── .env                    # API keys, không commit
+├── config.py               # File local đọc Discord token từ môi trường
+├── .env.example            # Mẫu cấu hình có thể commit
+├── .env                    # Token và API keys, không commit
 ├── cookies.txt             # Cookie yt-dlp, không commit
 ├── audio_cache/            # Cache âm thanh được tạo khi chạy
 └── bot_memory.db           # Cơ sở dữ liệu AI được tạo khi chạy
@@ -295,7 +336,13 @@ Mở terminal mới sau khi cài FFmpeg và kiểm tra lại bằng `ffmpeg -ver
 
 ### Bot lỗi ngay khi nạp extension AI
 
-Kiểm tra `.env` có đủ `GROQ_API_KEY` và `TAVILY_API_KEY`, đồng thời đã cài `groq`, `tavily-python`, `python-dotenv` và `aiosqlite`.
+Kiểm tra `.env` có đủ `GEMINI_API_KEY` (hoặc `GOOGLE_API_KEY`) và `TAVILY_API_KEY`, đồng thời đã cài `google-genai`, `tavily-python`, `python-dotenv` và `aiosqlite`.
+
+Nếu Gemini trả lỗi `401` hoặc `403`, hãy kiểm tra API key và quyền truy cập model trong `GEMINI_MODEL`. Lỗi `429` thường có nghĩa tài khoản đã hết quota hoặc đang bị giới hạn tốc độ.
+
+### `GEMINI_SAFETY_THRESHOLD` không hợp lệ
+
+Chọn một trong các giá trị được liệt kê trong phần cấu hình `.env`. Bot chủ động dừng khởi động nếu nhận giá trị khác để tránh dùng nhầm cấu hình safety.
 
 ### Không phát được YouTube
 
