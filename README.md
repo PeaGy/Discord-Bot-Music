@@ -140,28 +140,7 @@ Các giá trị hợp lệ cho `GEMINI_SAFETY_THRESHOLD`:
 
 Module AI được tự động nạp khi bot khởi động. Thiếu `DISCORD_TOKEN`, Gemini API key hoặc `TAVILY_API_KEY` sẽ làm quá trình khởi động thất bại.
 
-### 4. Tạo `config.py`
-
-`config.py` đang nằm trong `.gitignore`, vì vậy bản clone mới có thể chưa có file này. Nếu thiếu, hãy tạo `config.py` tại thư mục gốc:
-
-```python
-import os
-
-from dotenv import load_dotenv
-
-
-load_dotenv()
-
-TOKEN = os.getenv("DISCORD_TOKEN")
-if not TOKEN:
-    raise RuntimeError(
-        "Thiếu DISCORD_TOKEN trong file .env hoặc biến môi trường hệ thống."
-    )
-```
-
-File này chỉ đọc token từ môi trường; không đặt Discord token trực tiếp trong mã nguồn.
-
-### 5. Cấu hình Discord Developer Portal
+### 4. Cấu hình Discord Developer Portal
 
 Trong phần cấu hình Bot:
 
@@ -176,13 +155,12 @@ Trong phần cấu hình Bot:
    - Speak
    - Use Application Commands
 
-Các lệnh ecchi và explicit chỉ hoạt động trong Discord channel đã bật chế độ Age-Restricted/NSFW.
 
-### 6. Cookie YouTube
+
+### 5. Cookie YouTube
 
 Cấu hình phát nhạc hiện tại đọc file `cookies.txt` tại thư mục gốc. Khi YouTube yêu cầu đăng nhập hoặc xác minh, hãy xuất cookie theo định dạng Netscape và lưu vào file này.
 
-Không chia sẻ hoặc commit `.env` và `cookies.txt`. Các file này đã được đưa vào `.gitignore`. `config.py` cũng đang được ignore nhưng chỉ chứa mã đọc `DISCORD_TOKEN`, không chứa token trực tiếp.
 
 ## Chạy bot
 
@@ -199,13 +177,6 @@ Trên Windows có thể dùng:
 ```
 
 `run.bat` sẽ tự khởi động lại bot sau 5 giây nếu tiến trình dừng hoặc gặp lỗi.
-
-Khi khởi động, bot tự động:
-
-1. Nạp toàn bộ module `.py` trong `commands/` và `features/`.
-2. Khởi tạo cơ sở dữ liệu SQLite cho AI.
-3. Đồng bộ global slash commands với Discord.
-4. Luân phiên trạng thái hiển thị mỗi 30 giây.
 
 ## Danh sách lệnh
 
@@ -237,14 +208,15 @@ Khi khởi động, bot tự động:
 
 | Lệnh | Tham số | Chức năng |
 | --- | --- | --- |
-| `/art` | `tags` tùy chọn | Tìm ảnh anime SFW. |
-| `/artecchi` | `tags` tùy chọn | Tìm ảnh sensitive/questionable; chỉ dùng trong kênh NSFW. |
-| `/artnsfw` | `tags` tùy chọn | Tìm ảnh explicit; chỉ dùng trong kênh NSFW. |
+| `/art` | `tags` tùy chọn | Tìm ảnh anime. |
+| `/artecchi` | `tags` tùy chọn | Tìm ảnh sensitive/questionable. |
+| `/artnsfw` | `tags` tùy chọn | Tìm ảnh NSFW. |
 | `/wallpaper` | `huong`, `tags` tùy chọn | Tìm wallpaper SFW ngang hoặc dọc. |
 | `/artinfo` | `id` | Xem nguồn, artist, score và tags của một post. |
 
-Tag Danbooru thường dùng dấu gạch dưới, ví dụ:
+Các lệnh ecchi và explicit chỉ hoạt động trong Discord channel đã bật chế độ Age-Restricted/NSFW.
 
+Tag Danbooru thường dùng dấu gạch dưới, ví dụ:
 ```text
 agnes_tachyon_(umamusume)
 1girl solo smile
@@ -319,16 +291,6 @@ Các file `scratch_*.py` và `test_*.py` là script kiểm tra thủ công cho D
 - Các API bên ngoài có thể giới hạn tần suất, đổi định dạng hoặc tạm thời không phản hồi.
 
 ## Xử lý lỗi thường gặp
-
-### `python` không được nhận diện
-
-Cài Python và bật tùy chọn **Add Python to PATH**. Nếu máy chỉ có lệnh `py`, có thể chạy:
-
-```powershell
-py bot.py
-```
-
-Đồng thời sửa `python bot.py` thành `py bot.py` trong `run.bat` nếu muốn dùng script tự khởi động lại.
 
 ### `ffmpeg` không được nhận diện
 
