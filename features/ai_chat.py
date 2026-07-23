@@ -1,12 +1,13 @@
 import os
-import json
 import logging
 import asyncio
 
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-from groq import AsyncGroq, BadRequestError
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types
 from tavily import AsyncTavilyClient
 
 import user_memory
@@ -31,7 +32,25 @@ def _truncate_for_discord(text: str, limit: int = DISCORD_MSG_LIMIT) -> str:
 # ==============================
 # CẤU HÌNH
 # ==============================
-MODEL_NAME = "openai/gpt-oss-120b"
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+
+# Chỉ chặn khi Gemini đánh giá xác suất gây hại ở mức cao. Những bảo vệ cốt lõi
+# của Gemini vẫn luôn hoạt động và không thể tắt bằng cấu hình này.
+GEMINI_SAFETY_THRESHOLD = os.getenv(
+    "GEMINI_SAFETY_THRESHOLD", "BLOCK_ONLY_HIGH"
+).upper()
+_VALID_SAFETY_THRESHOLDS = {
+    "BLOCK_LOW_AND_ABOVE",
+    "BLOCK_MEDIUM_AND_ABOVE",
+    "BLOCK_ONLY_HIGH",
+    "BLOCK_NONE",
+    "OFF",
+}
+if GEMINI_SAFETY_THRESHOLD not in _VALID_SAFETY_THRESHOLDS:
+    raise RuntimeError(
+        "GEMINI_SAFETY_THRESHOLD không hợp lệ. Hãy dùng một trong: "
+        + ", ".join(sorted(_VALID_SAFETY_THRESHOLDS))
+    )
 
 # Số tin nhắn gần nhất giữ lại làm ngữ cảnh cho MỖI channel
 MAX_HISTORY = 15
@@ -193,7 +212,7 @@ SPECIAL_USERS = {
 }
 
 # ==============================
-# TOOLS - CÁC HÀM ĐIỀU KHIỂN NHẠC CHO MODEL (cú pháp chuẩn OpenAI-compatible)
+# TOOLS - schema giữ gần với OpenAPI để dễ đọc và chuyển đổi sang Gemini
 # ==============================
 TOOLS = [
     {
@@ -254,51 +273,182 @@ TOOLS = [
     },
 ]
 
+GEMINI_TOOLS = [
+    types.Tool(
+        function_declarations=[
+            types.FunctionDeclaration(
+                name=item["function"]["name"],
+                description=item["function"]["description"],
+                parameters_json_schema=item["function"]["parameters"],
+            )
+            for item in TOOLS
+        ]
+    )
+]
 
-class GroqChat(commands.Cog):
-    """Cog xử lý chat AI (Groq / Llama) + function calling điều khiển nhạc."""
+GEMINI_SAFETY_SETTINGS = [
+    types.SafetySetting(
+        category=category,
+        threshold=GEMINI_SAFETY_THRESHOLD,
+    )
+    for category in (
+        "HARM_CATEGORY_HARASSMENT",
+        "HARM_CATEGORY_HATE_SPEECH",
+        "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "HARM_CATEGORY_DANGEROUS_CONTENT",
+    )
+]
+
+
+class GeminiChat(commands.Cog):
+    """Cog xử lý chat AI bằng Gemini + function calling điều khiển nhạc."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-        api_key = os.getenv("GROQ_API_KEY")
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "Thiếu GROQ_API_KEY trong file .env hoặc biến môi trường hệ thống."
+                "Thiếu GEMINI_API_KEY trong file .env hoặc biến môi trường hệ thống."
             )
-        # AsyncGroq = bản async native của SDK -> không cần asyncio.to_thread,
-        # không block event loop của discord.py.
-        self.client = AsyncGroq(api_key=api_key)
+        self.client = genai.Client(api_key=api_key)
+        self.async_client = self.client.aio
 
         tavily_key = os.getenv("TAVILY_API_KEY")
         if not tavily_key:
             raise RuntimeError(
                 "Thiếu TAVILY_API_KEY trong file .env hoặc biến môi trường hệ thống."
             )
-        # Client Tavily bản async -> cũng không block event loop, giống AsyncGroq.
+        # Tavily vẫn được giữ riêng để không thay đổi luồng search hiện tại.
         self.tavily = AsyncTavilyClient(tavily_key)
+
+    @staticmethod
+    def _enum_text(value) -> str:
+        """Chuyển enum/value của SDK thành text ngắn, ổn định để ghi log."""
+        if value is None:
+            return "?"
+        return str(getattr(value, "value", value))
+
+    def _log_safety_feedback(self, response) -> None:
+        """Ghi rõ Gemini chặn prompt hay chặn candidate nào để dễ chẩn đoán."""
+        prompt_feedback = getattr(response, "prompt_feedback", None)
+        block_reason = getattr(prompt_feedback, "block_reason", None)
+        if block_reason:
+            logger.warning(
+                "Gemini chặn prompt: block_reason=%s",
+                self._enum_text(block_reason),
+            )
+
+        candidates = getattr(response, "candidates", None) or []
+        for candidate in candidates:
+            finish_reason = getattr(candidate, "finish_reason", None)
+            if self._enum_text(finish_reason).upper().endswith("SAFETY"):
+                ratings = getattr(candidate, "safety_ratings", None) or []
+                details = [
+                    (
+                        self._enum_text(getattr(rating, "category", None)),
+                        self._enum_text(getattr(rating, "probability", None)),
+                        bool(getattr(rating, "blocked", False)),
+                    )
+                    for rating in ratings
+                ]
+                logger.warning(
+                    "Gemini chặn candidate vì safety: ratings=%s", details
+                )
+
+    @staticmethod
+    def _response_text(response) -> str:
+        """Trích text thật từ candidate, không tạo fallback."""
+        candidates = getattr(response, "candidates", None) or []
+        text_parts = []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            for part in getattr(content, "parts", None) or []:
+                text = getattr(part, "text", None)
+                if text and text.strip():
+                    text_parts.append(text.strip())
+        return "\n".join(text_parts)
 
     def _safe_content(self, response) -> str:
         """
-        Lấy content từ response, nhưng nếu rỗng (model từ chối/bị lọc nội
-        dung) thì trả về 1 câu trong-nhân-vật tự nhiên thay vì "..." - tránh
-        lưu placeholder vô nghĩa vào lịch sử khiến model bị stuck lặp lại.
+        Lấy phần text từ response Gemini mà không phụ thuộc vào response.text
+        (property này có thể rỗng khi candidate bị safety filter chặn).
         """
-        content = response.choices[0].message.content
-        if content and content.strip():
+        content = self._response_text(response)
+        if content:
             return content
 
-        finish_reason = getattr(response.choices[0], "finish_reason", "?")
-        logger.warning(
-            "Model trả về content rỗng (finish_reason=%s) - có thể do bị lọc "
-            "nội dung an toàn nội bộ.",
-            finish_reason,
+        candidates = getattr(response, "candidates", None) or []
+        self._log_safety_feedback(response)
+        finish_reason = (
+            self._enum_text(getattr(candidates[0], "finish_reason", None))
+            if candidates
+            else "NO_CANDIDATE"
         )
-        return "Cái này Peto hổng biết trả lời sao đây 😅 Hỏi cái khác đi nha!"
+        logger.warning("Gemini trả về text rỗng (finish_reason=%s)", finish_reason)
+        return "Hửm... đoạn này Peto bị đứng hình mất rồi 😅 Cậu nói lại theo cách khác thử nha."
+
+    @staticmethod
+    def _to_gemini_contents(history: list, user_text: str) -> list:
+        """
+        Đổi history role assistant -> model và chuẩn hóa lượt hội thoại.
+
+        MAX_HISTORY là số lẻ nên bản ghi cũ đôi khi bắt đầu bằng một message
+        assistant. Gemini mong lịch sử bắt đầu từ user; bỏ phần model mồ côi
+        và gộp các role liền nhau để request luôn hợp lệ.
+        """
+        contents = []
+        for item in history:
+            text = str(item.get("content", "")).strip()
+            if not text:
+                continue
+            role = "model" if item.get("role") == "assistant" else "user"
+            if not contents and role == "model":
+                continue
+            if contents and contents[-1].role == role:
+                contents[-1].parts.append(types.Part(text=text))
+            else:
+                contents.append(
+                    types.Content(role=role, parts=[types.Part(text=text)])
+                )
+
+        if contents and contents[-1].role == "user":
+            contents[-1].parts.append(types.Part(text=user_text))
+        else:
+            contents.append(
+                types.Content(role="user", parts=[types.Part(text=user_text)])
+            )
+        return contents
+
+    @staticmethod
+    def _generation_config(
+        system_prompt: str,
+        *,
+        tool_mode: str = "AUTO",
+        max_output_tokens: int = 1000,
+    ) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            max_output_tokens=max_output_tokens,
+            safety_settings=GEMINI_SAFETY_SETTINGS,
+            tools=GEMINI_TOOLS,
+            tool_config=types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(
+                    mode=tool_mode
+                )
+            ),
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True
+            ),
+        )
 
     async def cog_load(self):
         # Tạo bảng SQLite nếu chưa có, chạy 1 lần lúc Cog được add vào bot
         await user_memory.init_db()
+
+    async def cog_unload(self):
+        await self.async_client.aclose()
+        self.client.close()
 
     # ==========================================
     # KIỂM TRA REPLY CÓ PHẢI ĐANG REPLY BOT KHÔNG
@@ -343,15 +493,15 @@ class GroqChat(commands.Cog):
         clean_text = clean_text.strip() or "Chào bạn!"
 
         async with message.channel.typing():
-            reply_text = await self._ask_groq(message, clean_text)
+            reply_text = await self._ask_gemini(message, clean_text)
 
         if reply_text:
             await message.reply(_truncate_for_discord(reply_text), mention_author=False)
 
     # ==========================================
-    # GỌI GROQ + XỬ LÝ TOOL CALLING
+    # GỌI GEMINI + XỬ LÝ TOOL CALLING
     # ==========================================
-    async def _ask_groq(self, message: discord.Message, user_text: str) -> str:
+    async def _ask_gemini(self, message: discord.Message, user_text: str) -> str:
         channel_id = message.channel.id
         user_id = message.author.id
         history = await user_memory.get_history(channel_id, user_id, MAX_HISTORY)
@@ -380,71 +530,46 @@ class GroqChat(commands.Cog):
                 f"từ các lần nói chuyện trước: {long_term_summary}"
             )
 
-        messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": user_text})
+        contents = self._to_gemini_contents(history, user_text)
 
         try:
-            response = await self.client.chat.completions.create(
+            response = await self.async_client.models.generate_content(
                 model=MODEL_NAME,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                # Tăng nhẹ để hội thoại bớt máy móc nhưng vẫn đủ thấp cho tool calling.
-                temperature=0.45,
-                # Giới hạn thấp -> trả lời ngắn gọn kiểu chat, tránh vượt quá
-                # giới hạn 2000 ký tự/tin nhắn của Discord
-                max_completion_tokens=1000,
+                contents=contents,
+                config=self._generation_config(system_prompt, tool_mode="AUTO"),
             )
-        except BadRequestError as e:
-            error_body = getattr(e, "body", None) or {}
-            error_code = error_body.get("error", {}).get("code")
-
-            if error_code == "tool_use_failed":
-                # Model đôi khi tự sinh sai format tool-call (vd thiếu dấu
-                # đóng, hoặc bọc trong tag XML thay vì JSON chuẩn). Đây là
-                # lỗi từ model, không phải lỗi kết nối, nên thay vì trả lỗi
-                # luôn cho user, thử gọi lại 1 lần buộc model trả lời bằng
-                # text thường (không dùng tool) để vẫn có câu trả lời.
-                logger.warning(
-                    "Model sinh sai format tool-call, thử lại không dùng tool. "
-                    "failed_generation: %s",
-                    error_body.get("error", {}).get("failed_generation"),
-                )
-                try:
-                    response = await self.client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=messages,
-                        tools=TOOLS,
-                        tool_choice="none",
-                        temperature=0.45,
-                        max_completion_tokens=1000,
-                    )
-                except Exception:
-                    logger.exception("Lỗi khi gọi Groq API (fallback không tool)")
-                    return "❌ Có lỗi khi kết nối tới Groq, thử lại sau nhé."
-            else:
-                logger.exception("Lỗi khi gọi Groq API")
-                return "❌ Có lỗi khi kết nối tới Groq, thử lại sau nhé."
+        except genai_errors.APIError as e:
+            logger.exception(
+                "Lỗi Gemini API (code=%s): %s",
+                getattr(e, "code", "?"),
+                getattr(e, "message", str(e)),
+            )
+            if getattr(e, "code", None) == 429:
+                return "❌ Gemini đang hết quota hoặc bị giới hạn tốc độ, thử lại sau nhé."
+            if getattr(e, "code", None) in (401, 403):
+                return "❌ Gemini API key hoặc quyền truy cập model chưa hợp lệ."
+            return "❌ Có lỗi khi kết nối tới Gemini, thử lại sau nhé."
         except Exception:
-            logger.exception("Lỗi khi gọi Groq API")
-            return "❌ Có lỗi khi kết nối tới Groq, thử lại sau nhé."
+            logger.exception("Lỗi không xác định khi gọi Gemini API")
+            return "❌ Có lỗi khi kết nối tới Gemini, thử lại sau nhé."
 
         # Chỉ lưu vào lịch sử SAU KHI gọi API thành công
         await user_memory.add_message(channel_id, user_id, "user", user_text, MAX_HISTORY)
 
-        response_message = response.choices[0].message
-        tool_calls = response_message.tool_calls or []
+        self._log_safety_feedback(response)
+        tool_calls = getattr(response, "function_calls", None) or []
 
         if tool_calls:
             # Tạm thời chỉ xử lý tool đầu tiên được gọi
             call = tool_calls[0]
-            if call.function.name == "search_web":
+            if call.name == "search_web":
                 # Tool tra cứu thông tin -> cần đưa kết quả tìm kiếm quay lại
                 # cho model, để model tự tổng hợp thành câu trả lời tự nhiên
                 # (khác với play_music/skip_music là tool "hành động", chỉ
                 # cần trả thẳng 1 câu xác nhận, không cần gọi model lần 2).
-                reply = await self._handle_search_tool(messages, response_message, call)
+                reply = await self._handle_search_tool(
+                    contents, response, call, system_prompt
+                )
             else:
                 reply = await self._handle_tool_call(message, call)
         else:
@@ -481,13 +606,15 @@ class GroqChat(commands.Cog):
                 "thích, cách xưng hô, hoặc sự kiện đáng chú ý của người này. Viết "
                 "dưới dạng tóm tắt súc tích, không lặp lại nguyên văn hội thoại."
             )
-            response = await self.client.chat.completions.create(
+            response = await self.async_client.models.generate_content(
                 model=MODEL_NAME,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_completion_tokens=300,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=300,
+                    safety_settings=GEMINI_SAFETY_SETTINGS,
+                ),
             )
-            new_summary = response.choices[0].message.content
+            new_summary = self._response_text(response)
             if new_summary:
                 await user_memory.set_summary(user_id, new_summary.strip())
         except Exception:
@@ -523,94 +650,59 @@ class GroqChat(commands.Cog):
 
         return "\n".join(parts) if parts else "Không tìm thấy kết quả liên quan."
 
-    async def _handle_search_tool(self, messages: list, response_message, call) -> str:
+    async def _handle_search_tool(
+        self,
+        contents: list,
+        response,
+        call,
+        system_prompt: str,
+    ) -> str:
         """
         Khác với tool điều khiển nhạc (chỉ cần thực thi rồi trả 1 câu xác
         nhận có sẵn), tool search_web trả về dữ liệu thô -> phải đưa dữ liệu
-        đó quay lại cho model (đúng chuẩn tool-calling: thêm message role
-        'assistant' chứa tool_calls, rồi message role 'tool' chứa kết quả)
-        và gọi model lần 2 để nó tự viết câu trả lời tự nhiên bằng tiếng Việt
-        dựa trên thông tin vừa tra được.
+        đó quay lại cho Gemini cùng đúng function-call ID để model tổng hợp.
         """
-        try:
-            args = json.loads(call.function.arguments or "{}")
-        except json.JSONDecodeError:
-            logger.warning(
-                "Không parse được tham số tool 'search_web': %r",
-                call.function.arguments,
-            )
-            return "❌ Tôi hiểu nhầm ý bạn rồi, thử nói lại rõ hơn nhé."
-
+        args = dict(call.args or {})
         query = args.get("query", "")
+        if not query.strip():
+            return "❌ Peto chưa lấy được từ khóa cần tìm, cậu nói rõ hơn thử nha."
         search_result_text = await self._search_web(query)
 
-        # Thêm đúng message "assistant" đã gọi tool (bắt buộc phải có để
-        # Groq API hiểu ngữ cảnh của message "tool" phía sau)
-        messages.append(
-            {
-                "role": "assistant",
-                "content": response_message.content,
-                "tool_calls": [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.function.name,
-                            "arguments": call.function.arguments,
-                        },
-                    }
+        if not response.candidates or not response.candidates[0].content:
+            logger.warning("Gemini gọi search_web nhưng không có candidate content")
+            return f"Dựa trên thông tin Peto tìm được:\n{search_result_text}"
+
+        contents.append(response.candidates[0].content)
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_function_response(
+                        id=call.id,
+                        name=call.name,
+                        response={"result": search_result_text},
+                    )
                 ],
-            }
-        )
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": search_result_text,
-            }
+            )
         )
 
         try:
-            follow_up = await self.client.chat.completions.create(
+            follow_up = await self.async_client.models.generate_content(
                 model=MODEL_NAME,
-                messages=messages,
-                # QUAN TRỌNG: phải khai báo tools + tool_choice="none" TƯỜNG
-                # MINH ở đây, không được bỏ trống như trước. Khi "tools" bị
-                # bỏ trống, Groq ngầm hiểu tool_choice là "none", nhưng model
-                # (gpt-oss-120b) đôi khi vẫn tự sinh ra định dạng gọi tool
-                # (vd muốn search tiếp vì thấy 1 lần search chưa đủ trả lời -
-                # đúng như trường hợp "video nhiều view nhất"). Groq nhận ra
-                # output đó là 1 tool-call trong khi request không cho phép
-                # -> ném lỗi 400 "Tool choice is none, but model called a
-                # tool" thay vì tự bỏ qua. Khai báo rõ tools kèm
-                # tool_choice="none" giúp model "biết" chắc chắn là không
-                # được gọi tool ở bước tổng hợp này, giảm hẳn lỗi trên.
-                tools=TOOLS,
-                tool_choice="none",
-                temperature=0.3,
-                max_completion_tokens=1000,
+                contents=contents,
+                config=self._generation_config(system_prompt, tool_mode="NONE"),
             )
-        except BadRequestError as e:
-            error_body = getattr(e, "body", None) or {}
-            error_code = error_body.get("error", {}).get("code")
-
-            if error_code == "tool_use_failed":
-                # Cực hiếm khi vẫn xảy ra sau khi đã ép tool_choice="none" ở
-                # trên, nhưng nếu model vẫn cố - đừng để user nhận lỗi, cứ
-                # trả lời tạm bằng chính kết quả search thô đã tra được.
-                logger.warning(
-                    "Model vẫn cố gọi tool ở bước tổng hợp search dù đã ép "
-                    "tool_choice='none'. failed_generation: %s",
-                    error_body.get("error", {}).get("failed_generation"),
-                )
-                return f"Dựa trên thông tin mình tìm được:\n{search_result_text}"
-
-            logger.exception("Lỗi khi gọi Groq API (tổng hợp kết quả search)")
-            return "❌ Tôi tra được thông tin nhưng có lỗi khi tổng hợp câu trả lời, thử lại sau nhé."
+        except genai_errors.APIError as e:
+            logger.exception(
+                "Lỗi Gemini API khi tổng hợp search (code=%s)",
+                getattr(e, "code", "?"),
+            )
+            return f"Dựa trên thông tin Peto tìm được:\n{search_result_text}"
         except Exception:
-            logger.exception("Lỗi khi gọi Groq API (tổng hợp kết quả search)")
-            return "❌ Tôi tra được thông tin nhưng có lỗi khi tổng hợp câu trả lời, thử lại sau nhé."
+            logger.exception("Lỗi không xác định khi Gemini tổng hợp search")
+            return f"Dựa trên thông tin Peto tìm được:\n{search_result_text}"
 
+        self._log_safety_feedback(follow_up)
         return self._safe_content(follow_up)
 
     async def _handle_tool_call(self, message: discord.Message, call) -> str:
@@ -619,14 +711,8 @@ class GroqChat(commands.Cog):
         các hàm dùng chung trong music/player.py (cùng chỗ mà /play và /skip
         cũng gọi vào).
         """
-        name = call.function.name
-        try:
-            args = json.loads(call.function.arguments or "{}")
-        except json.JSONDecodeError:
-            logger.warning(
-                "Không parse được tham số tool '%s': %r", name, call.function.arguments
-            )
-            return "❌ Tôi hiểu nhầm ý bạn rồi, thử nói lại rõ hơn nhé."
+        name = call.name
+        args = dict(call.args or {})
 
         if name == "play_music":
             query = args.get("query", "")
@@ -665,4 +751,4 @@ class GroqChat(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(GroqChat(bot))
+    await bot.add_cog(GeminiChat(bot))
