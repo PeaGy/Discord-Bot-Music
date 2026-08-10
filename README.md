@@ -23,11 +23,11 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 ### Trợ lý AI Peto
 
 - Trò chuyện bằng cách mention bot hoặc reply tin nhắn của bot, không cần slash command.
-- Sử dụng Google Gemini thông qua SDK `google-genai`.
-- Có thể đổi model bằng biến `GEMINI_MODEL`; cấu hình mẫu hiện dùng `gemini-3.6-flash`.
-- Cho phép chọn ngưỡng safety filter bằng `GEMINI_SAFETY_THRESHOLD`.
+- Sử dụng Grok qua xAI Responses API; model mặc định là `grok-4.5` và có thể đổi bằng `XAI_MODEL`.
+- Hỗ trợ đăng nhập SuperGrok bằng OAuth PKCE, tự refresh token và dùng `XAI_API_KEY` làm phương án dự phòng.
+- Có thể đọc tối đa 4 ảnh đính kèm trong tin nhắn Discord; hỗ trợ JPEG, PNG, WebP và GIF.
 - Có thể tìm thông tin mới trên web thông qua Tavily.
-- Có thể gọi công cụ để phát nhạc hoặc bỏ qua bài ngay trong hội thoại.
+- Có thể gọi công cụ để phát nhạc, bỏ qua bài hoặc tìm fanart SFW từ Danbooru ngay trong hội thoại.
 - Lưu lịch sử theo người dùng và kênh bằng SQLite.
 - Giữ tối đa 15 tin nhắn gần nhất làm ngữ cảnh và cập nhật tóm tắt trí nhớ dài hạn sau mỗi 20 lượt tương tác.
 - Dữ liệu hội thoại vẫn còn sau khi bot khởi động lại.
@@ -46,9 +46,9 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Python 3.10 trở lên.
 - FFmpeg có `libopus` và có thể gọi bằng lệnh `ffmpeg`.
 - Một Discord Bot Token.
-- Google Gemini API key.
+- Tài khoản SuperGrok đã đăng nhập hoặc xAI API key.
 - Tavily API key.
-- Kết nối internet tới Discord, YouTube/Spotify/SoundCloud, LRCLIB, Radio Browser, Danbooru, Gemini và Tavily.
+- Kết nối internet tới Discord, YouTube/Spotify/SoundCloud, LRCLIB, Radio Browser, Danbooru, xAI và Tavily.
 
 Bot dùng trực tiếp `discord.py` voice client, `yt-dlp` và FFmpeg; dự án hiện tại **không dùng Lavalink/Wavelink**.
 
@@ -65,7 +65,7 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-`requirements.txt` đã bao gồm SDK Gemini, Tavily, SQLite async, discord.py voice và các thư viện phát nhạc cần thiết.
+`requirements.txt` đã bao gồm OpenAI-compatible SDK dùng để gọi xAI, Pillow cho vision, Tavily, SQLite async, discord.py voice và các thư viện phát nhạc cần thiết.
 
 Trên Linux/macOS, dùng `python3` và kích hoạt môi trường bằng:
 
@@ -121,26 +121,46 @@ Sau đó điền các giá trị thật:
 
 ```dotenv
 DISCORD_TOKEN=discord_bot_token_cua_ban
-GEMINI_API_KEY=google_ai_studio_api_key_cua_ban
 TAVILY_API_KEY=tavily_api_key_cua_ban
 
-GEMINI_MODEL=gemini-3.6-flash
-GEMINI_SAFETY_THRESHOLD=BLOCK_ONLY_HIGH
+XAI_MODEL=grok-4.5
+
+# Tùy chọn: chỉ cần khi không dùng SuperGrok OAuth
+# XAI_API_KEY=xai_api_key_cua_ban
+
+# Tùy chọn
+# XAI_TOKEN_PATH=.xai_tokens.json
+# XAI_BASE_URL=https://api.x.ai/v1
+# XAI_IMAGE_DETAIL=auto
+# XAI_MAX_IMAGES=4
 ```
 
-`GEMINI_API_KEY` cũng có thể được cung cấp qua biến `GOOGLE_API_KEY`. `GEMINI_MODEL` và `GEMINI_SAFETY_THRESHOLD` là tùy chọn; nếu không khai báo, mã nguồn dùng giá trị mặc định.
+`XAI_MODEL`, `XAI_TOKEN_PATH`, `XAI_BASE_URL`, `XAI_IMAGE_DETAIL` và `XAI_MAX_IMAGES` là tùy chọn. Nếu không khai báo, mã nguồn sử dụng các giá trị mặc định nội bộ.
 
-Các giá trị hợp lệ cho `GEMINI_SAFETY_THRESHOLD`:
+`XAI_IMAGE_DETAIL` nhận một trong ba giá trị: `auto`, `low` hoặc `high`. `XAI_MAX_IMAGES` mặc định là `4`; mỗi ảnh được giới hạn tối đa 20 MiB.
 
-- `BLOCK_ONLY_HIGH`
-- `BLOCK_MEDIUM_AND_ABOVE`
-- `BLOCK_LOW_AND_ABOVE`
-- `BLOCK_NONE`
-- `OFF`
+Thiếu `DISCORD_TOKEN` hoặc `TAVILY_API_KEY` sẽ làm quá trình nạp bot/extension thất bại. Nếu chưa có OAuth token và cũng không đặt `XAI_API_KEY`, bot âm nhạc vẫn khởi động nhưng Peto sẽ báo chưa đăng nhập khi được mention.
 
-Module AI được tự động nạp khi bot khởi động. Thiếu `DISCORD_TOKEN`, Gemini API key hoặc `TAVILY_API_KEY` sẽ làm quá trình khởi động thất bại.
+### 4. Đăng nhập SuperGrok
 
-### 4. Cấu hình Discord Developer Portal
+Chạy một lần trong môi trường Python của dự án:
+
+```bash
+python -m xai_oauth login
+```
+
+Trình duyệt sẽ mở trang đăng nhập xAI. Sau khi hoàn tất, token được lưu cục bộ tại `.xai_tokens.json` và tự refresh khi cần. Nếu máy đã đăng nhập Grok CLI, bot cũng có thể đọc session tại `~/.grok/auth.json`.
+
+Kiểm tra trạng thái hoặc đăng xuất:
+
+```bash
+python -m xai_oauth status
+python -m xai_oauth logout
+```
+
+Không muốn dùng OAuth thì đặt `XAI_API_KEY` trong `.env`; đây là phương án API pay-as-you-go dự phòng.
+
+### 5. Cấu hình Discord Developer Portal
 
 Trong phần cấu hình Bot:
 
@@ -157,7 +177,7 @@ Trong phần cấu hình Bot:
 
 
 
-### 5. Cookie YouTube
+### 6. Cookie YouTube
 
 Cấu hình phát nhạc hiện tại đọc file `cookies.txt` tại thư mục gốc. Khi YouTube yêu cầu đăng nhập hoặc xác minh, hãy xuất cookie theo định dạng Netscape và lưu vào file này.
 
@@ -261,7 +281,7 @@ Nếu đã có bài hợp lệ trong `audio_cache/`, bot phát lại file cục 
 ├── bot.py                  # Điểm khởi động, nạp extension và đồng bộ lệnh
 ├── commands/               # Các slash command
 ├── features/
-│   └── ai_chat.py          # Gemini, Tavily, safety và tool calling
+│   └── ai_chat.py          # Grok, vision, Tavily và tool calling
 ├── music/
 │   ├── player.py           # Hàng đợi, autoplay, phát nhạc và radio
 │   ├── controls.py         # Music Panel và các nút tương tác
@@ -269,9 +289,10 @@ Nếu đã có bài hợp lệ trong `audio_cache/`, bot phát lại file cục 
 ├── cache_manager.py        # Cache, loudness normalization và preload
 ├── danbooru_client.py      # Giao tiếp Danbooru API
 ├── user_memory.py          # Bộ nhớ SQLite của AI
+├── xai_oauth.py            # Đăng nhập SuperGrok OAuth và refresh token
 ├── requirements.txt
 ├── run.bat
-├── config.py               # File local đọc Discord token từ môi trường
+├── config.py               # Đọc Discord token và cấu hình chung
 ├── .env.example            # Mẫu cấu hình có thể commit
 ├── .env                    # Token và API keys, không commit
 ├── cookies.txt             # Cookie yt-dlp, không commit
@@ -298,13 +319,18 @@ Mở terminal mới sau khi cài FFmpeg và kiểm tra lại bằng `ffmpeg -ver
 
 ### Bot lỗi ngay khi nạp extension AI
 
-Kiểm tra `.env` có đủ `GEMINI_API_KEY` (hoặc `GOOGLE_API_KEY`) và `TAVILY_API_KEY`, đồng thời đã cài `google-genai`, `tavily-python`, `python-dotenv` và `aiosqlite`.
+Kiểm tra `.env` có `TAVILY_API_KEY`, đồng thời đã cài `openai`, `Pillow`, `tavily-python`, `python-dotenv` và `aiosqlite`.
 
-Nếu Gemini trả lỗi `401` hoặc `403`, hãy kiểm tra API key và quyền truy cập model trong `GEMINI_MODEL`. Lỗi `429` thường có nghĩa tài khoản đã hết quota hoặc đang bị giới hạn tốc độ.
+### Peto báo chưa đăng nhập SuperGrok
 
-### `GEMINI_SAFETY_THRESHOLD` không hợp lệ
+Chạy:
 
-Chọn một trong các giá trị được liệt kê trong phần cấu hình `.env`. Bot chủ động dừng khởi động nếu nhận giá trị khác để tránh dùng nhầm cấu hình safety.
+```bash
+python -m xai_oauth login
+python -m xai_oauth status
+```
+
+Nếu OAuth bị từ chối với mã `403`, hãy kiểm tra quyền/gói SuperGrok hoặc đặt `XAI_API_KEY` làm phương án dự phòng. Lỗi `429` thường có nghĩa tài khoản đang bị giới hạn tốc độ hoặc hết quota.
 
 ### Không phát được YouTube
 
@@ -321,6 +347,7 @@ pip install --upgrade yt-dlp
 ## Bảo mật
 
 - Không đưa Discord token, API key, cookie hoặc file database lên Git.
+- Không commit `.xai_tokens.json`, `xai_tokens.json` hoặc nội dung `~/.grok/auth.json`; các file token project đã được thêm vào `.gitignore`.
 - Nếu một token từng bị chia sẻ công khai, hãy reset/rotate token ngay tại dịch vụ tương ứng.
 - Chỉ cấp cho bot những quyền Discord thật sự cần thiết.
 - Sao lưu `bot_memory.db` nếu cần giữ trí nhớ AI trước khi di chuyển hoặc cài lại bot.

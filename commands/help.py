@@ -42,7 +42,7 @@ class HelpDropdown(discord.ui.View):
             ),
             discord.SelectOption(
                 label="Art & AI",
-                description="Danbooru, Gemini và bộ nhớ Peto",
+                description="Danbooru, Grok và bộ nhớ Peto",
                 emoji="🎨",
                 value="art_ai",
             ),
@@ -65,7 +65,7 @@ class HelpDropdown(discord.ui.View):
                     "🎚️ **Loudness Normalization:** Chuẩn hóa âm lượng để các bài nghe đồng đều hơn.\n"
                     "📡 **Smart Streaming:** Stream trực tiếp radio và bài dài hơn 10 phút.\n"
                     "🎵 **Multi-Platform:** Hỗ trợ YouTube, Spotify track và SoundCloud.\n"
-                    "🤖 **Peto AI:** Trò chuyện bằng Google Gemini, tìm web qua Tavily và ghi nhớ bằng SQLite.\n"
+                    "🤖 **Peto AI:** Trò chuyện bằng Grok, xem ảnh, tìm web qua Tavily và ghi nhớ bằng SQLite.\n"
                     "🎨 **Danbooru:** Tìm anime art, wallpaper và xem thông tin post.\n\n"
                     "Original code by Eva Music Bot, inspired by Lara Bot. "
                     "Thanks to Ryuz-V.\n\n"
@@ -111,12 +111,12 @@ class HelpDropdown(discord.ui.View):
                     "`/artecchi [tags]` — Tìm ảnh ecchi, chỉ trong kênh NSFW\n"
                     "`/artnsfw [tags]` — Tìm ảnh explicit, chỉ trong kênh NSFW\n"
                     "`/artinfo <id>` — Xem artist, nguồn, score và tags của post\n\n"
-                    "**Peto AI • Google Gemini**\n"
+                    "**Peto AI • Grok by xAI**\n"
                     "Mention **@Peto** hoặc reply tin nhắn của bot để trò chuyện, "
                     "không cần slash command.\n\n"
-                    "Peto có thể tìm thông tin mới trên web qua Tavily, phát nhạc, "
-                    "bỏ qua bài và duy trì trí nhớ hội thoại bằng SQLite. Model Gemini "
-                    "và ngưỡng safety được cấu hình bởi chủ bot.\n\n"
+                    "Peto có thể xem ảnh đính kèm, tìm thông tin mới trên web qua Tavily, "
+                    "phát nhạc, bỏ qua bài và duy trì trí nhớ hội thoại bằng SQLite. "
+                    "Bạn cũng có thể nhờ Peto tìm fanart SFW trực tiếp từ Danbooru.\n\n"
                     "**Điều khiển bộ nhớ AI**\n"
                     "`/resetmemory` — Xóa toàn bộ trí nhớ của chính bạn\n"
                     "`/resetmemoryall` — Admin xóa lịch sử trong server hiện tại\n"
@@ -140,7 +140,7 @@ class Help(commands.Cog):
             "🍐 Tracen Jukebox Help Panel",
             (
                 "Tracen Jukebox kết hợp phát nhạc chất lượng cao, radio internet, "
-                "anime art và trợ lý AI Peto sử dụng Google Gemini.\n\n"
+                "anime art và trợ lý AI Peto sử dụng Grok của xAI.\n\n"
                 "**Danh mục trợ giúp**\n"
                 "📢 **Giới thiệu** — Tổng quan tính năng và công nghệ\n"
                 "🎵 **Lệnh âm nhạc** — Phát nhạc, hàng đợi và voice\n"

@@ -14,3 +14,7 @@ ENV/
 cookies.txt
 audio_cache
 *.env
+.xai_tokens.json
+xai_tokens.json
+.xai_tokens.json.lock
+xai_tokens.json.lock

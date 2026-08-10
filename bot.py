@@ -30,7 +30,7 @@ class MusicBot(commands.Bot):
     async def setup_hook(self):
         # commands/  -> slash command thật (/play, /skip...)
         # features/  -> Cog dạng lắng nghe sự kiện, không phải slash command
-        #                (vd: gemini_chat.py xử lý on_message)
+        #                (vd: ai_chat.py = Grok/SuperGrok xử lý on_message)
         extension_folders = ["commands", "features"]
         for folder in extension_folders:
             if not os.path.isdir(f"./{folder}"):

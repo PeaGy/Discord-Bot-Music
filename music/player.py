@@ -200,8 +200,8 @@ async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
 # ==============================
 # 🎯 HÀM DÙNG CHUNG: THÊM BÀI + PHÁT (không phụ thuộc discord.Interaction)
 # ==============================
-# Được /play (commands/play.py) và Gemini function calling
-# (commands/gemini_chat.py) cùng gọi vào -> tránh lặp code, chỉ 1 nơi giữ
+# Được /play (commands/play.py) và Grok function calling
+# (features/ai_chat.py) cùng gọi vào -> tránh lặp code, chỉ 1 nơi giữ
 # logic thêm bài vào queue. Import trễ (bên trong hàm) để né circular import
 # vì commands/play.py có import ngược lại từ music/player.py.
 async def play_song_by_query(
