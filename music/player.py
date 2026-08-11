@@ -236,7 +236,8 @@ async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
                 duration = int(next_song.get("duration") or 0)
                 if duration <= 600:
                     from cache_manager import preload_audio
-                    await preload_audio(next_song['url'])
+                    preload_delay = 3.0 if (vc.is_playing() or vc.is_paused()) else 0
+                    await preload_audio(next_song['url'], delay=preload_delay)
                 
                 # Nếu bot đang dừng (do user skip quá nhanh hoặc API chậm) -> Ép phát luôn
                 if not vc.is_playing() and not vc.is_paused():
@@ -267,8 +268,6 @@ async def play_song_by_query(
 ) -> dict:
     from commands.play import get_song_info, is_spotify_url
     from music.spotify import get_spotify_info
-    from cache_manager import preload_audio
-
     vc = guild.voice_client
     if vc and vc.channel != voice_channel:
         return {"ok": False, "reason": f"Bot đang ở kênh voice khác: {vc.channel.name}"}
@@ -303,8 +302,13 @@ async def play_song_by_query(
 
     duration = int(song.get("duration") or 0)
     is_radio = song.get("source") == "radio"
-    if (vc.is_playing() or vc.is_paused()) and not is_radio and duration <= 600:
-        asyncio.create_task(preload_audio(song["url"]))
+    if (
+        (vc.is_playing() or vc.is_paused())
+        and len(state.queue) == 1
+        and not is_radio
+        and duration <= 600
+    ):
+        asyncio.create_task(preload_audio(song["url"], delay=3.0))
 
     if not vc.is_playing() and not vc.is_paused():
         await play_next(bot, vc, text_channel)
@@ -521,11 +525,16 @@ async def _play_next_locked(
                 pass
         return await _play_next_locked(bot, vc, channel, state)
     
-    # Bọc qua VolumeTransformer
+    # Radio/stream dài vẫn giữ nguyên đường PCM + VolumeTransformer cũ.
+    # Cache nhạc ngắn là Opus trực tiếp nên không được bọc PCMVolumeTransformer,
+    # tránh decode rồi encode lossy thêm một lần trước khi gửi Discord.
     audio_source = None
     try:
-        audio_source = discord.PCMVolumeTransformer(base_source)
-        audio_source.volume = getattr(vc, 'current_volume', 1.0)
+        if is_radio or is_too_long:
+            audio_source = discord.PCMVolumeTransformer(base_source)
+            audio_source.volume = getattr(vc, 'current_volume', 1.0)
+        else:
+            audio_source = base_source
 
         # Reset mốc thời gian
         vc.play_start_time = time.time()
@@ -563,8 +572,7 @@ async def _play_next_locked(
         next_duration = int(next_song.get("duration") or 0)
         next_is_radio = next_song.get("source") == "radio"
         if not next_is_radio and next_duration <= 600:
-            from cache_manager import preload_audio
-            asyncio.create_task(preload_audio(next_song['url']))
+            asyncio.create_task(preload_audio(next_song['url'], delay=3.0))
             
     elif state.autoplay:
         # Nếu hàng đợi trống trơn NHƯNG Autoplay đang bật 

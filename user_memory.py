@@ -1,12 +1,19 @@
-"""
-Lưu trữ lịch sử chat lâu dài theo từng (channel_id, user_id) bằng SQLite.
-Thay thế cho deque trong bộ nhớ RAM trước đây - giờ sống sót qua mỗi lần
-restart bot. Dùng aiosqlite để không block event loop của discord.py.
-"""
+"""Bộ nhớ AI tách biệt theo DM hoặc từng Discord server."""
+
+from collections import deque
 
 import aiosqlite
 
 DB_PATH = "bot_memory.db"
+LEGACY_SCOPE = "legacy"
+DM_SCOPE = "dm"
+
+# Chế độ Ẩn danh chỉ giữ ngữ cảnh trong RAM, không ghi nội dung xuống SQLite.
+_anonymous_history: dict[tuple[str, int], deque[dict]] = {}
+
+
+def scope_for_guild(guild_id: int | None) -> str:
+    return DM_SCOPE if guild_id is None else f"guild:{int(guild_id)}"
 
 
 async def init_db() -> None:
@@ -23,25 +30,33 @@ async def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'legacy',
                 role TEXT NOT NULL,
                 content TEXT NOT NULL
             )
             """
         )
+
+        # Database cũ chưa có scope. Các dòng cũ sẽ được nhận đúng scope khi
+        # người dùng trò chuyện lại trong chính channel đó.
+        cursor = await db.execute("PRAGMA table_info(chat_history)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "scope" not in columns:
+            await db.execute(
+                "ALTER TABLE chat_history "
+                "ADD COLUMN scope TEXT NOT NULL DEFAULT 'legacy'"
+            )
+
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_history_user "
             "ON chat_history(channel_id, user_id)"
         )
-        # Index riêng theo user_id (không kèm channel_id) - cần cho
-        # get_recent_for_user, vì index composite ở trên chỉ dùng được khi
-        # query lọc theo channel_id trước, còn get_recent_for_user chỉ lọc
-        # theo user_id nên sẽ bị quét toàn bảng nếu thiếu index này.
         await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chat_history_by_user "
-            "ON chat_history(user_id)"
+            "CREATE INDEX IF NOT EXISTS idx_chat_history_scope "
+            "ON chat_history(scope, user_id, channel_id, id)"
         )
-        # Đếm tổng số tin nhắn (mọi kênh) của mỗi người -> để biết khi nào
-        # tới ngưỡng cần tóm tắt lại trí nhớ dài hạn.
+
+        # Giữ bảng cũ để /resetmemory có thể dọn dữ liệu sau khi nâng cấp.
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS user_message_count (
@@ -60,11 +75,47 @@ async def init_db() -> None:
             )
             """
         )
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scoped_message_count (
+                user_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, scope)
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scoped_user_summary (
+                user_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                PRIMARY KEY (user_id, scope)
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS privacy_mode (
+                user_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                anonymous INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, scope)
+            )
+            """
+        )
         await db.commit()
 
 
 async def add_message(
-    channel_id: int, user_id: int, role: str, content: str, max_history: int
+    channel_id: int,
+    user_id: int,
+    scope: str,
+    role: str,
+    content: str,
+    max_history: int,
 ) -> None:
     """
     Thêm 1 tin nhắn vào lịch sử của đúng người đó, rồi tự xoá bớt tin cũ
@@ -73,51 +124,118 @@ async def add_message(
     """
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO chat_history (channel_id, user_id, role, content) "
-            "VALUES (?, ?, ?, ?)",
-            (channel_id, user_id, role, content),
+            "INSERT INTO chat_history "
+            "(channel_id, user_id, scope, role, content) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (channel_id, user_id, scope, role, content),
         )
         await db.execute(
             """
             DELETE FROM chat_history
-            WHERE channel_id = ? AND user_id = ?
+            WHERE channel_id = ? AND user_id = ? AND scope = ?
             AND id NOT IN (
                 SELECT id FROM chat_history
-                WHERE channel_id = ? AND user_id = ?
+                WHERE channel_id = ? AND user_id = ? AND scope = ?
                 ORDER BY id DESC LIMIT ?
             )
             """,
-            (channel_id, user_id, channel_id, user_id, max_history),
+            (
+                channel_id,
+                user_id,
+                scope,
+                channel_id,
+                user_id,
+                scope,
+                max_history,
+            ),
         )
         await db.commit()
 
 
-async def get_history(channel_id: int, user_id: int, limit: int) -> list[dict]:
+async def get_history(
+    channel_id: int,
+    user_id: int,
+    scope: str,
+    limit: int,
+) -> list[dict]:
     """Lấy `limit` tin nhắn gần nhất của đúng người đó, theo đúng thứ tự thời gian."""
     async with aiosqlite.connect(DB_PATH) as db:
+        # Channel Discord có ID duy nhất, nên có thể gán an toàn lịch sử cũ
+        # của chính channel này vào scope mới khi người dùng quay lại.
+        await db.execute(
+            """
+            UPDATE chat_history SET scope = ?
+            WHERE channel_id = ? AND user_id = ? AND scope = ?
+            """,
+            (scope, channel_id, user_id, LEGACY_SCOPE),
+        )
+        await db.commit()
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
             SELECT role, content FROM (
                 SELECT role, content, id FROM chat_history
-                WHERE channel_id = ? AND user_id = ?
+                WHERE channel_id = ? AND user_id = ? AND scope = ?
                 ORDER BY id DESC LIMIT ?
             )
             ORDER BY id ASC
             """,
-            (channel_id, user_id, limit),
+            (channel_id, user_id, scope, limit),
         )
         rows = await cursor.fetchall()
         return [{"role": row["role"], "content": row["content"]} for row in rows]
 
 
+def get_anonymous_history(scope: str, user_id: int, limit: int) -> list[dict]:
+    history = _anonymous_history.get((scope, int(user_id)))
+    if not history:
+        return []
+    return list(history)[-limit:]
+
+
+def add_anonymous_message(
+    scope: str,
+    user_id: int,
+    role: str,
+    content: str,
+    max_history: int,
+) -> None:
+    key = (scope, int(user_id))
+    history = _anonymous_history.get(key)
+    if history is None or history.maxlen != max_history:
+        history = deque(history or (), maxlen=max_history)
+        _anonymous_history[key] = history
+    history.append({"role": role, "content": content})
+
+
+def clear_anonymous_history(user_id: int, scope: str | None = None) -> None:
+    user_id = int(user_id)
+    if scope is not None:
+        _anonymous_history.pop((scope, user_id), None)
+        return
+    for key in [key for key in _anonymous_history if key[1] == user_id]:
+        _anonymous_history.pop(key, None)
+
+
+def clear_anonymous_scope(scope: str) -> None:
+    for key in [key for key in _anonymous_history if key[0] == scope]:
+        _anonymous_history.pop(key, None)
+
+
 async def clear_user(user_id: int) -> None:
     """Xoá toàn bộ lịch sử của 1 người, ở TẤT CẢ các kênh."""
+    clear_anonymous_history(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM chat_history WHERE user_id = ?", (user_id,))
         await db.execute("DELETE FROM user_summary WHERE user_id = ?", (user_id,))
         await db.execute(
             "DELETE FROM user_message_count WHERE user_id = ?", (user_id,)
+        )
+        await db.execute(
+            "DELETE FROM scoped_user_summary WHERE user_id = ?", (user_id,)
+        )
+        await db.execute(
+            "DELETE FROM scoped_message_count WHERE user_id = ?", (user_id,)
         )
         await db.commit()
 
@@ -125,89 +243,129 @@ async def clear_user(user_id: int) -> None:
 async def clear_all() -> None:
     """Xoá sạch lịch sử của TẤT CẢ mọi người, mọi kênh, MỌI SERVER.
     Chỉ nên dùng bởi dev (chủ bot), không nên giao cho admin từng server."""
+    _anonymous_history.clear()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM chat_history")
         await db.execute("DELETE FROM user_summary")
         await db.execute("DELETE FROM user_message_count")
+        await db.execute("DELETE FROM scoped_user_summary")
+        await db.execute("DELETE FROM scoped_message_count")
         await db.commit()
 
 
-async def clear_guild(channel_ids: list[int]) -> None:
+async def clear_guild(guild_id: int, channel_ids: list[int]) -> None:
     """
-    Xoá lịch sử chat của mọi người, nhưng CHỈ trong các kênh thuộc 1 server
-    cụ thể (không đụng tới server khác) - dùng cho lệnh admin từng server.
-    KHÔNG xoá bản tóm tắt dài hạn (user_summary), vì đó là dữ liệu gắn với
-    CON NGƯỜI (theo họ qua mọi server), không phải dữ liệu của riêng server
-    này để admin 1 server có quyền xoá.
+    Xoá lịch sử và tóm tắt thuộc đúng một server; không đụng tới DM hoặc
+    server khác. ``channel_ids`` chỉ dùng để dọn dữ liệu legacy.
     """
-    if not channel_ids:
-        return
-    placeholders = ",".join("?" for _ in channel_ids)
+    scope = scope_for_guild(guild_id)
+    clear_anonymous_scope(scope)
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            f"DELETE FROM chat_history WHERE channel_id IN ({placeholders})",
-            channel_ids,
-        )
+        # Dữ liệu mới xóa thẳng theo scope, bao gồm cả thread đã lưu.
+        await db.execute("DELETE FROM chat_history WHERE scope = ?", (scope,))
+        await db.execute("DELETE FROM scoped_user_summary WHERE scope = ?", (scope,))
+        await db.execute("DELETE FROM scoped_message_count WHERE scope = ?", (scope,))
+
+        # Dọn thêm lịch sử legacy theo channel cho database nâng cấp từ bản cũ.
+        if channel_ids:
+            placeholders = ",".join("?" for _ in channel_ids)
+            await db.execute(
+                f"DELETE FROM chat_history WHERE channel_id IN ({placeholders})",
+                channel_ids,
+            )
         await db.commit()
 
 
-async def get_recent_for_user(user_id: int, limit: int) -> list[dict]:
-    """Lấy `limit` tin nhắn gần nhất của 1 người, gộp TẤT CẢ các kênh -
-    dùng khi tóm tắt trí nhớ dài hạn (cần cái nhìn tổng quát, không chỉ 1 kênh)."""
+async def get_recent_for_scope(
+    user_id: int,
+    scope: str,
+    limit: int,
+) -> list[dict]:
+    """Lấy hội thoại gần đây trong đúng DM hoặc đúng một server."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
             SELECT role, content FROM (
                 SELECT role, content, id FROM chat_history
-                WHERE user_id = ?
+                WHERE user_id = ? AND scope = ?
                 ORDER BY id DESC LIMIT ?
             )
             ORDER BY id ASC
             """,
-            (user_id, limit),
+            (user_id, scope, limit),
         )
         rows = await cursor.fetchall()
         return [{"role": row["role"], "content": row["content"]} for row in rows]
 
 
-async def increment_message_count(user_id: int) -> int:
-    """Tăng bộ đếm tin nhắn của 1 người lên 1, trả về tổng số hiện tại -
-    dùng để biết khi nào tới ngưỡng cần tóm tắt lại trí nhớ dài hạn."""
+async def increment_message_count(user_id: int, scope: str) -> int:
+    """Tăng bộ đếm riêng trong đúng scope."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT INTO user_message_count (user_id, count) VALUES (?, 1)
-            ON CONFLICT(user_id) DO UPDATE SET count = count + 1
+            INSERT INTO scoped_message_count (user_id, scope, count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(user_id, scope) DO UPDATE SET count = count + 1
             """,
-            (user_id,),
+            (user_id, scope),
         )
         await db.commit()
         cursor = await db.execute(
-            "SELECT count FROM user_message_count WHERE user_id = ?", (user_id,)
+            "SELECT count FROM scoped_message_count "
+            "WHERE user_id = ? AND scope = ?",
+            (user_id, scope),
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
 
 
-async def get_summary(user_id: int) -> str | None:
-    """Lấy bản tóm tắt trí nhớ dài hạn hiện có của 1 người (None nếu chưa có)."""
+async def get_summary(user_id: int, scope: str) -> str | None:
+    """Lấy tóm tắt dài hạn trong đúng DM hoặc đúng server."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT summary FROM user_summary WHERE user_id = ?", (user_id,)
+            "SELECT summary FROM scoped_user_summary "
+            "WHERE user_id = ? AND scope = ?",
+            (user_id, scope),
         )
         row = await cursor.fetchone()
         return row[0] if row else None
 
 
-async def set_summary(user_id: int, summary: str) -> None:
-    """Ghi đè bản tóm tắt trí nhớ dài hạn của 1 người."""
+async def set_summary(user_id: int, scope: str, summary: str) -> None:
+    """Ghi đè tóm tắt dài hạn trong đúng scope."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT INTO user_summary (user_id, summary) VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET summary = excluded.summary
+            INSERT INTO scoped_user_summary (user_id, scope, summary)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, scope) DO UPDATE SET summary = excluded.summary
             """,
-            (user_id, summary),
+            (user_id, scope, summary),
+        )
+        await db.commit()
+
+
+async def is_anonymous_mode(user_id: int, scope: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT anonymous FROM privacy_mode WHERE user_id = ? AND scope = ?",
+            (user_id, scope),
+        )
+        row = await cursor.fetchone()
+        return bool(row and row[0])
+
+
+async def set_anonymous_mode(user_id: int, scope: str, enabled: bool) -> None:
+    clear_anonymous_history(user_id, scope)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO privacy_mode (user_id, scope, anonymous)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, scope)
+            DO UPDATE SET anonymous = excluded.anonymous
+            """,
+            (user_id, scope, int(enabled)),
         )
         await db.commit()

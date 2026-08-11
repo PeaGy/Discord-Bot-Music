@@ -130,7 +130,8 @@ class HelpDropdown(discord.ui.View):
                     "`/artinfo <id>` — Xem artist, nguồn, score và tags của post\n\n"
                     "**Peto AI • Grok by xAI**\n"
                     "Mention **@Peto** hoặc reply tin nhắn của bot để trò chuyện, "
-                    "không cần slash command.\n\n"
+                    "không cần slash command. Dùng `/private` để Peto mở DM; trong "
+                    "DM bạn chỉ cần nhắn bình thường, không cần mention.\n\n"
                     "Peto có thể xem ảnh đính kèm, tìm thông tin mới trên web qua Tavily, "
                     "phát nhạc, bỏ qua bài và duy trì trí nhớ hội thoại bằng SQLite. "
                     "Bạn cũng có thể nhờ Peto tìm fanart SFW trực tiếp từ Danbooru.\n\n"
@@ -140,8 +141,10 @@ class HelpDropdown(discord.ui.View):
                     "**Kiểm tra đáp án** và **Xuất PNG**. Chỉ người gửi đề sử dụng "
                     "được phiên này; nút tự khóa sau 15 phút.\n\n"
                     "**Điều khiển bộ nhớ AI**\n"
-                    "`/resetmemory` — Xóa toàn bộ trí nhớ của chính bạn\n"
-                    "`/resetmemoryall` — Admin xóa lịch sử trong server hiện tại\n"
+                    "`/private` — Mở cuộc trò chuyện riêng qua DM\n"
+                    "`/andanh` — Bật/tắt Ẩn danh tại DM hoặc server hiện tại\n"
+                    "`/resetmemory` — Xóa toàn bộ trí nhớ đã lưu của chính bạn\n"
+                    "`/resetmemoryall` — Admin xóa trí nhớ trong server hiện tại\n"
                     "`/resetmemoryglobal` — Chủ bot xóa toàn bộ trí nhớ AI"
                 ),
             )

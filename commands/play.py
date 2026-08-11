@@ -159,14 +159,19 @@ class Play(commands.Cog):
             "requester": interaction.user
         })
         # ==============================
-        # ⚡ KÍCH HOẠT TẢI NGẦM NGAY LẬP TỨC
+        # ⚡ Chỉ tải trước bài kế tiếp, sau một khoảng đệm ngắn
         # ==============================
         duration = int(song.get("duration") or 0)
         is_radio = song.get("source") == "radio"
         
-        # Nếu bot đang hát bài khác, và bài vừa thêm < 10 phút -> Tải nền luôn!
-        if (vc.is_playing() or vc.is_paused()) and not is_radio and duration <= 600:
-            asyncio.create_task(preload_audio(song['url']))
+        # Nếu đây là bài kế tiếp và bot đang hát, đợi 3 giây rồi mới tải nền.
+        if (
+            (vc.is_playing() or vc.is_paused())
+            and len(queue) == 1
+            and not is_radio
+            and duration <= 600
+        ):
+            asyncio.create_task(preload_audio(song['url'], delay=3.0))
 
         # 📩 EMBED QUEUE
         embed = discord.Embed(

@@ -14,12 +14,15 @@ class ResetMemory(commands.Cog):
     # ==========================================
     @app_commands.command(
         name="resetmemory",
-        description="🧹 Xoá lịch sử chat của bạn với AI (ở mọi kênh, mọi server)",
+        description="🧹 Xoá trí nhớ AI của bạn trong DM và mọi server",
     )
     async def resetmemory(self, interaction: discord.Interaction):
         await user_memory.clear_user(interaction.user.id)
         embed = discord.Embed(
-            description="🧹 Đã xoá sạch trí nhớ trò chuyện của bạn với bot."
+            description=(
+                "🧹 Đã xoá sạch trí nhớ trò chuyện của bạn với bot.\n"
+                "-# Cài đặt Ẩn danh, nếu đang bật, vẫn được giữ nguyên."
+            )
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -36,12 +39,12 @@ class ResetMemory(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def resetmemoryall(self, interaction: discord.Interaction):
         channel_ids = [c.id for c in interaction.guild.channels]
-        await user_memory.clear_guild(channel_ids)
+        await user_memory.clear_guild(interaction.guild.id, channel_ids)
         embed = discord.Embed(
             description=(
-                "🧹 Đã xoá lịch sử trò chuyện của mọi người **trong server này**.\n"
-                "-# Bản tóm tắt trí nhớ dài hạn (tính cách, sở thích...) của từng "
-                "người không bị ảnh hưởng, vì đó là dữ liệu gắn với họ ở mọi server."
+                "🧹 Đã xoá lịch sử và bản tóm tắt trí nhớ của mọi người "
+                "**trong server này**.\n"
+                "-# Trí nhớ DM và các server khác không bị ảnh hưởng."
             )
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)

@@ -118,12 +118,12 @@ class SearchSelect(discord.ui.Select):
         # 2. XỬ LÝ GIAO DIỆN VÀ PHÁT NHẠC
         if vc.is_playing() or vc.is_paused():
             # ==============================
-            # ⚡ KÍCH HOẠT TẢI NGẦM NGAY LẬP TỨC
+            # ⚡ Chỉ tải trước bài kế tiếp, sau một khoảng đệm ngắn
             # ==============================
             duration = int(song.get("duration") or 0)
             is_radio = song.get("source") == "radio"
-            if not is_radio and duration <= 600:
-                asyncio.create_task(preload_audio(song['url']))
+            if len(queue) == 1 and not is_radio and duration <= 600:
+                asyncio.create_task(preload_audio(song['url'], delay=3.0))
             #EMBED QUEUE
             embed = discord.Embed(
                 description=f"**{song['title']}** `[{format_duration(song['duration'])}]`",

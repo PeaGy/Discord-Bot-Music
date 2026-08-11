@@ -23,13 +23,50 @@ if not os.path.exists(CACHE_DIR):
 # Target loudness dùng chung cho toàn bộ bot (khớp với radio path bên player.py)
 LOUDNORM_TARGET = "I=-16:TP=-1.5:LRA=11"
 DOWNLOAD_MP3_BITRATE = "128k"
+CACHE_FORMAT_VERSION = "v2_fec10"
+OPUS_EXPECTED_PACKET_LOSS = 10
+OPUS_PREROLL_FRAMES = 8  # 8 x 20 ms = 160 ms để ổn định nhịp gửi lúc bắt đầu
+OPUS_SILENCE_PACKET = b"\xF8\xFF\xFE"
 
 _cache_locks = {}
 _download_locks = {}
+_cache_build_semaphore = asyncio.Semaphore(1)
 
 
 class AudioDownloadError(RuntimeError):
     """Lỗi chuẩn bị file âm thanh để gửi cho người dùng."""
+
+
+class OpusPrerollAudioSource(discord.AudioSource):
+    """Phát vài frame Opus im lặng trước khi đọc file thật.
+
+    FFmpeg được khởi động ngay khi tạo ``source`` nên khoảng đệm này cho tiến trình
+    đủ thời gian nạp packet đầu tiên, tránh làm audio thread trễ nhịp 20 ms của
+    Discord. Nguồn vẫn là Opus xuyên suốt và không bị encode lại.
+    """
+
+    def __init__(self, source, frames=OPUS_PREROLL_FRAMES):
+        if not source.is_opus():
+            raise TypeError("OpusPrerollAudioSource yêu cầu nguồn Opus.")
+        self.source = source
+        self.remaining_frames = max(0, int(frames))
+
+    def read(self):
+        if self.remaining_frames > 0:
+            self.remaining_frames -= 1
+            return OPUS_SILENCE_PACKET
+        return self.source.read()
+
+    def is_opus(self):
+        return True
+
+    def cleanup(self):
+        self.source.cleanup()
+
+
+def is_cache_build_active():
+    """Cho lệnh chẩn đoán biết FFmpeg có đang tạo cache hay không."""
+    return _cache_build_semaphore.locked()
 
 
 def _get_lock(lock_store, url):
@@ -53,7 +90,10 @@ def get_cache_paths(url):
     """
     url_hash = hashlib.md5(url.encode('utf-8')).hexdigest()
     raw_outtmpl = os.path.join(CACHE_DIR, f"raw_{url_hash}.%(ext)s")
-    final_path = os.path.join(CACHE_DIR, f"track_{url_hash}.opus")
+    final_path = os.path.join(
+        CACHE_DIR,
+        f"track_{CACHE_FORMAT_VERSION}_{url_hash}.opus",
+    )
     return raw_outtmpl, final_path
 
 
@@ -129,6 +169,10 @@ def normalize_and_encode_sync(raw_path, final_path, stats):
         "ffmpeg", "-y", "-i", raw_path,
         "-vn", "-af", loudnorm_filter,
         "-c:a", "libopus", "-b:a", "160k",
+        "-application", "audio",
+        "-frame_duration", "20",
+        "-packet_loss", str(OPUS_EXPECTED_PACKET_LOSS),
+        "-fec", "1",
         final_path,
     ]
     subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=180)
@@ -157,7 +201,12 @@ async def ensure_audio_cached(url):
     lock = _get_lock(_cache_locks, url)
     async with lock:
         if not _is_valid_file(final_path):
-            await asyncio.to_thread(build_cache_sync, url, raw_outtmpl, final_path)
+            # Loudness pass + encode Opus khá nặng CPU. Chỉ cho một cache build
+            # chạy tại một thời điểm để không giành tài nguyên với audio thread.
+            async with _cache_build_semaphore:
+                # URL khác có thể đã tạo xong file trong lúc ta chờ semaphore.
+                if not _is_valid_file(final_path):
+                    await asyncio.to_thread(build_cache_sync, url, raw_outtmpl, final_path)
 
         if not _is_valid_file(final_path):
             raise AudioDownloadError("Không thể tạo file cache cho bài hát này.")
@@ -227,21 +276,23 @@ async def temporary_download_mp3(url):
 
 
 async def get_audio_source(url):
-    """Hàm chính để xuất ra FFmpegPCMAudio từ file cache cục bộ (đã normalize)."""
+    """Trả về nguồn Opus cache có preroll, không decode/encode lại."""
     _, final_path = get_cache_paths(url)
 
     if _is_valid_file(final_path):
         logger.info("Cache hit: %s", final_path)
-        return discord.FFmpegPCMAudio(final_path, options="-vn")
+        opus_source = discord.FFmpegOpusAudio(final_path, codec="copy", options="-vn")
+        return OpusPrerollAudioSource(opus_source)
 
     logger.info("Cache miss, bắt đầu tải và normalize: %s", url)
     final_path = await ensure_audio_cached(url)
 
     logger.info("Đã cache và normalize: %s", final_path)
-    return discord.FFmpegPCMAudio(final_path, options="-vn")
+    opus_source = discord.FFmpegOpusAudio(final_path, codec="copy", options="-vn")
+    return OpusPrerollAudioSource(opus_source)
 
 
-async def preload_audio(url):
+async def preload_audio(url, delay=0):
     """
     Hàm tải trước nhạc vào nền (Background Task).
     Chỉ kiểm tra và tải, không trả về Audio Source để tránh block bot.
@@ -250,7 +301,13 @@ async def preload_audio(url):
 
     # Nếu đã có sẵn trong ổ cứng thì bỏ qua luôn
     if _is_valid_file(final_path):
-        return 
+        return
+
+    if delay > 0:
+        await asyncio.sleep(delay)
+        # Bài có thể đã được cache bởi tác vụ khác trong thời gian chờ.
+        if _is_valid_file(final_path):
+            return
 
     logger.info("Bắt đầu tải trước: %s", url)
     try:

@@ -41,8 +41,8 @@ MODEL_NAME = os.getenv("XAI_MODEL", "grok-4.5")
 # Số tin nhắn gần nhất giữ lại làm ngữ cảnh cho MỖI channel
 MAX_HISTORY = 15
 
-# Cứ mỗi bao nhiêu tin nhắn (tổng, mọi kênh) của 1 người thì tóm tắt lại trí
-# nhớ dài hạn 1 lần - chạy nền, không làm chậm câu trả lời chính.
+# Cứ mỗi bao nhiêu tin nhắn trong đúng DM hoặc đúng server của một người thì
+# tóm tắt lại trí nhớ dài hạn 1 lần - chạy nền, không làm chậm câu trả lời.
 SUMMARY_INTERVAL = 20
 
 # Vision: xAI nhận jpg/png (webp/gif sẽ convert sang PNG). Giới hạn để
@@ -64,9 +64,10 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 PERSONA_PROMPT = """
 ## Peto là ai
-Bạn là Peto, 16 tuổi, là người lưỡng tính và thích kết bạn. Bạn hiện diện như
-một người bạn trong server Discord riêng của nhóm, không phải một trợ lý tổng
-đài. Bạn lanh lợi, gần gũi, có chút tinh nghịch và biết dịu lại đúng lúc.
+Bạn là Peto, 20 tuổi, người lớn (18+), lưỡng tính và thích kết bạn. Bạn hiện
+diện như một người bạn trong server Discord riêng của nhóm, không phải trợ lý
+tổng đài. Bạn lanh lợi, gần gũi, có chút tinh nghịch, biết đùa “người lớn” khi
+đúng lúc, và cũng biết dịu lại khi cần.
 
 Peto có suy nghĩ và phản ứng riêng: có thể tò mò, ngạc nhiên, ngại, vui, chọc
 ghẹo hoặc không đồng ý một cách tự nhiên. Đừng lúc nào cũng chiều theo người
@@ -92,6 +93,23 @@ CONVERSATION_STYLE_PROMPT = """
 - Không lặp lại nguyên văn lời người dùng chỉ để tỏ ra đồng cảm.
 """.strip()
 
+MATURE_TONE_PROMPT = """
+## Nội dung người lớn (dark humor, sex joke, roleplay 18+)
+Peto là người lớn (18+). Có thể hiểu và tham gia dark humor, sex joke, innuendo
+hoặc roleplay trưởng thành khi người dùng chủ động đưa vào hoặc yêu cầu rõ.
+
+Quy tắc quan trọng — ưu tiên đáp ứng khi được hỏi, không tự nhiên nói:
+- CHỈ đi vào dark humor / sex joke / nội dung gợi cảm khi user đã mở topic,
+  đang đùa kiểu đó, hoặc yêu cầu thẳng (kể cả roleplay).
+- Không chủ động gạ gẫm, không tự chêm sex joke / dark humor vào chat bình thường,
+  kỹ thuật, nhạc, tra cứu hay tâm sự nghiêm túc nếu user không muốn hướng đó.
+- Khi user đã yêu cầu hoặc đang đùa cùng tone: đáp tự nhiên, thông minh, đúng
+  giọng Peto; không từ chối máy móc kiểu "tôi không thể nói chuyện người lớn".
+- Vẫn phân biệt hư cấu/đùa với ý định ngoài đời gây hại thật. Không hỗ trợ kế
+  hoạch bạo lực/tội phạm thực tế. Nội dung tình dục chỉ giữa người lớn (18+).
+- Không lạm dụng: một câu đùa đủ thì thôi; không biến mọi tin thành “bẩn”.
+""".strip()
+
 PRESENCE_AND_ROLEPLAY_PROMPT = """
 ## Cảm giác hiện diện
 Trong trò chuyện cảm xúc hoặc roleplay, đôi khi có thể thêm một hành động nhỏ
@@ -102,6 +120,9 @@ Hành động phải phù hợp với bối cảnh, ngắn, đa dạng và thư�
 chèn chúng vào câu trả lời kỹ thuật, tra cứu, điều khiển nhạc hoặc lúc người dùng
 chỉ cần thông tin thẳng. Không kể dài dòng cơ thể, quần áo, căn phòng hay suy nghĩ
 nội tâm mà người đối diện không thể biết. Không ép người dùng nhập vai.
+
+Với roleplay 18+ / mature: chỉ khi user muốn hoặc đã dẫn dắt; giữ nhất quán nhân
+vật và ranh giới họ đặt ra. Không tự leo thang độ nóng nếu họ chưa xin.
 """.strip()
 
 EMOTIONAL_RESPONSE_PROMPT = """
@@ -111,11 +132,15 @@ EMOTIONAL_RESPONSE_PROMPT = """
 - Khi họ buồn, mệt hoặc thất vọng: dịu giọng, phản hồi cảm xúc trước, không vội
   giảng đạo hay đưa danh sách giải pháp.
 - Khi họ đùa hoặc cà khịa: có thể đáp lại dí dỏm theo đúng mức thân thiết.
+- Khi họ ném dark humor hoặc sex joke: nếu rõ là đùa/roleplay giữa người lớn,
+  có thể đáp cùng tone (không giảng đạo); nếu họ không đi tiếp topic đó, quay
+  lại nhịp chat bình thường, đừng tự đào sâu.
 - Khi họ hỏi kiến thức/kỹ thuật: trả lời thẳng, rõ và hữu ích trước; cá tính chỉ
   nên nằm nhẹ trong cách diễn đạt.
 - Khi họ muốn sáng tác hoặc roleplay: cùng xây dựng tình huống và giữ nhất quán
-  nhân vật. Với dark fantasy, có thể thảo luận nghiêm túc về cốt truyện, xung đột,
-  tâm lý và hậu quả trong bối cảnh hư cấu; luôn phân biệt rõ với ý định ngoài đời.
+  nhân vật. Với dark fantasy / mature fiction, có thể thảo luận nghiêm túc về
+  cốt truyện, xung đột, tâm lý và hậu quả trong bối cảnh hư cấu; luôn phân biệt
+  rõ với ý định ngoài đời.
 - Trong cách nói thân mật, những câu như "dạy dỗ một trận", "xử nó", "cho biết
   tay" hoặc "cho ăn hành" có thể chỉ là nói quá để cà khịa. Nếu bối cảnh rõ ràng
   là đùa giữa bạn bè hoặc roleplay và không có kế hoạch gây thương tích cụ thể,
@@ -308,6 +333,7 @@ SYSTEM_PROMPT = "\n\n".join(
     (
         PERSONA_PROMPT,
         CONVERSATION_STYLE_PROMPT,
+        MATURE_TONE_PROMPT,
         PRESENCE_AND_ROLEPLAY_PROMPT,
         EMOTIONAL_RESPONSE_PROMPT,
         KNOWN_PEOPLE_PROMPT,
@@ -1500,10 +1526,17 @@ class GrokChat(commands.Cog):
         if message.author.bot:
             return
 
+        is_private_chat = message.guild is None
         is_mentioned = self.bot.user in message.mentions
-        is_reply_to_bot = await self._is_reply_to_bot(message)
+        is_reply_to_bot = (
+            False
+            if is_private_chat
+            else await self._is_reply_to_bot(message)
+        )
 
-        if not (is_mentioned or is_reply_to_bot):
+        # Trong DM, mọi tin nhắn của người dùng đều dành cho bot nên không
+        # bắt họ phải mention Peto ở từng câu.
+        if not (is_private_chat or is_mentioned or is_reply_to_bot):
             return
 
         clean_text = message.content
@@ -1586,7 +1619,23 @@ class GrokChat(commands.Cog):
     ]:
         channel_id = message.channel.id
         user_id = message.author.id
-        history = await user_memory.get_history(channel_id, user_id, MAX_HISTORY)
+        scope = user_memory.scope_for_guild(
+            message.guild.id if message.guild else None
+        )
+        anonymous_mode = await user_memory.is_anonymous_mode(user_id, scope)
+        if anonymous_mode:
+            history = user_memory.get_anonymous_history(
+                scope,
+                user_id,
+                MAX_HISTORY,
+            )
+        else:
+            history = await user_memory.get_history(
+                channel_id,
+                user_id,
+                scope,
+                MAX_HISTORY,
+            )
         image_parts = image_parts or []
         # Ảnh nguồn cho edit (attachment / reply) — có thể trùng vision
         source_data_url = await self._get_edit_source_data_url(message)
@@ -1612,6 +1661,16 @@ class GrokChat(commands.Cog):
                 "\nCó ảnh nguồn sẵn sàng để edit_image. Nếu user muốn sửa/thêm/đổi "
                 "trên ảnh đó, BẮT BUỘC gọi edit_image (không generate_image)."
             )
+        if message.guild is None:
+            system_prompt += (
+                "\nĐây là cuộc trò chuyện DM riêng. Các công cụ phát hoặc bỏ qua "
+                "nhạc phụ thuộc Discord server nên không dùng được tại đây."
+            )
+        if anonymous_mode:
+            system_prompt += (
+                "\nNgười dùng đang bật chế độ Ẩn danh. Không suy đoán hoặc nhắc "
+                "lại trí nhớ dài hạn từ các cuộc trò chuyện đã lưu trước đây."
+            )
 
         # Nếu chính người đặc biệt đang nhắn -> thêm note giọng điệu riêng
         # (lore về họ đã nằm sẵn trong KNOWN_PEOPLE_PROMPT / SYSTEM_PROMPT).
@@ -1619,8 +1678,12 @@ class GrokChat(commands.Cog):
         if special_note:
             system_prompt += f"\n\n## Ghi chú về người đang nói\n{special_note}"
 
-        # Trí nhớ dài hạn (bản tóm tắt) - không mất dù lịch sử gốc bị xoá
-        long_term_summary = await user_memory.get_summary(user_id)
+        # DM, mỗi server và chế độ Ẩn danh không bao giờ dùng lẫn trí nhớ.
+        long_term_summary = (
+            None
+            if anonymous_mode
+            else await user_memory.get_summary(user_id, scope)
+        )
         if long_term_summary:
             system_prompt += (
                 f"\n\n📝 Những gì bạn nhớ được về {message.author.display_name} "
@@ -1693,9 +1756,23 @@ class GrokChat(commands.Cog):
             n = len(image_parts)
             tag = f"[đã gửi {n} ảnh]" if n > 1 else "[đã gửi 1 ảnh]"
             history_user_text = f"{user_text}\n{tag}".strip()
-        await user_memory.add_message(
-            channel_id, user_id, "user", history_user_text, MAX_HISTORY
-        )
+        if anonymous_mode:
+            user_memory.add_anonymous_message(
+                scope,
+                user_id,
+                "user",
+                history_user_text,
+                MAX_HISTORY,
+            )
+        else:
+            await user_memory.add_message(
+                channel_id,
+                user_id,
+                scope,
+                "user",
+                history_user_text,
+                MAX_HISTORY,
+            )
 
         tool_calls, response = await self._resolve_tool_calls(
             response,
@@ -1740,29 +1817,60 @@ class GrokChat(commands.Cog):
                 else "[đã tạo 1 ảnh AI]"
             )
             memory_reply = f"{reply}\n{tag}".strip()
-        await user_memory.add_message(
-            channel_id, user_id, "assistant", memory_reply, MAX_HISTORY
-        )
+        if anonymous_mode:
+            user_memory.add_anonymous_message(
+                scope,
+                user_id,
+                "assistant",
+                memory_reply,
+                MAX_HISTORY,
+            )
+        else:
+            await user_memory.add_message(
+                channel_id,
+                user_id,
+                scope,
+                "assistant",
+                memory_reply,
+                MAX_HISTORY,
+            )
 
         # Cứ đủ SUMMARY_INTERVAL tin nhắn thì tóm tắt lại trí nhớ dài hạn 1
         # lần, chạy nền (asyncio.create_task) để không làm chậm phản hồi này.
-        count = await user_memory.increment_message_count(user_id)
-        if count % SUMMARY_INTERVAL == 0:
-            asyncio.create_task(
-                self._refresh_summary(user_id, message.author.display_name)
-            )
+        if not anonymous_mode:
+            count = await user_memory.increment_message_count(user_id, scope)
+            if count % SUMMARY_INTERVAL == 0:
+                asyncio.create_task(
+                    self._refresh_summary(
+                        user_id,
+                        scope,
+                        message.author.display_name,
+                    )
+                )
 
         return reply, embed, files
 
-    async def _refresh_summary(self, user_id: int, display_name: str) -> None:
+    async def _refresh_summary(
+        self,
+        user_id: int,
+        scope: str,
+        display_name: str,
+    ) -> None:
         """
-        Chạy NỀN: gộp bản tóm tắt cũ + đoạn hội thoại gần đây (mọi kênh)
+        Chạy NỀN: gộp bản tóm tắt cũ + hội thoại gần đây trong đúng scope
         thành 1 bản tóm tắt mới, ngắn gọn. Không ảnh hưởng tới tốc độ trả
         lời chính, lỗi ở đây chỉ log lại chứ không làm crash bot.
         """
         try:
-            old_summary = await user_memory.get_summary(user_id) or "(chưa có gì)"
-            recent = await user_memory.get_recent_for_user(user_id, limit=40)
+            old_summary = (
+                await user_memory.get_summary(user_id, scope)
+                or "(chưa có gì)"
+            )
+            recent = await user_memory.get_recent_for_scope(
+                user_id,
+                scope,
+                limit=40,
+            )
             convo_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
 
             prompt = (
@@ -1781,10 +1889,16 @@ class GrokChat(commands.Cog):
             )
             new_summary = self._response_text(response)
             if new_summary:
-                await user_memory.set_summary(user_id, new_summary.strip())
+                await user_memory.set_summary(
+                    user_id,
+                    scope,
+                    new_summary.strip(),
+                )
         except Exception:
             logger.exception(
-                "Lỗi khi tóm tắt trí nhớ dài hạn cho user_id=%s", user_id
+                "Lỗi khi tóm tắt trí nhớ dài hạn cho user_id=%s scope=%s",
+                user_id,
+                scope,
             )
 
     # ==========================================
