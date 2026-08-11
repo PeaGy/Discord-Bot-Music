@@ -97,6 +97,8 @@ class HelpDropdown(discord.ui.View):
                     "`/247` — Bật hoặc tắt chế độ ở lại voice\n"
                     "`/latency` — Kiểm tra độ trễ Discord\n"
                     "`/help` — Mở bảng trợ giúp này\n\n"
+                    "⬇️ **Nút Tải xuống:** Gửi riêng file MP3 cho bài tối đa 10 phút; "
+                    "không áp dụng cho radio hoặc file vượt giới hạn upload.\n\n"
                     "-# Muốn chọn Loop Off/Track/Queue đầy đủ, hãy dùng nút Loop trên Music Panel."
                 ),
             )

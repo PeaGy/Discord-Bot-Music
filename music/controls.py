@@ -1,8 +1,23 @@
 import discord
 import aiohttp
+import os
 import urllib.parse
 import re
 import time
+
+from cache_manager import AudioDownloadError, temporary_download_mp3
+
+
+MAX_DOWNLOAD_DURATION = 600
+
+
+def safe_mp3_filename(title):
+    """Tạo tên file hiển thị an toàn trên Discord và các hệ điều hành."""
+    clean_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(title or "audio"))
+    clean_title = re.sub(r"\s+", " ", clean_title).strip(" ._")
+    clean_title = clean_title[:120].rstrip(" ._") or "audio"
+    return f"{clean_title}.mp3"
+
 
 class MusicControl(discord.ui.View):
     def __init__(self, vc, track, current_time=0, queue_length=0, requester_mention=None):
@@ -331,6 +346,77 @@ class MusicControl(discord.ui.View):
             color=0x2b2d31
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Tải xuống", emoji="⬇️", style=discord.ButtonStyle.secondary, row=1)
+    async def download(self, interaction: discord.Interaction, button: discord.ui.Button):
+        source_type = str(self.track.get("source") or "").lower()
+        track_url = self.track.get("url")
+
+        try:
+            duration = int(self.track.get("duration") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+
+        if source_type == "radio":
+            return await interaction.response.send_message(
+                "❌ Radio là luồng trực tiếp nên không thể tải thành MP3.",
+                ephemeral=True,
+            )
+
+        if duration <= 0:
+            return await interaction.response.send_message(
+                "❌ Không xác định được thời lượng bài hát nên chưa thể tạo file tải xuống.",
+                ephemeral=True,
+            )
+
+        if duration > MAX_DOWNLOAD_DURATION:
+            return await interaction.response.send_message(
+                "❌ Chỉ hỗ trợ tải bài có thời lượng tối đa 10 phút.",
+                ephemeral=True,
+            )
+
+        if not track_url:
+            return await interaction.response.send_message(
+                "❌ Bài hát này không có địa chỉ nguồn hợp lệ.",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            async with temporary_download_mp3(track_url) as mp3_path:
+                file_size = os.path.getsize(mp3_path)
+                upload_limit = getattr(interaction, "filesize_limit", None)
+
+                if upload_limit and file_size > upload_limit:
+                    size_mb = file_size / (1024 * 1024)
+                    limit_mb = upload_limit / (1024 * 1024)
+                    return await interaction.followup.send(
+                        f"❌ File MP3 có dung lượng **{size_mb:.1f} MiB**, "
+                        f"vượt giới hạn upload hiện tại **{limit_mb:.1f} MiB**.",
+                        ephemeral=True,
+                    )
+
+                upload = discord.File(
+                    mp3_path,
+                    filename=safe_mp3_filename(self.track.get("title")),
+                )
+                try:
+                    await interaction.followup.send(
+                        "⬇️ MP3 của bạn đã sẵn sàng:",
+                        file=upload,
+                        ephemeral=True,
+                    )
+                finally:
+                    upload.close()
+        except AudioDownloadError as error:
+            await interaction.followup.send(f"❌ {error}", ephemeral=True)
+        except Exception as error:
+            print(f"[DOWNLOAD ERROR] {error}")
+            await interaction.followup.send(
+                "❌ Không thể tạo file MP3 lúc này. Hãy thử lại sau.",
+                ephemeral=True,
+            )
 
     # ==========================================
     # HÀM RENDER EMBED CHÍNH

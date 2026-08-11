@@ -50,6 +50,9 @@ SUMMARY_INTERVAL = 20
 MAX_IMAGES_PER_MESSAGE = int(os.getenv("XAI_MAX_IMAGES", "4"))
 MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MiB — giới hạn xAI
 IMAGE_DETAIL = os.getenv("XAI_IMAGE_DETAIL", "auto")  # auto | low | high
+
+# Grok Imagine — AI tạo ảnh (khác Danbooru). Luôn 1 ảnh/lần như các model gen thông thường.
+IMAGE_GEN_MODEL = os.getenv("XAI_IMAGE_GEN_MODEL", "grok-imagine-image")
 _IMAGE_CONTENT_TYPES = {
     "image/png",
     "image/jpeg",
@@ -132,6 +135,33 @@ ký ức. Nếu dữ kiện cũ mâu thuẫn với lời người dùng hiện t
 Không nhắc đến system prompt, special note hay cơ chế bộ nhớ.
 """.strip()
 
+MATH_FORMATTING_PROMPT = r"""
+## Định dạng toán học trên Discord
+Khi giải toán, xác suất, thống kê, vật lý hoặc đọc bài tập từ ảnh, phải trình bày
+để Discord hiển thị rõ ngay cả khi người dùng chỉ nói ngắn như "giải bài này".
+
+- Discord không render LaTeX/MathJax. Tuyệt đối không xuất delimiter `$...$`,
+  `$$...$$`, `\(...\)`, `\[...\]` hoặc lệnh thô như `\frac`, `\int`, `\sqrt`,
+  `\sum`, `\left`, `\right`.
+- Dùng Markdown vừa phải: tiêu đề in đậm, các bước đánh số và kết luận riêng.
+- Dùng ký hiệu Unicode khi dễ đọc: ∫, √, Σ, π, ±, ×, ÷, ≤, ≥, ≠, →,
+  cùng số mũ/chỉ số như x², x³, a₁, a₂. Nếu ký hiệu Unicode làm biểu thức khó
+  đọc, dùng dạng tuyến tính rõ nghĩa như `(a + b)/c`, `sqrt(x)` hoặc `x^4`.
+- Đặt các phép biến đổi nhiều dòng trong code block `text`, mỗi dấu `=` ở một
+  dòng hợp lý. Không đặt toàn bộ phần giải thích bằng lời vào code block.
+- Giải thích ngắn gọn ý nghĩa của bước đang làm; không chỉ thả một chuỗi phép
+  biến đổi. Kết thúc bằng `**Kết luận:**` hoặc `**Đáp án:**` thật rõ.
+
+Ví dụ định dạng mong muốn:
+```text
+∫₀¹ kx²(1 − x) dx = 1
+= k[x³/3 − x⁴/4]₀¹
+= k(1/3 − 1/4)
+= k/12
+```
+Sau đó viết: **Kết luận:** `k = 12`.
+""".strip()
+
 TOOL_RULES_PROMPT = """
 ## Độ chính xác và công cụ
 Kiến thức của bạn có giới hạn. Với tin tức, giá cả, thời tiết, tỷ số, sự kiện gần
@@ -145,17 +175,32 @@ QUAN TRỌNG về tool:
 - TUYỆT ĐỐI KHÔNG viết giả cú pháp tool vào câu trả lời, ví dụ:
   "tool request ...", "call tool ...", "get_danbooru_image with character is ...",
   hay JSON tool_call. Client sẽ tự thực thi tool; bạn chỉ cần gọi function.
-- Không tự tạo tên tool mới. Không hứa "Peto gửi ảnh đây" nếu chưa gọi tool.
+- Không tự tạo tên tool mới. Không hứa "Peto gửi/vẽ ảnh đây" nếu chưa gọi tool.
 
 Chỉ gọi `play_music` khi người dùng thể hiện rõ ý định muốn mở/nghe/phát nhạc.
 Chỉ gọi `skip_music` khi họ muốn bỏ qua bài đang phát. Chào hỏi, nhắc tên bài hát
 hoặc trò chuyện về âm nhạc chưa phải là lệnh phát nhạc.
 
-Khi người dùng muốn xem ảnh/hình/fanart/pic của một nhân vật hay chủ đề (vd:
-"gửi ảnh miku", "cho xem fanart Nezuko"), BẮT BUỘC gọi `get_danbooru_image`
-với tag character (dùng gạch dưới, vd hatsune_miku). Đừng chỉ mô tả hay hứa gửi.
-Tool này chỉ trả ảnh an toàn (safe); nếu người dùng xin nội dung gợi cảm/18+,
-đừng gọi tool, hãy từ chối nhẹ nhàng và gợi ý /artecchi hoặc /artnsfw trong kênh NSFW.
+## Ảnh: TẠO mới / SỬA ảnh / GỬI Danbooru — phân biệt bắt buộc
+Ba tool ảnh KHÁC NHAU, đừng nhầm:
+
+1) `edit_image` — CHỈNH SỬA ảnh user đã đính kèm (hoặc ảnh trong tin đang reply).
+   Dùng KHI có ảnh nguồn VÀ user muốn sửa/thêm/đổi/biến đổi trên ảnh đó:
+   "thêm nơ", "sửa nền", "đổi tóc", "dựa trên ảnh này vẽ thêm...", "make it night".
+   → prompt tiếng Anh mô tả THAY ĐỔI (giữ chủ thể/bố cục gốc khi hợp lý).
+   KHÔNG dùng generate_image khi đã có ảnh cần edit — sẽ ra ảnh mới lệch gốc.
+
+2) `generate_image` — AI VẼ/TẠO ảnh MỚI từ text, KHÔNG dựa ảnh đính kèm.
+   Dùng khi KHÔNG có ảnh nguồn cần edit, user nói tạo/vẽ/generate + mô tả scene.
+   Ví dụ: "tạo ảnh hatsune miku nền trắng bikini trắng chống nạnh".
+   Bikini/swimsuit SFW nghệ thuật ok; 18+/porn rõ → từ chối nhẹ.
+
+3) `get_danbooru_image` — LẤY fanart CÓ SẴN trên Danbooru (random).
+   "gửi ảnh miku", "cho xem fanart Nezuko" — không vẽ mới, không edit.
+   Chỉ safe; 18+ → /artecchi hoặc /artnsfw.
+
+Ưu tiên: có ảnh + yêu cầu chỉnh/thêm/đổi → `edit_image`.
+Không ảnh + tạo/vẽ → `generate_image`. Chỉ gửi/cho xem → `get_danbooru_image`.
 """.strip()
 
 # Alias tên hay gặp → tag Danbooru (fallback khi model không gọi tool)
@@ -253,6 +298,7 @@ SYSTEM_PROMPT = "\n\n".join(
         EMOTIONAL_RESPONSE_PROMPT,
         KNOWN_PEOPLE_PROMPT,
         CONTINUITY_PROMPT,
+        MATH_FORMATTING_PROMPT,
         TOOL_RULES_PROMPT,
         CONVERSATION_EXAMPLES_PROMPT,
     )
@@ -323,14 +369,11 @@ TOOLS = [
         "function": {
             "name": "get_danbooru_image",
             "description": (
-                "Tìm và hiển thị một ảnh anime/fanart NGẪU NHIÊN của một nhân "
-                "vật hoặc chủ đề mà người dùng muốn xem. Dùng khi người dùng "
-                "yêu cầu xem ảnh/hình/fanart của một nhân vật cụ thể, ví dụ "
-                "'cho tao xem ảnh Hatsune Miku' hoặc 'tìm ảnh Nezuko'. Tool "
-                "này LUÔN tìm ở chế độ an toàn (safe-for-work) bất kể người "
-                "dùng nói gì; không dùng cho yêu cầu nội dung nhạy cảm/18+ -"
-                "với những yêu cầu đó, từ chối và gợi ý lệnh /artecchi hoặc "
-                "/artnsfw trong kênh NSFW thay vì gọi tool này."
+                "Lấy ảnh anime/fanart CÓ SẴN (ngẫu nhiên) từ Danbooru. "
+                "Dùng khi user muốn XEM/GỬI/TÌM ảnh có sẵn, KHÔNG phải vẽ mới: "
+                "'gửi ảnh miku', 'cho xem fanart Nezuko', 'tìm ảnh rem'. "
+                "KHÔNG dùng khi user bảo tạo/vẽ/generate (dùng generate_image). "
+                "Chỉ safe-for-work; 18+ → từ chối, gợi ý /artecchi hoặc /artnsfw."
             ),
             "parameters": {
                 "type": "object",
@@ -338,13 +381,76 @@ TOOLS = [
                     "character": {
                         "type": "string",
                         "description": (
-                            "Tên nhân vật hoặc chủ đề cần tìm, viết theo dạng "
-                            "tag Danbooru (dùng dấu gạch dưới thay khoảng "
-                            "trắng), ví dụ 'hatsune_miku', 'nezuko_kamado'."
+                            "Tag Danbooru (gạch dưới), ví dụ 'hatsune_miku', "
+                            "'kamado_nezuko'."
                         ),
                     },
                 },
                 "required": ["character"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": (
+                "AI TẠO/VẼ ảnh MỚI từ text (không dùng ảnh đính kèm). "
+                "Dùng khi user tạo/vẽ/generate mà KHÔNG cần chỉnh ảnh có sẵn. "
+                "Nếu user đã gửi ảnh và muốn sửa/thêm/đổi trên ảnh đó → "
+                "dùng edit_image, KHÔNG dùng tool này. "
+                "KHÔNG dùng để lấy fanart Danbooru (get_danbooru_image). "
+                "Prompt tiếng Anh chi tiết. Luôn 1 ảnh."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "Prompt tiếng Anh chi tiết để gen ảnh, gồm chủ thể, "
+                            "trang phục, bối cảnh, tư thế, phong cách, lighting. "
+                            "Ví dụ: 'Hatsune Miku, white background, white bikini, "
+                            "hands on hips, anime style, full body, clean lineart'."
+                        ),
+                    },
+                    "aspect_ratio": {
+                        "type": "string",
+                        "description": (
+                            "Tuỳ chọn: '1:1', '16:9', '9:16', '4:3', '3:4'. "
+                            "Bỏ trống nếu không quan trọng."
+                        ),
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_image",
+            "description": (
+                "CHỈNH SỬA ảnh user đã đính kèm hoặc ảnh trong tin đang reply. "
+                "Dùng khi có ảnh nguồn và user muốn thêm/sửa/đổi/biến đổi "
+                "(thêm phụ kiện, đổi nền, đổi trang phục, style transfer...). "
+                "Client tự lấy ảnh nguồn — chỉ cần prompt mô tả thay đổi. "
+                "KHÔNG dùng generate_image cho case này. Luôn 1 ảnh kết quả."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "Prompt tiếng Anh mô tả thay đổi trên ảnh gốc. "
+                            "Nên giữ chủ thể/bố cục khi user không bảo đổi hết. "
+                            "Ví dụ: 'Add a red bow on her head, keep the same "
+                            "pose, face, and background'."
+                        ),
+                    },
+                },
+                "required": ["prompt"],
             },
         },
     },
@@ -506,20 +612,17 @@ class GrokChat(commands.Cog):
             part["detail"] = IMAGE_DETAIL
         return part
 
-    async def _collect_image_parts(
+    async def _iter_image_attachments(
         self, message: discord.Message
-    ) -> list[dict]:
-        """
-        Lấy ảnh từ tin nhắn hiện tại + tin đang reply (nếu có).
-        Không lưu base64 vào SQLite — chỉ gửi 1 lần cho model.
-        """
+    ) -> list[discord.Attachment]:
+        """Ảnh từ tin hiện tại + tin đang reply (khử trùng)."""
         candidates: list[discord.Attachment] = []
 
         for att in message.attachments:
             if self._is_image_attachment(att):
                 candidates.append(att)
 
-        # Reply vào tin có ảnh (vd: "ảnh này là gì?" reply + mention bot)
+        # Reply vào tin có ảnh (vd: "ảnh này là gì?" / "sửa ảnh này")
         if message.reference:
             resolved = message.reference.resolved
             if resolved is None and message.reference.message_id:
@@ -534,7 +637,6 @@ class GrokChat(commands.Cog):
                     if self._is_image_attachment(att):
                         candidates.append(att)
 
-        # Khử trùng theo URL
         seen: set[str] = set()
         unique: list[discord.Attachment] = []
         for att in candidates:
@@ -543,7 +645,16 @@ class GrokChat(commands.Cog):
                 continue
             seen.add(key)
             unique.append(att)
+        return unique
 
+    async def _collect_image_parts(
+        self, message: discord.Message
+    ) -> list[dict]:
+        """
+        Lấy ảnh vision (input_image) từ tin nhắn + reply.
+        Không lưu base64 vào SQLite — chỉ gửi 1 lần cho model.
+        """
+        unique = await self._iter_image_attachments(message)
         if not unique:
             return []
 
@@ -562,6 +673,27 @@ class GrokChat(commands.Cog):
                 skipped,
             )
         return parts
+
+    async def _get_edit_source_data_url(
+        self, message: discord.Message
+    ) -> str | None:
+        """
+        Ảnh nguồn cho edit_image: attachment đầu tiên (tin hiện tại hoặc reply).
+        Trả data URL jpeg/png (đã convert webp/gif nếu cần).
+        """
+        unique = await self._iter_image_attachments(message)
+        if not unique:
+            return None
+        att = unique[0]
+        if att.size and att.size > MAX_IMAGE_BYTES:
+            logger.warning("Ảnh nguồn edit quá lớn: %s", att.filename)
+            return None
+        try:
+            raw = await att.read()
+        except Exception:
+            logger.exception("Không đọc được ảnh nguồn edit")
+            return None
+        return self._bytes_to_xai_data_url(raw, self._guess_mime(att))
 
     @staticmethod
     def _to_xai_input(
@@ -700,7 +832,14 @@ class GrokChat(commands.Cog):
         return calls
 
     _KNOWN_TOOLS = frozenset(
-        {"play_music", "skip_music", "search_web", "get_danbooru_image"}
+        {
+            "play_music",
+            "skip_music",
+            "search_web",
+            "get_danbooru_image",
+            "generate_image",
+            "edit_image",
+        }
     )
 
     @classmethod
@@ -755,9 +894,9 @@ class GrokChat(commands.Cog):
                         args[c.lower()] = d.strip("'\"")
             _add(name, args)
 
-        # get_danbooru_image(character="hatsune_miku") / play_music(query="...")
+        # get_danbooru_image(...) / generate_image(...) / edit_image(...)
         for m in re.finditer(
-            r"\b(play_music|skip_music|search_web|get_danbooru_image)\s*\(([^)]*)\)",
+            r"\b(play_music|skip_music|search_web|get_danbooru_image|generate_image|edit_image)\s*\(([^)]*)\)",
             text,
             flags=re.IGNORECASE,
         ):
@@ -775,9 +914,9 @@ class GrokChat(commands.Cog):
                     pass
             _add(name, args)
 
-        # JSON-ish: {"name":"get_danbooru_image","arguments":{...}}
+        # JSON-ish: {"name":"edit_image","arguments":{...}}
         for m in re.finditer(
-            r'\{\s*"name"\s*:\s*"(play_music|skip_music|search_web|get_danbooru_image)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})',
+            r'\{\s*"name"\s*:\s*"(play_music|skip_music|search_web|get_danbooru_image|generate_image|edit_image)"\s*,\s*"arguments"\s*:\s*(\{(?:[^{}]|\{[^{}]*\})*\})',
             text,
         ):
             try:
@@ -795,13 +934,66 @@ class GrokChat(commands.Cog):
         return bool(
             re.search(r"tool\s*request\s+\w+", low)
             or re.search(
-                r"\b(get_danbooru_image|play_music|skip_music|search_web)\s*\(",
+                r"\b(get_danbooru_image|generate_image|edit_image|play_music|skip_music|search_web)\s*\(",
                 low,
             )
         )
 
     @staticmethod
+    def _user_wants_edit_image(user_text: str) -> bool:
+        """User muốn chỉnh/sửa/thêm lên ảnh có sẵn (cần kèm source image)."""
+        t = user_text.lower()
+        return bool(
+            re.search(
+                r"(sửa|sua|chỉnh|chinh|edit|modify|retouch|"
+                r"thêm|them\b|đổi|doi\b|thay\b|xoá|xoa\b|remove|add\b|"
+                r"dựa\s*trên|dua\s*tren|trên\s*ảnh|tren\s*anh|"
+                r"ảnh\s*này|anh\s*nay|cái\s*này|cai\s*nay|"
+                r"biến\s|bien\s|make\s+it|turn\s+this|based\s+on|"
+                r"thêm\s+vào|them\s+vao|vẽ\s+thêm|ve\s+them|"
+                r"tạo\s+thêm|tao\s+them|đổi\s+thành|doi\s+thanh)",
+                t,
+            )
+        )
+
+    @staticmethod
+    def _should_edit_with_source(user_text: str, has_source: bool) -> bool:
+        """
+        Có ảnh nguồn + user muốn thay đổi hình ảnh → edit, không gen mới.
+        Có ảnh + tạo/vẽ (kể cả 'thêm ...') cũng ưu tiên edit theo kỳ vọng UX.
+        """
+        if not has_source:
+            return False
+        if GrokChat._user_wants_edit_image(user_text):
+            return True
+        # Gửi ảnh + bảo tạo/vẽ/thêm gì đó → coi là edit ảnh nguồn
+        if GrokChat._user_wants_generate_image(user_text):
+            return True
+        return False
+
+    @staticmethod
+    def _user_wants_generate_image(user_text: str) -> bool:
+        """User muốn AI vẽ/tạo ảnh mới (không phải lấy fanart có sẵn)."""
+        t = user_text.lower()
+        hard_nsfw = bool(
+            re.search(r"\b(porn|hentai|loli\s*nsfw|explicit\s*sex)\b", t)
+        )
+        if hard_nsfw:
+            return False
+        # "tạo" (có dấu) / vẽ / generate — tránh nhầm "tao" = đại từ ngôi 1
+        return bool(
+            re.search(r"\btạo\b", t)
+            or re.search(r"\b(vẽ|ve|draw|generate|imagine|render)\b", t)
+            or re.search(r"\bgen\s*(ảnh|anh|image|pic)?\b", t)
+            or re.search(r"\btao\s+(giúp|anh|ảnh|hình|hinh|image)\b", t)
+            or re.search(r"thiết\s*kế\s*(ảnh|anh|hình)", t)
+        )
+
+    @staticmethod
     def _user_wants_image(user_text: str) -> bool:
+        """Xin ảnh Danbooru có sẵn — không gồm intent AI generate."""
+        if GrokChat._user_wants_generate_image(user_text):
+            return False
         t = user_text.lower()
         # xin ảnh / gửi hình / fanart / cho xem pic...
         wants = bool(
@@ -818,6 +1010,22 @@ class GrokChat(commands.Cog):
         )
         nsfw = bool(re.search(r"(nsfw|18\+|sex|hentai|nude|ecchi\b)", t))
         return wants and not nsfw
+
+    @staticmethod
+    def _infer_generate_prompt(user_text: str) -> str:
+        """Lấy mô tả ảnh từ câu user khi model không điền prompt."""
+        t = user_text.strip()
+        t = re.sub(r"<@!?\d+>", " ", t)
+        t = re.sub(
+            r"^\s*(tạo|tao|vẽ|ve|generate|imagine|gen|draw)\s*"
+            r"(giúp\s*)?(tôi|toi|tao|mình|minh|tớ|to)?\s*"
+            r"(ảnh|anh|hình|hinh|image|pic)?\s*",
+            "",
+            t,
+            flags=re.IGNORECASE,
+        )
+        t = re.sub(r"\s+", " ", t).strip(" .,!?:;")
+        return t or user_text.strip()
 
     @classmethod
     def _infer_danbooru_character(cls, user_text: str) -> str | None:
@@ -874,6 +1082,32 @@ class GrokChat(commands.Cog):
             or re.search(r"\b([2-9]|1\d)\s*(ảnh|anh|tấm|tam|pics?)\b", t)
         )
 
+    def _prefer_edit_over_generate(
+        self, calls: list[_ToolCall], *, has_source: bool, user_text: str
+    ) -> list[_ToolCall]:
+        """Nếu có ảnh nguồn + intent edit mà model gọi generate → chuyển edit_image."""
+        if not calls or not has_source:
+            return calls
+        if not self._should_edit_with_source(user_text, has_source):
+            return calls
+        out: list[_ToolCall] = []
+        for c in calls:
+            if c.name == "generate_image":
+                prompt = str((c.arguments or {}).get("prompt") or "").strip()
+                if not prompt:
+                    prompt = self._infer_generate_prompt(user_text)
+                logger.info("Rewrite generate_image → edit_image (có ảnh nguồn)")
+                out.append(
+                    _ToolCall(
+                        name="edit_image",
+                        arguments={"prompt": prompt},
+                        call_id=c.call_id,
+                    )
+                )
+            else:
+                out.append(c)
+        return out
+
     async def _resolve_tool_calls(
         self,
         response,
@@ -881,15 +1115,21 @@ class GrokChat(commands.Cog):
         user_text: str,
         system_prompt: str,
         input_messages: list,
+        has_source_image: bool = False,
     ) -> tuple[list[_ToolCall], object]:
         """
         1) function_call chuẩn từ API
         2) parse text pseudo-tool ("tool request ...")
-        3) user xin ảnh mà model quên gọi tool → force 1 lần get_danbooru_image
+        3) fallback: edit / generate / danbooru theo intent
         """
         calls = self._extract_tool_calls(response)
         if calls:
-            return calls, response
+            return (
+                self._prefer_edit_over_generate(
+                    calls, has_source=has_source_image, user_text=user_text
+                ),
+                response,
+            )
 
         text = self._response_text(response)
         calls = self._parse_tool_calls_from_text(text)
@@ -898,9 +1138,91 @@ class GrokChat(commands.Cog):
                 "Parse pseudo tool-call từ text: %s",
                 [(c.name, c.arguments) for c in calls],
             )
-            return calls, response
+            return (
+                self._prefer_edit_over_generate(
+                    calls, has_source=has_source_image, user_text=user_text
+                ),
+                response,
+            )
 
-        # Fallback: user rõ ràng xin ảnh
+        # Fallback: edit ảnh nguồn
+        if self._should_edit_with_source(user_text, has_source_image):
+            prompt = self._infer_generate_prompt(user_text)
+            logger.info("Edit intent fallback → edit_image (1 ảnh)")
+            try:
+                forced = await self._create_response(
+                    instructions=(
+                        system_prompt
+                        + "\n\nNgười dùng muốn CHỈNH SỬA ảnh đã gửi. "
+                        "BẮT BUỘC gọi edit_image với prompt tiếng Anh mô tả "
+                        "thay đổi (giữ chủ thể/bố cục khi hợp lý). "
+                        "KHÔNG dùng generate_image hay get_danbooru_image."
+                    ),
+                    input_data=input_messages,
+                    tool_choice={
+                        "type": "function",
+                        "name": "edit_image",
+                    },
+                    max_output_tokens=400,
+                    use_tools=True,
+                )
+                forced_calls = self._extract_tool_calls(forced)
+                if forced_calls:
+                    return forced_calls, forced
+            except Exception:
+                logger.exception(
+                    "Force edit_image thất bại — dùng prompt suy luận"
+                )
+            return (
+                [
+                    _ToolCall(
+                        name="edit_image",
+                        arguments={"prompt": prompt},
+                        call_id="",
+                    )
+                ],
+                response,
+            )
+
+        # Fallback: AI tạo ảnh mới (không có ảnh nguồn)
+        if self._user_wants_generate_image(user_text):
+            prompt = self._infer_generate_prompt(user_text)
+            logger.info("Generate intent fallback → generate_image (1 ảnh)")
+            try:
+                forced = await self._create_response(
+                    instructions=(
+                        system_prompt
+                        + "\n\nNgười dùng muốn AI TẠO/VẼ ảnh MỚI. "
+                        "BẮT BUỘC gọi generate_image với prompt tiếng Anh chi tiết, "
+                        "không viết text tool request, không dùng get_danbooru_image."
+                    ),
+                    input_data=input_messages,
+                    tool_choice={
+                        "type": "function",
+                        "name": "generate_image",
+                    },
+                    max_output_tokens=400,
+                    use_tools=True,
+                )
+                forced_calls = self._extract_tool_calls(forced)
+                if forced_calls:
+                    return forced_calls, forced
+            except Exception:
+                logger.exception(
+                    "Force generate_image thất bại — dùng prompt suy luận"
+                )
+            return (
+                [
+                    _ToolCall(
+                        name="generate_image",
+                        arguments={"prompt": prompt},
+                        call_id="",
+                    )
+                ],
+                response,
+            )
+
+        # Fallback: user rõ ràng xin ảnh Danbooru (có sẵn)
         if self._user_wants_image(user_text):
             character = self._infer_danbooru_character(user_text)
             if character:
@@ -912,9 +1234,9 @@ class GrokChat(commands.Cog):
                     forced = await self._create_response(
                         instructions=(
                             system_prompt
-                            + "\n\nNgười dùng đang yêu cầu ảnh. "
+                            + "\n\nNgười dùng đang yêu cầu ảnh fanart có sẵn. "
                             "BẮT BUỘC gọi get_danbooru_image ngay, "
-                            "không viết text tool request."
+                            "không viết text tool request, không generate_image."
                         ),
                         input_data=input_messages,
                         tool_choice={
@@ -1064,11 +1386,11 @@ class GrokChat(commands.Cog):
                 clean_text = "Chào bạn!"
 
         async with message.channel.typing():
-            reply_text, reply_embed = await self._ask_grok(
+            reply_text, reply_embed, reply_files = await self._ask_grok(
                 message, clean_text, image_parts=image_parts
             )
 
-        if reply_text or reply_embed:
+        if reply_text or reply_embed or reply_files:
             content = _truncate_for_discord(reply_text) if reply_text else None
             embeds: list[discord.Embed] = []
             if isinstance(reply_embed, list):
@@ -1081,6 +1403,8 @@ class GrokChat(commands.Cog):
             }
             if embeds:
                 send_kwargs["embeds"] = embeds
+            if reply_files:
+                send_kwargs["files"] = reply_files[:10]
             await message.reply(**send_kwargs)
 
     # ==========================================
@@ -1091,11 +1415,18 @@ class GrokChat(commands.Cog):
         message: discord.Message,
         user_text: str,
         image_parts: list[dict] | None = None,
-    ) -> tuple[str, discord.Embed | None]:
+    ) -> tuple[
+        str,
+        discord.Embed | list[discord.Embed] | None,
+        list[discord.File] | None,
+    ]:
         channel_id = message.channel.id
         user_id = message.author.id
         history = await user_memory.get_history(channel_id, user_id, MAX_HISTORY)
         image_parts = image_parts or []
+        # Ảnh nguồn cho edit (attachment / reply) — có thể trùng vision
+        source_data_url = await self._get_edit_source_data_url(message)
+        has_source_image = bool(source_data_url)
         # 🕒 Lấy giờ chuẩn Việt Nam (GMT+7) hiện tại
         vn_time = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=7)))
         time_str = vn_time.strftime("%H:%M:%S, ngày %d/%m/%Y")
@@ -1111,6 +1442,11 @@ class GrokChat(commands.Cog):
                 "\nNgười dùng đã đính kèm ảnh trong tin nhắn này — hãy nhìn ảnh "
                 "và phản hồi tự nhiên theo nội dung ảnh (không cần nói là bạn "
                 "đang dùng vision API)."
+            )
+        if has_source_image:
+            system_prompt += (
+                "\nCó ảnh nguồn sẵn sàng để edit_image. Nếu user muốn sửa/thêm/đổi "
+                "trên ảnh đó, BẮT BUỘC gọi edit_image (không generate_image)."
             )
 
         # Nếu chính người đặc biệt đang nhắn -> thêm note giọng điệu riêng
@@ -1145,11 +1481,13 @@ class GrokChat(commands.Cog):
                 "❌ Peto chưa đăng nhập SuperGrok. "
                 "Chủ bot chạy `python -m xai_oauth login` giúp nha.",
                 None,
+                None,
             )
         except RateLimitError:
             logger.exception("xAI rate limit")
             return (
                 "❌ Grok đang bị giới hạn tốc độ / hết quota subscription, thử lại sau nhé.",
+                None,
                 None,
             )
         except AuthenticationError:
@@ -1157,6 +1495,7 @@ class GrokChat(commands.Cog):
             return (
                 "❌ Token SuperGrok hết hạn hoặc bị thu hồi. "
                 "Chạy lại `python -m xai_oauth login` nha.",
+                None,
                 None,
             )
         except APIStatusError as e:
@@ -1167,19 +1506,21 @@ class GrokChat(commands.Cog):
                     "❌ SuperGrok OAuth bị từ chối quyền (403). "
                     "Kiểm tra gói SuperGrok hoặc thử XAI_API_KEY fallback.",
                     None,
+                    None,
                 )
             if code == 429:
                 return (
                     "❌ Grok đang bị giới hạn tốc độ, thử lại sau nhé.",
                     None,
+                    None,
                 )
-            return "❌ Có lỗi khi kết nối tới Grok, thử lại sau nhé.", None
+            return "❌ Có lỗi khi kết nối tới Grok, thử lại sau nhé.", None, None
         except APIError:
             logger.exception("Lỗi xAI API")
-            return "❌ Có lỗi khi kết nối tới Grok, thử lại sau nhé.", None
+            return "❌ Có lỗi khi kết nối tới Grok, thử lại sau nhé.", None, None
         except Exception:
             logger.exception("Lỗi không xác định khi gọi Grok API")
-            return "❌ Có lỗi khi kết nối tới Grok, thử lại sau nhé.", None
+            return "❌ Có lỗi khi kết nối tới Grok, thử lại sau nhé.", None, None
 
         # Chỉ lưu vào lịch sử SAU KHI gọi API thành công.
         # Không lưu base64 ảnh — chỉ ghi placeholder text cho ngữ cảnh sau.
@@ -1197,9 +1538,11 @@ class GrokChat(commands.Cog):
             user_text=user_text,
             system_prompt=system_prompt,
             input_messages=input_messages,
+            has_source_image=has_source_image,
         )
 
         embed = None
+        files: list[discord.File] | None = None
         if tool_calls:
             # Tạm thời chỉ xử lý tool đầu tiên được gọi (giữ hành vi cũ)
             call = tool_calls[0]
@@ -1208,9 +1551,11 @@ class GrokChat(commands.Cog):
                     response, call, system_prompt
                 )
             else:
-                # Truyền user_text để get_danbooru biết "vài ảnh"
-                reply, embed = await self._handle_tool_call(
-                    message, call, user_text=user_text
+                reply, embed, files = await self._handle_tool_call(
+                    message,
+                    call,
+                    user_text=user_text,
+                    source_data_url=source_data_url,
                 )
         else:
             reply = self._safe_content(response)
@@ -1218,11 +1563,22 @@ class GrokChat(commands.Cog):
             if self._looks_like_pseudo_tool_text(reply):
                 logger.warning("Chặn pseudo tool text: %r", reply[:200])
                 reply = (
-                    "Hửm, Peto vừa vấp tool xíu 😅 Cậu nhắc lại tên nhân vật "
-                    "muốn xem ảnh giúp Peto nha."
+                    "Hửm, Peto vừa vấp tool xíu 😅 Cậu nhắc lại giúp Peto "
+                    "(gửi ảnh / tạo ảnh / sửa ảnh) nha."
                 )
 
-        await user_memory.add_message(channel_id, user_id, "assistant", reply, MAX_HISTORY)
+        # Memory: với ảnh AI chỉ ghi tóm tắt, không lưu file
+        memory_reply = reply
+        if files:
+            tag = (
+                "[đã edit 1 ảnh AI]"
+                if tool_calls and tool_calls[0].name == "edit_image"
+                else "[đã tạo 1 ảnh AI]"
+            )
+            memory_reply = f"{reply}\n{tag}".strip()
+        await user_memory.add_message(
+            channel_id, user_id, "assistant", memory_reply, MAX_HISTORY
+        )
 
         # Cứ đủ SUMMARY_INTERVAL tin nhắn thì tóm tắt lại trí nhớ dài hạn 1
         # lần, chạy nền (asyncio.create_task) để không làm chậm phản hồi này.
@@ -1232,7 +1588,7 @@ class GrokChat(commands.Cog):
                 self._refresh_summary(user_id, message.author.display_name)
             )
 
-        return reply, embed
+        return reply, embed, files
 
     async def _refresh_summary(self, user_id: int, display_name: str) -> None:
         """
@@ -1341,31 +1697,542 @@ class GrokChat(commands.Cog):
 
         return self._safe_content(follow_up)
 
+    async def _download_image_file(
+        self, url: str, *, filename: str
+    ) -> discord.File | None:
+        """Tải ảnh từ URL (xAI imgen) thành discord.File."""
+        import aiohttp
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status >= 400:
+                        logger.warning(
+                            "Tải ảnh gen HTTP %s: %s", resp.status, url[:80]
+                        )
+                        return None
+                    data = await resp.read()
+            if not data:
+                return None
+            return discord.File(io.BytesIO(data), filename=filename)
+        except Exception:
+            logger.exception("Lỗi tải ảnh gen từ URL")
+            return None
+
+    async def _result_to_discord_files(
+        self, result, *, filename: str
+    ) -> list[discord.File]:
+        files: list[discord.File] = []
+        data = getattr(result, "data", None)
+        if data is None and isinstance(result, dict):
+            data = result.get("data")
+        for item in (data or [])[:1]:
+            if isinstance(item, dict):
+                url = item.get("url")
+                b64 = item.get("b64_json")
+            else:
+                url = getattr(item, "url", None)
+                b64 = getattr(item, "b64_json", None)
+            if b64:
+                try:
+                    raw = base64.b64decode(b64)
+                    files.append(discord.File(io.BytesIO(raw), filename=filename))
+                    break
+                except Exception:
+                    logger.exception("Decode b64 image failed")
+            if url:
+                f = await self._download_image_file(str(url), filename=filename)
+                if f:
+                    files.append(f)
+        return files
+
+    @staticmethod
+    def _image_moderation_status(result) -> bool | None:
+        """Đọc metadata moderation nếu xAI trả về, kể cả field mở rộng."""
+        value = getattr(result, "respect_moderation", None)
+        if value is None and isinstance(result, dict):
+            value = result.get("respect_moderation")
+        if value is None:
+            model_extra = getattr(result, "model_extra", None)
+            if isinstance(model_extra, dict):
+                value = model_extra.get("respect_moderation")
+        if value is None:
+            data = result.get("data") if isinstance(result, dict) else getattr(
+                result, "data", None
+            )
+            if data:
+                first = data[0]
+                value = (
+                    first.get("respect_moderation")
+                    if isinstance(first, dict)
+                    else getattr(first, "respect_moderation", None)
+                )
+        if value is None:
+            try:
+                dumped = result.model_dump()
+                if isinstance(dumped, dict):
+                    value = dumped.get("respect_moderation")
+            except (AttributeError, TypeError, ValueError):
+                pass
+
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes"}:
+                return True
+            if normalized in {"false", "0", "no"}:
+                return False
+        return None
+
+    @staticmethod
+    def _imagine_error_details(e: Exception) -> dict:
+        """Chuẩn hoá lỗi SDK/raw HTTP để phân biệt moderation và request lỗi."""
+        status = getattr(e, "status_code", None)
+        response = getattr(e, "response", None)
+        if status is None and response is not None:
+            status = getattr(response, "status_code", None)
+
+        request_id = getattr(e, "request_id", None)
+        if not request_id and response is not None:
+            headers = getattr(response, "headers", None)
+            if headers is not None:
+                request_id = headers.get("x-request-id")
+
+        body = getattr(e, "body", None)
+        if body is None and response is not None:
+            try:
+                body = response.json()
+            except Exception:
+                body = None
+
+        error_data = body.get("error", body) if isinstance(body, dict) else body
+        if isinstance(error_data, dict):
+            error_code = str(error_data.get("code") or "")
+            error_type = str(error_data.get("type") or "")
+            error_message = str(
+                error_data.get("message")
+                or error_data.get("detail")
+                or error_data.get("reason")
+                or ""
+            )
+        else:
+            error_code = ""
+            error_type = ""
+            error_message = str(error_data or e or "")
+
+        searchable = " ".join(
+            (error_code, error_type, error_message)
+        ).lower()
+        moderation_markers = (
+            "moderation",
+            "moderated",
+            "content policy",
+            "content_policy",
+            "content filter",
+            "content_filter",
+            "policy violation",
+            "policy_violation",
+            "safety filter",
+            "safety_filter",
+            "unsafe content",
+            "blocked content",
+            "content blocked",
+            "filtered by",
+        )
+        invalid_markers = (
+            "invalid_argument",
+            "invalid argument",
+            "invalid_request",
+            "invalid request",
+            "validation",
+            "unsupported",
+            "malformed",
+            "aspect_ratio",
+            "unknown model",
+            "model not found",
+        )
+
+        if any(marker in searchable for marker in moderation_markers):
+            category = "moderation"
+        elif any(marker in searchable for marker in invalid_markers):
+            category = "invalid_argument"
+        elif isinstance(e, AuthenticationError) or status == 401:
+            category = "authentication"
+        elif status == 403:
+            category = "permission"
+        elif status == 429:
+            category = "rate_limit"
+        elif status in (400, 422):
+            category = "unknown_request_error"
+        else:
+            category = "unexpected_error"
+
+        return {
+            "category": category,
+            "status": status,
+            "code": error_code,
+            "type": error_type,
+            "message": error_message,
+            "request_id": request_id,
+        }
+
+    @staticmethod
+    def _short_log_text(value, limit: int) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        return text if len(text) <= limit else text[: limit - 3] + "..."
+
+    def _imagine_error_message(
+        self,
+        e: Exception,
+        *,
+        action: str,
+        prompt: str = "",
+    ) -> str:
+        details = self._imagine_error_details(e)
+        logger.warning(
+            "Imagine request failed action=%s category=%s status=%s code=%r "
+            "type=%r request_id=%r model=%s prompt=%r message=%r",
+            action,
+            details["category"],
+            details["status"],
+            self._short_log_text(details["code"], 80),
+            self._short_log_text(details["type"], 80),
+            details["request_id"],
+            IMAGE_GEN_MODEL,
+            self._short_log_text(prompt, 240),
+            self._short_log_text(details["message"], 400),
+        )
+
+        request_id = details["request_id"]
+        support_note = f"\n-# Request ID: `{request_id}`" if request_id else ""
+        category = details["category"]
+
+        if category == "moderation":
+            return (
+                "❌ xAI đã chặn yêu cầu này bởi bộ kiểm duyệt nội dung. "
+                "Hãy thử một mô tả SFW rõ ràng hơn."
+                "\n-# Loại lỗi: `moderation`"
+                + support_note
+            )
+        if category == "invalid_argument":
+            return (
+                "❌ Request tạo ảnh không hợp lệ. Hãy kiểm tra model, prompt "
+                "và tỉ lệ ảnh."
+                "\n-# Loại lỗi: `invalid_argument`"
+                + support_note
+            )
+        if category == "authentication":
+            return (
+                "❌ Token SuperGrok không dùng được Imagine. Thử login lại nha."
+                + support_note
+            )
+        if category == "permission":
+            return (
+                "❌ SuperGrok không có quyền Imagine (403). "
+                "Kiểm tra gói hoặc XAI_API_KEY."
+                + support_note
+            )
+        if category == "rate_limit":
+            return f"❌ {action} đang bị limit, thử lại sau nhé." + support_note
+        if category == "unknown_request_error":
+            return (
+                "❌ xAI từ chối request nhưng không trả nguyên nhân đủ rõ. "
+                "Chủ bot có thể xem console để chẩn đoán."
+                "\n-# Loại lỗi: `unknown_request_error`"
+                + support_note
+            )
+        return f"❌ Có lỗi khi Peto {action}, thử lại sau nhé." + support_note
+
+    def _moderated_image_message(
+        self,
+        *,
+        action: str,
+        prompt: str,
+        result=None,
+        request_id: str | None = None,
+    ) -> str:
+        if not request_id:
+            request_id = getattr(result, "_request_id", None)
+        if not request_id and isinstance(result, dict):
+            request_id = result.get("request_id") or result.get("id")
+
+        logger.warning(
+            "Imagine result filtered action=%s category=moderation "
+            "request_id=%r model=%s prompt=%r",
+            action,
+            request_id,
+            IMAGE_GEN_MODEL,
+            self._short_log_text(prompt, 240),
+        )
+        support_note = f"\n-# Request ID: `{request_id}`" if request_id else ""
+        return (
+            "❌ xAI đã chặn kết quả bởi bộ kiểm duyệt nội dung. "
+            "Hãy thử một mô tả SFW rõ ràng hơn."
+            "\n-# Loại lỗi: `moderation`"
+            + support_note
+        )
+
+    async def _handle_generate_image(
+        self, args: dict, *, user_text: str = ""
+    ) -> tuple[str, None, list[discord.File] | None]:
+        """Gọi Grok Imagine text→image → 1 file Discord."""
+        prompt = str(args.get("prompt") or "").strip()
+        if not prompt and user_text:
+            prompt = self._infer_generate_prompt(user_text)
+        if not prompt:
+            return (
+                "❌ Peto chưa rõ cậu muốn vẽ gì, mô tả chi tiết giúp nha.",
+                None,
+                None,
+            )
+
+        aspect = str(args.get("aspect_ratio") or "").strip()
+        valid_ratios = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
+        if aspect and aspect not in valid_ratios:
+            aspect = ""
+
+        await self._prepare_client()
+        try:
+            gen_kwargs: dict = {
+                "model": IMAGE_GEN_MODEL,
+                "prompt": prompt,
+                "n": 1,
+            }
+            if aspect:
+                gen_kwargs["extra_body"] = {"aspect_ratio": aspect}
+            result = await self.client.images.generate(**gen_kwargs)
+        except AuthenticationError:
+            try:
+                await self.oauth.get_access_token(force_refresh=True)
+                await self._prepare_client()
+                result = await self.client.images.generate(
+                    model=IMAGE_GEN_MODEL,
+                    prompt=prompt,
+                    n=1,
+                    **(
+                        {"extra_body": {"aspect_ratio": aspect}} if aspect else {}
+                    ),
+                )
+            except Exception as e:
+                return (
+                    self._imagine_error_message(
+                        e, action="vẽ ảnh", prompt=prompt
+                    ),
+                    None,
+                    None,
+                )
+        except APIStatusError as e:
+            return (
+                self._imagine_error_message(e, action="vẽ ảnh", prompt=prompt),
+                None,
+                None,
+            )
+        except Exception as e:
+            logger.exception("generate_image unexpected failure")
+            return (
+                self._imagine_error_message(e, action="vẽ ảnh", prompt=prompt),
+                None,
+                None,
+            )
+
+        if self._image_moderation_status(result) is False:
+            return (
+                self._moderated_image_message(
+                    action="vẽ ảnh", prompt=prompt, result=result
+                ),
+                None,
+                None,
+            )
+
+        files = await self._result_to_discord_files(
+            result, filename="peto_imagine.png"
+        )
+        if not files:
+            logger.warning(
+                "Imagine empty result action=vẽ ảnh category=empty_result "
+                "request_id=%r model=%s prompt=%r",
+                getattr(result, "_request_id", None),
+                IMAGE_GEN_MODEL,
+                self._short_log_text(prompt, 240),
+            )
+            return (
+                "❌ xAI không trả file ảnh và cũng không cung cấp trạng thái "
+                "moderation rõ ràng. Chủ bot hãy xem console."
+                "\n-# Loại lỗi: `empty_result`",
+                None,
+                None,
+            )
+
+        short_prompt = prompt if len(prompt) <= 120 else prompt[:117] + "..."
+        caption = f"✨ Peto vẽ xong nè!\n-# prompt: {short_prompt}"
+        return caption, None, files
+
+    async def _handle_edit_image(
+        self,
+        args: dict,
+        *,
+        user_text: str = "",
+        source_data_url: str | None = None,
+    ) -> tuple[str, None, list[discord.File] | None]:
+        """Gọi Grok Imagine /images/edits với ảnh nguồn Discord → 1 file."""
+        prompt = str(args.get("prompt") or "").strip()
+        if not prompt and user_text:
+            prompt = self._infer_generate_prompt(user_text)
+        if not prompt:
+            return (
+                "❌ Peto chưa rõ cậu muốn sửa gì trên ảnh, nói rõ giúp nha.",
+                None,
+                None,
+            )
+        if not source_data_url:
+            return (
+                "❌ Peto không thấy ảnh nguồn để sửa. "
+                "Đính kèm ảnh (hoặc reply tin có ảnh) rồi thử lại nha.",
+                None,
+                None,
+            )
+
+        import aiohttp
+        from xai_oauth import XAI_API_BASE
+
+        base = (os.getenv("XAI_BASE_URL") or XAI_API_BASE).rstrip("/")
+        payload = {
+            "model": IMAGE_GEN_MODEL,
+            "prompt": prompt,
+            "image": {"url": source_data_url, "type": "image_url"},
+        }
+
+        async def _post_edit(
+            token: str,
+        ) -> tuple[int, dict | str, str | None]:
+            timeout = aiohttp.ClientTimeout(total=180)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{base}/images/edits",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    },
+                    json=payload,
+                ) as resp:
+                    text = await resp.text()
+                    try:
+                        body = json.loads(text) if text else {}
+                    except json.JSONDecodeError:
+                        body = text
+                    return resp.status, body, resp.headers.get("x-request-id")
+
+        try:
+            token = await self.oauth.get_access_token()
+            status, body, request_id = await _post_edit(token)
+            if status == 401:
+                token = await self.oauth.get_access_token(force_refresh=True)
+                status, body, request_id = await _post_edit(token)
+        except Exception as e:
+            logger.exception("edit_image request failed")
+            return (
+                self._imagine_error_message(e, action="sửa ảnh", prompt=prompt),
+                None,
+                None,
+            )
+
+        if status >= 400:
+            class _E(Exception):
+                def __init__(self, code, error_body, error_request_id):
+                    self.status_code = code
+                    self.body = error_body
+                    self.request_id = error_request_id
+
+            return (
+                self._imagine_error_message(
+                    _E(status, body, request_id),
+                    action="sửa ảnh",
+                    prompt=prompt,
+                ),
+                None,
+                None,
+            )
+
+        if self._image_moderation_status(body) is False:
+            return (
+                self._moderated_image_message(
+                    action="sửa ảnh",
+                    prompt=prompt,
+                    result=body,
+                    request_id=request_id,
+                ),
+                None,
+                None,
+            )
+
+        files = await self._result_to_discord_files(
+            body if isinstance(body, dict) else {"data": []},
+            filename="peto_edit.png",
+        )
+        if not files:
+            logger.warning(
+                "Imagine empty result action=sửa ảnh category=empty_result "
+                "request_id=%r model=%s prompt=%r",
+                request_id,
+                IMAGE_GEN_MODEL,
+                self._short_log_text(prompt, 240),
+            )
+            return (
+                "❌ xAI không trả file ảnh chỉnh sửa và cũng không cung cấp "
+                "trạng thái moderation rõ ràng. Chủ bot hãy xem console."
+                "\n-# Loại lỗi: `empty_result`",
+                None,
+                None,
+            )
+
+        short_prompt = prompt if len(prompt) <= 120 else prompt[:117] + "..."
+        caption = f"✨ Peto chỉnh ảnh xong nè!\n-# edit: {short_prompt}"
+        return caption, None, files
+
     async def _handle_tool_call(
         self,
         message: discord.Message,
         call: _ToolCall,
         *,
         user_text: str = "",
-    ) -> tuple[str, discord.Embed | list[discord.Embed] | None]:
+        source_data_url: str | None = None,
+    ) -> tuple[
+        str,
+        discord.Embed | list[discord.Embed] | None,
+        list[discord.File] | None,
+    ]:
         """
         Bóc tách tên hàm + tham số mà model quyết định gọi, rồi gọi thẳng vào
         các hàm dùng chung trong music/player.py (cùng chỗ mà /play và /skip
         cũng gọi vào).
 
-        Trả về (text, embed|embeds) - embed là None với tool hành động thuần;
-        get_danbooru_image có thể trả 1 embed hoặc list embeds.
+        Trả về (text, embed|embeds, files) —
+        - play/skip: embed=None, files=None
+        - get_danbooru_image: embeds, files=None
+        - generate_image / edit_image: embed=None, files=[...]
         """
         name = call.name
         args = dict(call.arguments or {})
+
+        # Có ảnh nguồn + intent edit mà model vẫn gọi generate → ép edit
+        if (
+            name == "generate_image"
+            and source_data_url
+            and self._should_edit_with_source(user_text, True)
+        ):
+            logger.info("Redirect generate_image → edit_image tại handler")
+            name = "edit_image"
 
         if name == "play_music":
             query = args.get("query", "")
 
             if not message.guild:
-                return "❌ Lệnh này chỉ dùng được trong server nhé.", None
+                return "❌ Lệnh này chỉ dùng được trong server nhé.", None, None
             if not message.author.voice or not message.author.voice.channel:
-                return "❌ Bạn cần vào một kênh voice trước đã nhé.", None
+                return "❌ Bạn cần vào một kênh voice trước đã nhé.", None, None
 
             from music.player import play_song_by_query
 
@@ -1378,19 +2245,23 @@ class GrokChat(commands.Cog):
                 query=query,
             )
             if not result["ok"]:
-                return f"❌ {result['reason']}", None
-            return f"🎵 Đã thêm vào hàng đợi: **{result['song']['title']}**", None
+                return f"❌ {result['reason']}", None, None
+            return (
+                f"🎵 Đã thêm vào hàng đợi: **{result['song']['title']}**",
+                None,
+                None,
+            )
 
         if name == "skip_music":
             if not message.guild:
-                return "❌ Lệnh này chỉ dùng được trong server nhé.", None
+                return "❌ Lệnh này chỉ dùng được trong server nhé.", None, None
 
             from music.player import skip_current
 
             result = skip_current(message.guild)
             if not result["ok"]:
-                return f"❌ {result['reason']}", None
-            return "⏭️ Đã bỏ qua bài hiện tại.", None
+                return f"❌ {result['reason']}", None, None
+            return "⏭️ Đã bỏ qua bài hiện tại.", None, None
 
         if name == "get_danbooru_image":
             character = str(args.get("character", "")).strip()
@@ -1400,6 +2271,7 @@ class GrokChat(commands.Cog):
                 return (
                     "❌ Peto chưa biết cậu muốn xem ảnh của ai, nói rõ tên "
                     "nhân vật thử nha.",
+                    None,
                     None,
                 )
             # Chuẩn hoá nhẹ: spaces → underscore
@@ -1424,11 +2296,12 @@ class GrokChat(commands.Cog):
                 )
             except Exception:
                 logger.exception("Lỗi khi gọi Danbooru từ ai_chat")
-                return "❌ Có lỗi khi Peto tìm ảnh, thử lại sau nhé.", None
+                return "❌ Có lỗi khi Peto tìm ảnh, thử lại sau nhé.", None, None
 
             if not posts:
                 return (
                     f"❌ Peto không tìm thấy ảnh nào khớp với `{character}` cả 😢",
+                    None,
                     None,
                 )
 
@@ -1437,13 +2310,27 @@ class GrokChat(commands.Cog):
                 return (
                     f"🎨 Đây nè, ảnh về **{character}** Peto tìm được đó!",
                     embeds[0],
+                    None,
                 )
             return (
                 f"🎨 Đây nè, {len(embeds)} ảnh về **{character}** nha!",
                 embeds,
+                None,
             )
 
-        return f"⚠️ Model gọi tool không xác định: {name}", None
+        if name == "generate_image":
+            return await self._handle_generate_image(args, user_text=user_text)
+
+        if name == "edit_image":
+            # Lấy lại source nếu chưa có (vd: pseudo-tool)
+            src = source_data_url
+            if not src:
+                src = await self._get_edit_source_data_url(message)
+            return await self._handle_edit_image(
+                args, user_text=user_text, source_data_url=src
+            )
+
+        return f"⚠️ Model gọi tool không xác định: {name}", None, None
 
 
 async def setup(bot: commands.Bot):

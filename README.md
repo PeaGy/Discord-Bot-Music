@@ -11,7 +11,7 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Phát nhạc từ từ khóa, YouTube, SoundCloud và liên kết Spotify track.
 - Tìm kiếm YouTube với menu chọn 5 kết quả.
 - Hàng đợi, quay lại bài trước, tạm dừng, tiếp tục, bỏ bài và dừng phát.
-- Music Panel có nút điều khiển, thanh tiến trình, loop track/queue và autoplay.
+- Music Panel có nút điều khiển, thanh tiến trình, loop track/queue, autoplay và tải MP3 riêng tư.
 - Autoplay lấy bài liên quan từ YouTube Mix hoặc kết quả tìm kiếm dự phòng.
 - Radio internet từ Radio Browser với giao diện phân trang.
 - Lấy lời bài hát từ LRCLIB.
@@ -44,7 +44,7 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 ## Yêu cầu
 
 - Python 3.10 trở lên.
-- FFmpeg có `libopus` và có thể gọi bằng lệnh `ffmpeg`.
+- FFmpeg có `libopus`, `libmp3lame` và có thể gọi bằng lệnh `ffmpeg`.
 - Một Discord Bot Token.
 - Tài khoản SuperGrok đã đăng nhập hoặc xAI API key.
 - Tavily API key.
@@ -273,6 +273,8 @@ Từ khóa hoặc URL
 ```
 
 Nếu đã có bài hợp lệ trong `audio_cache/`, bot phát lại file cục bộ. Trong lúc bài hiện tại đang chạy, bài kế tiếp có thể được tải trước ở background.
+
+Nút **Tải xuống** trên Music Panel hỗ trợ bài có thời lượng tối đa 10 phút. Bot chuyển bản cache Opus sang MP3 128 kbps, gửi riêng cho người bấm và xóa MP3 tạm sau khi gửi. Radio, bài không xác định thời lượng và file vượt giới hạn upload hiện tại của Discord sẽ không được gửi.
 
 ## Cấu trúc dự án
 

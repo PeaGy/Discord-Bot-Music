@@ -3,6 +3,9 @@ import json
 import hashlib
 import asyncio
 import subprocess
+import tempfile
+from contextlib import asynccontextmanager
+
 import yt_dlp
 import discord
 
@@ -15,6 +18,27 @@ if not os.path.exists(CACHE_DIR):
 
 # Target loudness dùng chung cho toàn bộ bot (khớp với radio path bên player.py)
 LOUDNORM_TARGET = "I=-16:TP=-1.5:LRA=11"
+DOWNLOAD_MP3_BITRATE = "128k"
+
+_cache_locks = {}
+_download_locks = {}
+
+
+class AudioDownloadError(RuntimeError):
+    """Lỗi chuẩn bị file âm thanh để gửi cho người dùng."""
+
+
+def _get_lock(lock_store, url):
+    lock_key = hashlib.md5(url.encode("utf-8")).hexdigest()
+    lock = lock_store.get(lock_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        lock_store[lock_key] = lock
+    return lock
+
+
+def _is_valid_file(path):
+    return os.path.exists(path) and os.path.getsize(path) > 0
 
 
 def get_cache_paths(url):
@@ -119,18 +143,95 @@ def build_cache_sync(url, raw_outtmpl, final_path):
             pass
 
 
-async def get_audio_source(url):
-    """Hàm chính để xuất ra FFmpegPCMAudio từ file cache cục bộ (đã normalize)."""
+async def ensure_audio_cached(url):
+    """Trả về file Opus cache, tránh tải/encode trùng cùng một URL."""
     raw_outtmpl, final_path = get_cache_paths(url)
 
-    # 1. Cache Hit (file đã tồn tại và không bị lỗi 0 byte)
-    if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+    if _is_valid_file(final_path):
+        return final_path
+
+    lock = _get_lock(_cache_locks, url)
+    async with lock:
+        if not _is_valid_file(final_path):
+            await asyncio.to_thread(build_cache_sync, url, raw_outtmpl, final_path)
+
+        if not _is_valid_file(final_path):
+            raise AudioDownloadError("Không thể tạo file cache cho bài hát này.")
+
+    return final_path
+
+
+def _create_download_mp3_sync(source_path):
+    """Chuyển file Opus cache sang một MP3 tạm thời."""
+    file_descriptor, mp3_path = tempfile.mkstemp(
+        prefix="download_",
+        suffix=".mp3",
+        dir=CACHE_DIR,
+    )
+    os.close(file_descriptor)
+
+    cmd = [
+        "ffmpeg", "-y", "-i", source_path,
+        "-vn", "-c:a", "libmp3lame", "-b:a", DOWNLOAD_MP3_BITRATE,
+        mp3_path,
+    ]
+
+    try:
+        subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=180,
+        )
+        if not _is_valid_file(mp3_path):
+            raise AudioDownloadError("FFmpeg không tạo được file MP3 hợp lệ.")
+        return mp3_path
+    except (
+        AudioDownloadError,
+        OSError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        try:
+            os.remove(mp3_path)
+        except OSError:
+            pass
+        raise AudioDownloadError("Không thể chuyển bài hát sang MP3.") from error
+
+
+@asynccontextmanager
+async def temporary_download_mp3(url):
+    """Tạo MP3 tạm, khóa theo URL và tự xóa sau khi gửi xong."""
+    source_path = await ensure_audio_cached(url)
+    lock = _get_lock(_download_locks, url)
+
+    async with lock:
+        mp3_path = None
+        try:
+            mp3_path = await asyncio.to_thread(
+                _create_download_mp3_sync,
+                source_path,
+            )
+            yield mp3_path
+        finally:
+            if mp3_path:
+                try:
+                    os.remove(mp3_path)
+                except OSError:
+                    pass
+
+
+async def get_audio_source(url):
+    """Hàm chính để xuất ra FFmpegPCMAudio từ file cache cục bộ (đã normalize)."""
+    _, final_path = get_cache_paths(url)
+
+    if _is_valid_file(final_path):
         print(f"🎵 [CACHE HIT] Đang phát file cục bộ (đã normalize): {final_path}")
         return discord.FFmpegPCMAudio(final_path, options="-vn")
 
     print(f"⬇️ [CACHE MISS] Tải, đo loudness (pass 1) & normalize (pass 2): {url}")
-    # 2. Tải + đo + encode ngầm bằng asyncio.to_thread (không block event loop của bot)
-    await asyncio.to_thread(build_cache_sync, url, raw_outtmpl, final_path)
+    final_path = await ensure_audio_cached(url)
 
     print(f"✅ Đã cache + normalize xong, bắt đầu phát!")
     return discord.FFmpegPCMAudio(final_path, options="-vn")
@@ -141,16 +242,15 @@ async def preload_audio(url):
     Hàm tải trước nhạc vào nền (Background Task).
     Chỉ kiểm tra và tải, không trả về Audio Source để tránh block bot.
     """
-    raw_outtmpl, final_path = get_cache_paths(url)
+    _, final_path = get_cache_paths(url)
 
     # Nếu đã có sẵn trong ổ cứng thì bỏ qua luôn
-    if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+    if _is_valid_file(final_path):
         return 
 
     print(f"🔄 [PRELOAD] Đang âm thầm tải trước bài hát vào Cache...")
     try:
-        # Tải ngầm bằng asyncio to_thread
-        await asyncio.to_thread(build_cache_sync, url, raw_outtmpl, final_path)
+        await ensure_audio_cached(url)
         print(f"✅ [PRELOAD] Tải trước thành công! Bài tiếp theo đã sẵn sàng.")
     except Exception as e:
         print(f"❌ [PRELOAD LỖI]: Không thể tải trước - {e}")
