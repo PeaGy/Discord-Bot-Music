@@ -3,6 +3,8 @@ from discord import app_commands
 from discord.ext import commands
 import math
 
+from music.state import get_guild_state
+
 # Hàm chuyển đổi giây sang định dạng MM:SS
 def format_duration(seconds):
     if not seconds:
@@ -94,8 +96,9 @@ class QueueCommand(commands.Cog):
         if not vc or not vc.is_connected():
             return await interaction.response.send_message("❌ **Không có nhạc nào đang phát!**", ephemeral=True)
 
-        # Import danh sách phát và lịch sử từ file kiến trúc chính
-        from music.player import queue, history
+        state = get_guild_state(interaction.guild)
+        queue = state.queue
+        history = state.history
 
         # Lấy bài hát hiện tại từ cuối danh sách lịch sử
         current_song = history[-1] if history else None

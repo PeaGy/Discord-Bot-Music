@@ -1,14 +1,25 @@
 import discord
 import aiohttp
+import logging
 import os
 import urllib.parse
 import re
 import time
 
 from cache_manager import AudioDownloadError, temporary_download_mp3
+import music_library
+from music.state import get_guild_state
+
+
+logger = logging.getLogger(__name__)
 
 
 MAX_DOWNLOAD_DURATION = 600
+PANEL_ACCENT_COLOR = 0x5865F2
+PANEL_MUTED_COLOR = 0x2B2D31
+PANEL_ERROR_COLOR = 0xED4245
+PANEL_SUCCESS_COLOR = 0x57F287
+PANEL_ALLOWED_MENTIONS = discord.AllowedMentions.none()
 
 
 def safe_mp3_filename(title):
@@ -19,7 +30,158 @@ def safe_mp3_filename(title):
     return f"{clean_title}.mp3"
 
 
-class MusicControl(discord.ui.View):
+def _safe_text(value, fallback="Unknown"):
+    return discord.utils.escape_markdown(str(value or fallback), as_needed=True)
+
+
+def _thumbnail_url(value):
+    value = str(value or "").strip()
+    return value if value.startswith(("https://", "http://")) else None
+
+
+def _linked_title(track):
+    title = _safe_text(track.get("title"), "Unknown Track")
+    url = str(track.get("url") or "").strip()
+    if url.startswith(("https://", "http://")):
+        return f"[{title}]({url})"
+    return title
+
+
+class MusicStatusPanel(discord.ui.LayoutView):
+    """Panel V2 gọn cho các trạng thái tải, lỗi, radio, dừng và hết queue."""
+
+    def __init__(
+        self,
+        *,
+        heading,
+        description,
+        accent_color=PANEL_MUTED_COLOR,
+        thumbnail_url=None,
+        link_button=None,
+    ):
+        super().__init__(timeout=None)
+
+        content = discord.ui.TextDisplay(f"### {heading}\n{description}")
+        thumbnail_url = _thumbnail_url(thumbnail_url)
+        if thumbnail_url:
+            header = discord.ui.Section(
+                content,
+                accessory=discord.ui.Thumbnail(
+                    thumbnail_url,
+                    description="Ảnh đại diện của nội dung đang phát",
+                ),
+            )
+        else:
+            header = content
+
+        children = [header]
+        if link_button:
+            label, url, emoji = link_button
+            row = discord.ui.ActionRow(
+                discord.ui.Button(
+                    label=label,
+                    url=url,
+                    emoji=emoji,
+                    style=discord.ButtonStyle.link,
+                )
+            )
+            children.extend((discord.ui.Separator(), row))
+
+        self.add_item(
+            discord.ui.Container(
+                *children,
+                accent_color=accent_color,
+            )
+        )
+
+
+def create_loading_panel(track):
+    return MusicStatusPanel(
+        heading="⏳ ĐANG CHUẨN BỊ",
+        description=(
+            f"**{_safe_text(track.get('title'), 'Unknown')}**\n"
+            "-# Bot đang tải và chuẩn hóa âm thanh, vui lòng đợi một chút..."
+        ),
+        accent_color=PANEL_ACCENT_COLOR,
+        thumbnail_url=track.get("thumbnail"),
+    )
+
+
+def create_error_panel(track):
+    return MusicStatusPanel(
+        heading="❌ KHÔNG THỂ PHÁT",
+        description=(
+            f"**{_safe_text(track.get('title'), 'Unknown')}**\n"
+            "-# Bài này sẽ được bỏ qua để tiếp tục hàng đợi."
+        ),
+        accent_color=PANEL_ERROR_COLOR,
+        thumbnail_url=track.get("thumbnail"),
+    )
+
+
+def create_stopped_panel():
+    return MusicStatusPanel(
+        heading="⏹️ ĐÃ DỪNG PHÁT NHẠC",
+        description="-# Hàng đợi đã được xóa và bot đã rời kênh thoại.",
+        accent_color=PANEL_ERROR_COLOR,
+    )
+
+
+def create_queue_ended_panel(bot_user=None):
+    avatar_url = None
+    display_name = "Bot"
+    if bot_user is not None:
+        display_name = _safe_text(getattr(bot_user, "display_name", None), "Bot")
+        avatar = getattr(bot_user, "display_avatar", None)
+        avatar_url = getattr(avatar, "url", None)
+
+    return MusicStatusPanel(
+        heading="✨ HẾT HÀNG ĐỢI",
+        description=(
+            "Tất cả bài hát đã được phát xong.\n"
+            f"-# Dùng `/play` hoặc `/search` để nghe tiếp cùng {display_name}."
+        ),
+        accent_color=PANEL_SUCCESS_COLOR,
+        thumbnail_url=avatar_url,
+        link_button=(
+            "Đô nết me",
+            "https://www.facebook.com/peagy.simp.lo/",
+            "🤑",
+        ),
+    )
+
+
+def create_radio_panel(track, requester_mention="Autoplay"):
+    return MusicStatusPanel(
+        heading="🍐 RADIO PANEL",
+        description=(
+            f"**{_safe_text(track.get('title'), 'Unknown Radio')}**\n"
+            f"-# 📻 Phát trực tiếp • Yêu cầu bởi {requester_mention or 'Autoplay'}"
+        ),
+        accent_color=PANEL_ACCENT_COLOR,
+        thumbnail_url=track.get("thumbnail"),
+    )
+
+
+async def edit_panel_message(message, view):
+    """Đổi cả panel cũ hoặc V2 sang LayoutView mà không giữ embed/content."""
+    return await message.edit(
+        content=None,
+        embed=None,
+        attachments=[],
+        view=view,
+        allowed_mentions=PANEL_ALLOWED_MENTIONS,
+    )
+
+
+async def send_panel_message(channel, view):
+    return await channel.send(
+        view=view,
+        allowed_mentions=PANEL_ALLOWED_MENTIONS,
+    )
+
+
+class MusicControl(discord.ui.LayoutView):
     def __init__(self, vc, track, current_time=0, queue_length=0, requester_mention=None):
         super().__init__(timeout=None)
         self.vc = vc
@@ -27,47 +189,122 @@ class MusicControl(discord.ui.View):
         self.current_time = current_time
         self.queue_length = queue_length
         self.requester_mention = requester_mention
-        # ==========================================
-        # FIX LỖI 1: ĐỒNG BỘ TRẠNG THÁI NÚT BẤM KHI RENDER LẠI UI
-        # ==========================================
-        # Khởi tạo biến loop_mode cho vc nếu chưa có
-        if not hasattr(self.vc, "loop_mode"):
-            self.vc.loop_mode = "off"
 
-        # Import autoplay_guilds để check trạng thái autoplay
-        try:
-            from music.player import autoplay_guilds
-            guild_id = self.vc.guild.id
-        except ImportError:
-            autoplay_guilds = set()
-            guild_id = None
+        self.header_text = discord.ui.TextDisplay("")
+        thumbnail_url = _thumbnail_url(track.get("thumbnail"))
+        if thumbnail_url:
+            header = discord.ui.Section(
+                self.header_text,
+                accessory=discord.ui.Thumbnail(
+                    thumbnail_url,
+                    description=f"Ảnh bìa của {_safe_text(track.get('title'), 'bài hát')}",
+                ),
+            )
+        else:
+            header = self.header_text
 
-        # Duyệt qua các nút và cập nhật hiển thị theo đúng biến hệ thống
-        for child in self.children:
-            if isinstance(child, discord.ui.Button):
-                # Đồng bộ nút Loop
-                if child.label and "Loop" in child.label:
-                    if self.vc.loop_mode == "track":
-                        child.label = "Loop Track"
-                        child.emoji = "🔂"
-                        child.style = discord.ButtonStyle.success
-                    elif self.vc.loop_mode == "queue":
-                        child.label = "Loop Queue"
-                        child.emoji = "🔁"
-                        child.style = discord.ButtonStyle.success
-                    else:
-                        child.label = "Loop Off"
-                        child.emoji = "➡️"
-                        child.style = discord.ButtonStyle.secondary
-                
-                # Đồng bộ nút Autoplay
-                if child.label and "Autoplay" in child.label and guild_id:
-                    if guild_id in autoplay_guilds:
-                        child.label = "Autoplay On"
-                        child.style = discord.ButtonStyle.success
-                    else:
-                        child.label = "Autoplay Off"
-                        child.style = discord.ButtonStyle.secondary
+        self.progress_text = discord.ui.TextDisplay("")
+        self.footer_text = discord.ui.TextDisplay("")
+        self.primary_row = discord.ui.ActionRow()
+        self.secondary_row = discord.ui.ActionRow()
+
+        # Hàng một: nút Yêu thích được đặt lên đầu theo yêu cầu.
+        self.favorite_button = self._add_button(
+            self.primary_row, self.favorite, label="Yêu thích", emoji="❤️"
+        )
+        self.back_button = self._add_button(
+            self.primary_row, self.back, label="Back", emoji="⏮️"
+        )
+        self.pause_button = self._add_button(
+            self.primary_row, self.pause, label="Pause", emoji="⏸️"
+        )
+        self.skip_button = self._add_button(
+            self.primary_row, self.skip, label="Skip", emoji="⏭️"
+        )
+        self.stop_button = self._add_button(
+            self.primary_row,
+            self.stop_playback,
+            label="Stop",
+            emoji="⏹️",
+            style=discord.ButtonStyle.danger,
+        )
+
+        self.loop_button = self._add_button(
+            self.secondary_row, self.loop_btn, label="Loop Off", emoji="➡️"
+        )
+        self.autoplay_button = self._add_button(
+            self.secondary_row, self.autoplay_btn, label="Autoplay Off", emoji="🔀"
+        )
+        self.lyric_button = self._add_button(
+            self.secondary_row, self.lyric, label="Lyric", emoji="📝"
+        )
+        self.download_button = self._add_button(
+            self.secondary_row, self.download, label="Tải xuống", emoji="⬇️"
+        )
+
+        self.panel_container = discord.ui.Container(
+            header,
+            discord.ui.Separator(),
+            self.progress_text,
+            self.footer_text,
+            discord.ui.Separator(),
+            self.primary_row,
+            self.secondary_row,
+            accent_color=PANEL_ACCENT_COLOR,
+        )
+        self.add_item(self.panel_container)
+        self._sync_button_states()
+        self.refresh_layout()
+
+    def _add_button(
+        self,
+        row,
+        handler,
+        *,
+        label,
+        emoji,
+        style=discord.ButtonStyle.secondary,
+    ):
+        button = discord.ui.Button(label=label, emoji=emoji, style=style)
+
+        async def callback(interaction):
+            await handler(interaction, button)
+
+        button.callback = callback
+        row.add_item(button)
+        return button
+
+    def _sync_button_states(self):
+        state = get_guild_state(self.vc.guild)
+
+        if state.loop_mode == "track":
+            self.loop_button.label = "Loop Track"
+            self.loop_button.emoji = "🔂"
+            self.loop_button.style = discord.ButtonStyle.success
+        elif state.loop_mode == "queue":
+            self.loop_button.label = "Loop Queue"
+            self.loop_button.emoji = "🔁"
+            self.loop_button.style = discord.ButtonStyle.success
+        else:
+            self.loop_button.label = "Loop Off"
+            self.loop_button.emoji = "➡️"
+            self.loop_button.style = discord.ButtonStyle.secondary
+
+        if state.autoplay:
+            self.autoplay_button.label = "Autoplay On"
+            self.autoplay_button.style = discord.ButtonStyle.success
+        else:
+            self.autoplay_button.label = "Autoplay Off"
+            self.autoplay_button.style = discord.ButtonStyle.secondary
+
+        if self.vc.is_paused():
+            self.pause_button.label = "Resume"
+            self.pause_button.emoji = "▶️"
+            self.pause_button.style = discord.ButtonStyle.success
+        else:
+            self.pause_button.label = "Pause"
+            self.pause_button.emoji = "⏸️"
+            self.pause_button.style = discord.ButtonStyle.secondary
     # ==========================================
     # HÀM TẠO THANH TIẾN TRÌNH & ĐỊNH DẠNG
     # ==========================================
@@ -143,10 +380,13 @@ class MusicControl(discord.ui.View):
     # ==========================================
     # ROW 1: CÁC NÚT ĐIỀU KHIỂN CHÍNH
     # ==========================================
-    @discord.ui.button(label="Back", emoji="⏮️", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
-        from music.player import history, queue, play_next
+        from music.player import play_next
+
+        state = get_guild_state(interaction.guild)
+        history = state.history
+        queue = state.queue
 
         if len(history) < 2:
             return await interaction.response.send_message("❌ Không có bài hát trước đó", ephemeral=True)
@@ -165,7 +405,6 @@ class MusicControl(discord.ui.View):
 
         await interaction.response.defer()
 
-    @discord.ui.button(label="Pause", emoji="⏸️", style=discord.ButtonStyle.secondary, row=0)
     async def pause(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
         if self.vc.is_playing():
@@ -184,11 +423,15 @@ class MusicControl(discord.ui.View):
             button.emoji = "⏸️"
             button.style = discord.ButtonStyle.secondary
 
-        # Vẽ lại embed để thanh tiến trình đúng tại thời điểm pause/resume này
-        embed = self.generate_embed(queue_length=self.queue_length, requester_mention=self.requester_mention)
-        await interaction.response.edit_message(embed=embed, view=self)
+        # Vẽ lại toàn bộ Components V2 tại đúng thời điểm pause/resume.
+        self.refresh_layout()
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            attachments=[],
+            view=self,
+        )
 
-    @discord.ui.button(label="Skip", emoji="⏭️", style=discord.ButtonStyle.secondary, row=0)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
         if self.vc.is_playing() or self.vc.is_paused():
@@ -196,80 +439,81 @@ class MusicControl(discord.ui.View):
             self.vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, row=0)
-    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def stop_playback(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
-        from music.player import queue, now_playing_messages
-        msg = now_playing_messages.pop(interaction.guild.id, None)
-        queue.clear()
-        
-        for child in self.children:
-            child.disabled = True
+        state = get_guild_state(interaction.guild)
+        state.now_playing_message = None
+        state.queue.clear()
 
         if self.vc.is_playing() or self.vc.is_paused():
             self.vc.stop_request = True
             self.vc.stop()
+
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            attachments=[],
+            view=create_stopped_panel(),
+        )
+
         if self.vc.is_connected():
             await self.vc.disconnect()
-            
-        if msg:
-            embed = discord.Embed(description="⏹️ **Đã cút**", color=0xFF6B6B)
-            try:
-                await msg.edit(embed=embed, view=self)
-            except: pass
-        await interaction.response.defer()
+
+        self.stop()
 
     # ==========================================
     # ROW 2: TÍNH NĂNG BỔ SUNG
     # ==========================================
-    @discord.ui.button(label="Loop Off", emoji="➡️", style=discord.ButtonStyle.secondary, row=1)
     async def loop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
         
-        # FIX LỖI 2: Lưu trạng thái vào self.vc thay vì bot
-        if not hasattr(self.vc, "loop_mode"):
-            self.vc.loop_mode = "off"
+        state = get_guild_state(interaction.guild)
 
         # Chu kỳ: off -> track -> queue -> off
-        if self.vc.loop_mode == "off":
-            self.vc.loop_mode = "track"
+        if state.loop_mode == "off":
+            state.loop_mode = "track"
             button.label = "Loop Track"
             button.emoji = "🔂"
             button.style = discord.ButtonStyle.success
             msg = "🔂 **Lặp lại bài hiện tại**"
-        elif self.vc.loop_mode == "track":
-            self.vc.loop_mode = "queue"
+        elif state.loop_mode == "track":
+            state.loop_mode = "queue"
             button.label = "Loop Queue"
             button.emoji = "🔁"
             button.style = discord.ButtonStyle.success
             msg = "🔁 **Lặp lại toàn bộ danh sách (Queue)**"
         else:
-            self.vc.loop_mode = "off"
+            state.loop_mode = "off"
             button.label = "Loop Off"
             button.emoji = "➡️"
             button.style = discord.ButtonStyle.secondary
             msg = "➡️ **Đã tắt chế độ lặp**"
 
-        await interaction.response.edit_message(view=self)
+        self.refresh_layout()
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            attachments=[],
+            view=self,
+        )
         await interaction.followup.send(msg, ephemeral=True)
 
-    @discord.ui.button(label="Autoplay Off", emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
     async def autoplay_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_voice(interaction): return
         
-        # IMPORT thêm queue và handle_autoplay để xử lý tiên tri
-        from music.player import autoplay_guilds, queue, handle_autoplay
+        from music.player import handle_autoplay
         import asyncio
 
         guild_id = interaction.guild.id
+        state = get_guild_state(guild_id)
 
-        if guild_id in autoplay_guilds:
-            autoplay_guilds.remove(guild_id)
+        if state.autoplay:
+            state.autoplay = False
             button.label = "Autoplay Off"
             button.style = discord.ButtonStyle.secondary
             msg = "❌ **Tắt Autoplay**"
         else:
-            autoplay_guilds.add(guild_id)
+            state.autoplay = True
             button.label = "Autoplay On"
             button.style = discord.ButtonStyle.success
             msg = "✅ **Bật Autoplay**"
@@ -278,19 +522,24 @@ class MusicControl(discord.ui.View):
             # ⚡ KÍCH HOẠT TIÊN TRI NGAY LẬP TỨC
             # ==============================
             # Nếu hàng đợi trống và bot đang hát -> Gọi hàm tiên tri ngầm luôn!
-            if not queue and (self.vc.is_playing() or self.vc.is_paused()):
+            if not state.queue and (self.vc.is_playing() or self.vc.is_paused()):
                 bot = interaction.client
                 # self.track chính là bài hát đang phát hiện tại
                 asyncio.create_task(
                     handle_autoplay(bot, self.vc, interaction.channel, self.track, guild_id, trigger_play=False)
                 )
 
-        await interaction.response.edit_message(view=self)
+        self.refresh_layout()
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            attachments=[],
+            view=self,
+        )
         await interaction.followup.send(msg, ephemeral=True)
 
-    @discord.ui.button(label="Lyric", emoji="📝", style=discord.ButtonStyle.secondary, row=1)
     async def lyric(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from music.player import history
+        history = get_guild_state(interaction.guild).history
 
         vc = self.vc
         if not vc or not (vc.is_playing() or vc.is_paused()):
@@ -347,7 +596,6 @@ class MusicControl(discord.ui.View):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Tải xuống", emoji="⬇️", style=discord.ButtonStyle.secondary, row=1)
     async def download(self, interaction: discord.Interaction, button: discord.ui.Button):
         source_type = str(self.track.get("source") or "").lower()
         track_url = self.track.get("url")
@@ -412,79 +660,66 @@ class MusicControl(discord.ui.View):
         except AudioDownloadError as error:
             await interaction.followup.send(f"❌ {error}", ephemeral=True)
         except Exception as error:
-            print(f"[DOWNLOAD ERROR] {error}")
+            logger.exception("Không thể tạo MP3 tải xuống: %s", error)
             await interaction.followup.send(
                 "❌ Không thể tạo file MP3 lúc này. Hãy thử lại sau.",
                 ephemeral=True,
             )
 
+    async def favorite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        result = await music_library.toggle_favorite(
+            interaction.guild.id,
+            interaction.user.id,
+            self.track,
+        )
+        if result == "added":
+            message = f"❤️ Đã thêm **{self.track.get('title', 'Unknown')}** vào yêu thích."
+        elif result == "removed":
+            message = f"💔 Đã xóa **{self.track.get('title', 'Unknown')}** khỏi yêu thích."
+        else:
+            message = f"❌ Bạn đã đạt giới hạn {music_library.MAX_FAVORITES} bài yêu thích."
+        await interaction.followup.send(message, ephemeral=True)
+
     # ==========================================
-    # HÀM RENDER EMBED CHÍNH
+    # HÀM LÀM MỚI NỘI DUNG COMPONENTS V2
     # ==========================================
-    def generate_embed(self, queue_length=None, requester_mention=None):
-        # Lưu lại để lần gọi sau (vd: từ pause()) không cần truyền lại vẫn dùng đúng giá trị
+    def refresh_layout(self, queue_length=None, requester_mention=None):
+        # Lưu lại để lần gọi sau (vd: từ pause()) vẫn dùng đúng giá trị.
         if queue_length is not None:
             self.queue_length = queue_length
         if requester_mention is not None:
             self.requester_mention = requester_mention
 
-        embed = discord.Embed(
-            title="Now Playing 🍐",
-            description=f"**[{self.track.get('title', 'Unknown Track')}]({self.track.get('url', '')})**",
-            color=0x2b2d31 # Màu đen nhạt
-        )
-
-        # 1. Artist Field
-        embed.add_field(
-            name="Artist",
-            value=self.track.get('author', 'Unknown Artist'),
-            inline=True
-        )
-
-        # 2. Duration Field
-        embed.add_field(
-            name="Duration",
-            value=self.format_time(self.track.get('duration', 0)),
-            inline=True
-        )
-
-        # 3. Platform Field
         platform = self.track.get('source', 'youtube').lower()
         platform_name = platform.capitalize()
         emoji = self.get_platform_emoji(platform)
-        embed.add_field(
-            name="Platform",
-            value=f"{emoji} {platform_name}",
-            inline=True
+        author = _safe_text(self.track.get("author"), "Unknown Artist")
+        duration = self.track.get('duration', 0)
+
+        self.header_text.content = (
+            "### 🍐 NOW PLAYING\n"
+            f"**{_linked_title(self.track)}**\n"
+            f"-# {author}  •  {emoji} {platform_name}  •  "
+            f"⏱️ {self.format_time(duration)}"
         )
 
-        # 4. Progress Field tính on-demand tại thời điểm embed được vẽ
-        duration = self.track.get('duration', 0)
         if duration:
             current = self.get_current_time()
             bar = self.create_progress_bar(current, duration)
-            embed.add_field(
-                name="Progress",
-                value=f"{self.format_time(current)} / {self.format_time(duration)}\n{bar}",
-                inline=False
+            self.progress_text.content = (
+                f"**{self.format_time(current)}**  {bar}  "
+                f"**{self.format_time(duration)}**"
             )
+        else:
+            self.progress_text.content = "📻 **Đang phát trực tiếp**"
 
-        # 6. Requested By
-        if self.requester_mention:
-            embed.add_field(
-                name="Requested by",
-                value=self.requester_mention,
-                inline=True
-            )
-
-        # 7. Thumbnail
-        if self.track.get('thumbnail'):
-            embed.set_thumbnail(url=self.track.get('thumbnail'))
-
-        # 8. Footer Queue Info
-        footer_text = "Only chuds can control the panel."
+        footer_parts = [
+            f"🎧 Yêu cầu bởi {self.requester_mention or 'Autoplay'}",
+        ]
         if self.queue_length > 0:
-            footer_text += f" • {self.queue_length} more songs in queue"
-        embed.set_footer(text=footer_text)
+            footer_parts.append(f"📃 Còn {self.queue_length} bài trong hàng đợi")
+        footer_parts.append("Chỉ thành viên cùng kênh thoại mới điều khiển được")
+        self.footer_text.content = "-# " + "  •  ".join(footer_parts)
 
-        return embed
+        return self

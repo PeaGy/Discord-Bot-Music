@@ -11,12 +11,16 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Phát nhạc từ từ khóa, YouTube, SoundCloud và liên kết Spotify track.
 - Tìm kiếm YouTube với menu chọn 5 kết quả.
 - Hàng đợi, quay lại bài trước, tạm dừng, tiếp tục, bỏ bài và dừng phát.
-- Music Panel có nút điều khiển, thanh tiến trình, loop track/queue, autoplay và tải MP3 riêng tư.
+- Mỗi Discord server có phiên phát riêng: queue, lịch sử, loop, autoplay, 24/7, timer và Music Panel không ảnh hưởng lẫn nhau.
+- Music Panel dùng Discord Components V2 với ảnh bìa, thanh tiến trình, hai hàng điều khiển, loop track/queue, autoplay và tải MP3 riêng tư.
+- Thư viện nhạc SQLite theo người dùng/server: yêu thích, playlist cá nhân và lịch sử nghe gần đây.
+- Nút **Yêu thích** ngay trên Music Panel; playlist và favorites vẫn còn sau khi bot khởi động lại.
 - Autoplay lấy bài liên quan từ YouTube Mix hoặc kết quả tìm kiếm dự phòng.
 - Radio internet từ Radio Browser với giao diện phân trang.
 - Lấy lời bài hát từ LRCLIB.
 - Chế độ 24/7 và tự rời voice channel sau 3 phút không hoạt động.
 - Tự tải trước bài kế tiếp để giảm thời gian chờ.
+- Tự bỏ qua bài có stream lỗi để tiếp tục hàng đợi; khóa phát riêng từng server tránh hai yêu cầu chạy đè nhau.
 - Cache nhạc ngắn trên ổ đĩa và chuẩn hóa âm lượng hai lượt về khoảng `-16 LUFS`.
 - Bài dài hơn 10 phút và radio được stream trực tiếp thay vì lưu cache.
 
@@ -32,6 +36,8 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Giữ tối đa 15 tin nhắn gần nhất làm ngữ cảnh và cập nhật tóm tắt trí nhớ dài hạn sau mỗi 20 lượt tương tác.
 - Dữ liệu hội thoại vẫn còn sau khi bot khởi động lại.
 - Có lệnh để người dùng, admin server hoặc chủ bot xóa dữ liệu ở phạm vi phù hợp.
+- Tự nhận diện bài tập/toán học để mở **Study Mode** với các nút Gợi ý, Giải chi tiết, Kiểm tra đáp án và Xuất PNG.
+- Study Mode đọc lại ảnh đề khi bấm nút, chỉ người gửi đề được thao tác và tự khóa sau 15 phút.
 
 ### Danbooru
 
@@ -133,9 +139,18 @@ XAI_MODEL=grok-4.5
 # XAI_BASE_URL=https://api.x.ai/v1
 # XAI_IMAGE_DETAIL=auto
 # XAI_MAX_IMAGES=4
+
+# Mức chi tiết console log: DEBUG | INFO | WARNING | ERROR
+# LOG_LEVEL=INFO
+
+# File SQLite lưu favorites, playlists và lịch sử nghe
+# MUSIC_LIBRARY_DB=music_library.db
+
+# Font tùy chỉnh cho ảnh lời giải Study Mode (không bắt buộc)
+# STUDY_FONT_PATH=C:\Windows\Fonts\arial.ttf
 ```
 
-`XAI_MODEL`, `XAI_TOKEN_PATH`, `XAI_BASE_URL`, `XAI_IMAGE_DETAIL` và `XAI_MAX_IMAGES` là tùy chọn. Nếu không khai báo, mã nguồn sử dụng các giá trị mặc định nội bộ.
+`XAI_MODEL`, `XAI_TOKEN_PATH`, `XAI_BASE_URL`, `XAI_IMAGE_DETAIL`, `XAI_MAX_IMAGES`, `LOG_LEVEL`, `MUSIC_LIBRARY_DB` và `STUDY_FONT_PATH` là tùy chọn. Nếu không khai báo, mã nguồn sử dụng các giá trị mặc định nội bộ.
 
 `XAI_IMAGE_DETAIL` nhận một trong ba giá trị: `auto`, `low` hoặc `high`. `XAI_MAX_IMAGES` mặc định là `4`; mỗi ảnh được giới hạn tối đa 20 MiB.
 
@@ -207,6 +222,15 @@ Trên Windows có thể dùng:
 | `/play` | `query` | Phát hoặc thêm nhạc từ từ khóa/URL YouTube, SoundCloud hay Spotify track. |
 | `/search` | `query` | Tìm 5 kết quả YouTube và chọn bài bằng menu. |
 | `/queue` | — | Xem bài đang phát và hàng đợi, 10 bài mỗi trang. |
+| `/favorite` | — | Thêm hoặc xóa bài đang phát khỏi danh sách yêu thích cá nhân. |
+| `/favorites` | — | Xem tối đa 20 bài yêu thích gần nhất của bạn trong server. |
+| `/recent` | — | Xem 15 bài được phát gần nhất trong server. |
+| `/playlist create` | `name` | Tạo playlist cá nhân. |
+| `/playlist list` | — | Liệt kê playlist và số bài của bạn. |
+| `/playlist add` | `name` | Thêm bài đang phát vào playlist. |
+| `/playlist show` | `name` | Xem các bài trong playlist. |
+| `/playlist play` | `name` | Thêm toàn bộ playlist vào hàng đợi hiện tại. |
+| `/playlist delete` | `name` | Xóa playlist và các mục đã lưu trong đó. |
 | `/pause` | — | Tạm dừng bài đang phát. |
 | `/resume` | — | Tiếp tục bài đang tạm dừng. |
 | `/next` | — | Bỏ qua bài hiện tại. |
@@ -215,14 +239,16 @@ Trên Windows có thể dùng:
 | `/connect` | — | Kết nối bot vào voice channel của người dùng. |
 | `/leave` | — | Ngắt kết nối bot khỏi voice channel. |
 | `/autoplay` | — | Bật hoặc tắt tự động phát bài liên quan. |
-| `/loop` | — | Chuyển trạng thái lặp theo cơ chế slash command hiện có. |
+| `/loop` | — | Chuyển lần lượt giữa Loop Off, Loop Track và Loop Queue. |
 | `/247` | — | Bật hoặc tắt chế độ ở lại voice channel. |
 | `/lyric` | — | Lấy lời của bài đang phát từ LRCLIB. |
 | `/radio` | — | Mở danh sách radio internet và chọn đài để phát. |
 | `/latency` | — | Hiển thị độ trễ giữa bot và Discord. |
 | `/help` | — | Mở bảng trợ giúp tương tác. |
 
-> Để chọn đầy đủ `Loop Off`, `Loop Track` hoặc `Loop Queue`, nên dùng nút **Loop** trên Music Panel. Slash command `/loop` hiện vẫn dùng cơ chế cũ.
+Nút **Loop** trên Music Panel và lệnh `/loop` cùng sử dụng một trạng thái, theo chu kỳ `Off → Track → Queue → Off`.
+
+Music Panel được dựng hoàn toàn bằng Discord Components V2 (`LayoutView`, `Container`, `Section`, `TextDisplay` và `ActionRow`) thay cho embed truyền thống. Bot tái sử dụng cùng một tin nhắn cho các trạng thái đang tải, đang phát, lỗi và hết hàng đợi. Thanh tiến trình được tính lại khi panel có tương tác cập nhật như Pause/Resume, Loop hoặc Autoplay; bot không chạy timer chỉnh sửa tin nhắn liên tục.
 
 ### Ảnh Danbooru
 
@@ -249,6 +275,17 @@ agnes_tachyon_(umamusume)
 | `/resetmemory` | Người dùng hiện tại | Xóa lịch sử và bản tóm tắt của chính người gọi trên mọi server. |
 | `/resetmemoryall` | Admin server | Xóa lịch sử trong các kênh thuộc server hiện tại; không xóa tóm tắt dài hạn toàn cục. |
 | `/resetmemoryglobal` | Chủ bot | Xóa toàn bộ lịch sử, bộ đếm và tóm tắt của mọi người dùng. |
+
+### Study Mode
+
+Mention hoặc reply Peto kèm đề bài, ví dụ `@Peto giải bài này`, có thể đính kèm ảnh. Khi nhận diện đây là bài tập, Peto gắn bảng nút dưới câu trả lời:
+
+- **Gợi ý**: đưa hướng đi tăng dần nhưng không tiết lộ đáp án cuối.
+- **Giải chi tiết**: giải lại từng bước và tự kiểm tra kết quả.
+- **Kiểm tra đáp án**: mở hộp nhập bài làm, chỉ ra bước sai đầu tiên và cách sửa.
+- **Xuất PNG**: render lời giải gần nhất thành ảnh nền tối để lưu hoặc chia sẻ.
+
+Chỉ người gửi đề sử dụng được bảng nút. Phiên tồn tại trong RAM 15 phút và sẽ hết hiệu lực nếu bot restart. Người dùng vẫn có thể reply Peto để hỏi tiếp về một bước trong lời giải như hội thoại bình thường.
 
 ## Cách hoạt động của hệ thống phát nhạc
 
@@ -287,8 +324,12 @@ Nút **Tải xuống** trên Music Panel hỗ trợ bài có thời lượng t�
 ├── music/
 │   ├── player.py           # Hàng đợi, autoplay, phát nhạc và radio
 │   ├── controls.py         # Music Panel và các nút tương tác
+│   ├── state.py            # Trạng thái phát nhạc độc lập theo từng server
 │   └── spotify.py          # Lấy metadata Spotify track
 ├── cache_manager.py        # Cache, loudness normalization và preload
+├── logging_setup.py        # Cấu hình console log thống nhất
+├── music_library.py        # SQLite favorites, playlists và lịch sử nghe
+├── study_mode.py           # Nút học tập và xuất lời giải PNG
 ├── danbooru_client.py      # Giao tiếp Danbooru API
 ├── user_memory.py          # Bộ nhớ SQLite của AI
 ├── xai_oauth.py            # Đăng nhập SuperGrok OAuth và refresh token
@@ -299,6 +340,7 @@ Nút **Tải xuống** trên Music Panel hỗ trợ bài có thời lượng t�
 ├── .env                    # Token và API keys, không commit
 ├── cookies.txt             # Cookie yt-dlp, không commit
 ├── audio_cache/            # Cache âm thanh được tạo khi chạy
+├── music_library.db        # Thư viện nhạc cá nhân được tạo khi chạy
 └── bot_memory.db           # Cơ sở dữ liệu AI được tạo khi chạy
 ```
 
@@ -306,8 +348,10 @@ Các file `scratch_*.py` và `test_*.py` là script kiểm tra thủ công cho D
 
 ## Dữ liệu và giới hạn hiện tại
 
-- Hàng đợi, lịch sử phát, autoplay và 24/7 được giữ trong RAM nên sẽ mất khi bot khởi động lại.
-- `queue` và `history` hiện là biến toàn cục, chưa tách riêng theo từng Discord server. Nếu chạy bot ở nhiều server cùng lúc, các phiên phát có thể ảnh hưởng lẫn nhau.
+- Hàng đợi, lịch sử phát, loop, autoplay và 24/7 được tách riêng theo từng Discord server nhưng vẫn chỉ giữ trong RAM, nên sẽ mất khi bot khởi động lại.
+- Favorites, playlist và 100 lượt nghe gần nhất mỗi server được lưu trong `music_library.db`, nên không mất khi restart.
+- Mỗi người có tối đa 100 favorites, 25 playlist/server và 100 bài/playlist.
+- Phiên nút Study Mode chỉ giữ trong RAM 15 phút; lời giải chat vẫn đi qua hệ thống bộ nhớ AI hiện có.
 - Spotify hiện chỉ hỗ trợ link track; bot lấy metadata Spotify rồi tìm nguồn phát tương ứng trên YouTube.
 - `audio_cache/` chưa có cơ chế giới hạn dung lượng hoặc tự dọn file cũ.
 - Lịch sử AI được lưu trong `bot_memory.db` và tồn tại qua các lần restart.
@@ -346,13 +390,19 @@ pip install --upgrade yt-dlp
 
 Đảm bảo bot được mời với scope `applications.commands`, có quyền dùng application commands và đã khởi động thành công đến bước đồng bộ lệnh.
 
+### Discord reconnect hoặc không cập nhật được status
+
+Khi WebSocket Discord đang đóng rồi khôi phục, bot có thể ghi một dòng `WARNING` rằng đã tạm bỏ qua cập nhật trạng thái. Đây là lỗi kết nối tạm thời và không làm dừng nhạc; dòng `discord.gateway ... RESUMED` sau đó nghĩa là phiên đã phục hồi thành công. Cảnh báo status giống nhau được giới hạn tối đa một lần mỗi phút để tránh spam console.
+
+Console dùng `INFO` theo mặc định. Chỉ đặt `LOG_LEVEL=DEBUG` trong `.env` khi cần chẩn đoán chi tiết; có thể dùng `WARNING` nếu muốn ít log hơn.
+
 ## Bảo mật
 
 - Không đưa Discord token, API key, cookie hoặc file database lên Git.
 - Không commit `.xai_tokens.json`, `xai_tokens.json` hoặc nội dung `~/.grok/auth.json`; các file token project đã được thêm vào `.gitignore`.
 - Nếu một token từng bị chia sẻ công khai, hãy reset/rotate token ngay tại dịch vụ tương ứng.
 - Chỉ cấp cho bot những quyền Discord thật sự cần thiết.
-- Sao lưu `bot_memory.db` nếu cần giữ trí nhớ AI trước khi di chuyển hoặc cài lại bot.
+- Sao lưu `bot_memory.db` và `music_library.db` nếu cần giữ trí nhớ AI cùng thư viện nhạc trước khi di chuyển hoặc cài lại bot.
 
 ## Ghi nhận
 

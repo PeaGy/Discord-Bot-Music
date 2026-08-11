@@ -1,4 +1,5 @@
 import discord
+from music.state import get_guild_state
 
 async def setup(bot):
 
@@ -16,6 +17,15 @@ async def setup(bot):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
+        state = get_guild_state(interaction.guild)
+        state.queue.clear()
+        state.cancel_idle_task()
+        state.autoplay = False
+        state.loop_mode = "off"
+
+        if vc.is_playing() or vc.is_paused():
+            vc.stop_request = True
+            vc.stop()
         await vc.disconnect()
 
         embed = discord.Embed(

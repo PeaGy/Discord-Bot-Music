@@ -2,7 +2,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from music.player import queue, history, play_next
+from music.player import play_next
+from music.state import get_guild_state
 
 
 class Previous(commands.Cog):
@@ -16,6 +17,9 @@ class Previous(commands.Cog):
     async def previous(self, interaction: discord.Interaction):
 
         vc = interaction.guild.voice_client
+        state = get_guild_state(interaction.guild)
+        queue = state.queue
+        history = state.history
 
         # 🔒 Bots must be in voice
         if not vc or not vc.is_connected():

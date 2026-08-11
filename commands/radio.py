@@ -170,7 +170,10 @@ class RadioView(discord.ui.View):
                 )
                 return await interaction.followup.send(embed=embed, ephemeral=True)
             
-        from music.player import queue, play_next
+        from music.player import play_next
+        from music.state import get_guild_state
+
+        queue = get_guild_state(interaction.guild).queue
         
         song = {
             "title": name,

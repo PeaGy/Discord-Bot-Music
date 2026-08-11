@@ -1,7 +1,13 @@
 import discord
 import aiohttp
+import logging
 import urllib.parse
 import re
+
+from music.state import get_guild_state
+
+
+logger = logging.getLogger(__name__)
 
 async def fetch_lyrics(title, artist=""):
     # Clean up song titles for better search results
@@ -29,8 +35,7 @@ async def fetch_lyrics(title, artist=""):
                         # Ưu tiên lời bài hát đồng bộ (có dấu thời gian)
                         return data[0].get("syncedLyrics") or data[0].get("plainLyrics")
         except Exception as e:
-            print(f"Error fetching lyrics: {e}")
-            pass
+            logger.warning("Không lấy được lyrics từ LRCLIB: %s", e)
     return None
 
 async def setup(bot):
@@ -39,8 +44,8 @@ async def setup(bot):
         description="🎵 Displaying The Lyrics Of The Currently Playing Music"
     )
     async def lyric(interaction: discord.Interaction):
-        from music.player import history
-        
+        history = get_guild_state(interaction.guild).history
+
         vc = interaction.guild.voice_client
         if not vc or not (vc.is_playing() or vc.is_paused()):
             embed = discord.Embed(

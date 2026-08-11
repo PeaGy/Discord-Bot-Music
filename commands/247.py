@@ -2,7 +2,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from music.player import always_on_guilds
+from music.state import get_guild_state
 
 
 class AlwaysOn(commands.Cog):
@@ -22,10 +22,10 @@ class AlwaysOn(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        guild_id = interaction.guild.id
+        state = get_guild_state(interaction.guild)
 
-        if guild_id in always_on_guilds:
-            always_on_guilds.remove(guild_id)
+        if state.always_on:
+            state.always_on = False
 
             embed = discord.Embed(
                 title="24/7 Mode Disable",
@@ -35,7 +35,7 @@ class AlwaysOn(commands.Cog):
             await interaction.response.send_message(embed=embed)
 
         else:
-            always_on_guilds.add(guild_id)
+            state.always_on = True
 
             embed = discord.Embed(
                 title="247 Mode Enabled",

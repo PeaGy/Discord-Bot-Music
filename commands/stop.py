@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from music.player import queue
+from music.state import get_guild_state
 
 class Stop(commands.Cog):
     def __init__(self, bot):
@@ -17,10 +17,16 @@ class Stop(commands.Cog):
         
         vc = interaction.guild.voice_client
 
-        queue.clear()
+        state = get_guild_state(interaction.guild)
+        state.queue.clear()
+        state.cancel_idle_task()
+        state.autoplay = False
+        state.loop_mode = "off"
 
         if vc and vc.is_connected():
-            vc.stop()
+            if vc.is_playing() or vc.is_paused():
+                vc.stop_request = True
+                vc.stop()
             await vc.disconnect()
 
             embed = discord.Embed(

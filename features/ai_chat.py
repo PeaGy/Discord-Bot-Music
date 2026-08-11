@@ -162,6 +162,20 @@ Ví dụ định dạng mong muốn:
 Sau đó viết: **Kết luận:** `k = 12`.
 """.strip()
 
+STUDY_MODE_PROMPT = """
+## Study Mode
+Bạn đang hỗ trợ người học hiểu bài, không chỉ đưa đáp án.
+
+- Với chế độ Gợi ý: chỉ đưa 2-4 gợi ý tăng dần, nêu công thức hoặc hướng đi cần
+  dùng nhưng tuyệt đối không tiết lộ kết quả cuối.
+- Với chế độ Giải chi tiết: chép lại dữ kiện quan trọng, giải từng bước, giải thích
+  lý do của mỗi bước và tự kiểm tra kết quả trước khi kết luận.
+- Với chế độ Kiểm tra đáp án: đánh giá trực tiếp bài làm của người học. Nếu sai,
+  chỉ rõ bước sai đầu tiên, giải thích vì sao và đưa cách sửa; không chê bai.
+- Nếu ảnh mờ hoặc thiếu dữ kiện, nói rõ phần không đọc được thay vì tự bịa đề.
+- Luôn tuân thủ quy tắc định dạng toán dành cho Discord.
+""".strip()
+
 TOOL_RULES_PROMPT = """
 ## Độ chính xác và công cụ
 Kiến thức của bạn có giới hạn. Với tin tức, giá cả, thời tiết, tỷ số, sự kiện gần
@@ -508,6 +522,66 @@ class GrokChat(commands.Cog):
         """Gắn access token mới nhất vào OpenAI client (OAuth refresh nếu cần)."""
         token = await self.oauth.get_access_token()
         self.client.api_key = token
+
+    @staticmethod
+    def _looks_like_study_request(user_text: str, has_images: bool = False) -> bool:
+        text = str(user_text or "").casefold().strip()
+        if not text:
+            return False
+
+        study_terms = (
+            "giải bài",
+            "giai bai",
+            "bài toán",
+            "bai toan",
+            "đề bài",
+            "de bai",
+            "bài tập",
+            "bai tap",
+            "đáp án",
+            "dap an",
+            "kiểm tra đáp án",
+            "kiem tra dap an",
+            "phương trình",
+            "phuong trinh",
+            "đạo hàm",
+            "dao ham",
+            "tích phân",
+            "tich phan",
+            "xác suất",
+            "xac suat",
+            "hình học",
+            "hinh hoc",
+            "chứng minh",
+            "chung minh",
+            "vật lý",
+            "vat ly",
+            "hóa học",
+            "hoa hoc",
+            "solve this",
+            "homework",
+        )
+        if any(term in text for term in study_terms):
+            return True
+
+        if has_images:
+            has_problem_word = any(
+                term in text
+                for term in ("bài", "bai", "toán", "toan", "đề", "de", "câu", "cau")
+            )
+            has_study_action = any(
+                term in text
+                for term in ("giải", "giai", "tính", "tinh", "đáp án", "dap an")
+            )
+            if has_problem_word and has_study_action:
+                return True
+            if re.fullmatch(
+                r"(giải|giai)(\s+(đi|di|giúp|giup|hộ|ho|mình|minh|tôi|toi))*[.!?]?",
+                text,
+            ):
+                return True
+
+        return bool(re.search(r"\b\d+\s*[+\-×÷*/=]\s*\d+\b", text))
 
     # ------------------------------------------
     # Vision helpers — Discord attachment → xAI input_image
@@ -1319,15 +1393,10 @@ class GrokChat(commands.Cog):
             logger.info(
                 "Grok chat sẵn sàng (auth=%s, model=%s)", mode, MODEL_NAME
             )
-            print(f"✅ Grok AI chat sẵn sàng (auth={mode}, model={MODEL_NAME})")
         else:
             logger.warning(
                 "Chưa có SuperGrok OAuth / XAI_API_KEY — AI chat sẽ báo lỗi "
                 "khi được gọi. Chạy: python -m xai_oauth login"
-            )
-            print(
-                "⚠️  Grok AI chat: chưa đăng nhập SuperGrok. "
-                "Chạy `python -m xai_oauth login` (music bot vẫn chạy bình thường)."
             )
 
     async def cog_unload(self):
@@ -1353,6 +1422,74 @@ class GrokChat(commands.Cog):
             isinstance(resolved, discord.Message)
             and resolved.author.id == self.bot.user.id
         )
+
+    async def generate_study_response(
+        self,
+        session,
+        *,
+        action: str,
+        student_answer: str | None = None,
+    ) -> str:
+        """Tạo phản hồi cho các nút Study Mode mà không dùng tool calling."""
+        image_parts: list[dict] = []
+        for attachment in session.attachments[:MAX_IMAGES_PER_MESSAGE]:
+            part = await self._attachment_to_input_image(attachment)
+            if part:
+                image_parts.append(part)
+
+        if action == "hint":
+            request = (
+                "Hãy đưa gợi ý cho bài này theo chế độ Gợi ý. "
+                "Không được nêu đáp án hoặc kết quả cuối."
+            )
+        elif action == "check":
+            reference = str(session.latest_solution or "")[:6000]
+            request = (
+                "Hãy kiểm tra đáp án/cách làm của người học theo chế độ Kiểm tra "
+                "đáp án. Nói rõ đúng hay sai và chỉ ra bước sai đầu tiên nếu có.\n\n"
+                f"Bài làm của người học:\n{student_answer or '(để trống)'}"
+            )
+            if reference:
+                request += f"\n\nLời giải tham khảo đã tạo trước đó:\n{reference}"
+        else:
+            request = (
+                "Hãy giải lại bài này theo chế độ Giải chi tiết. Chép dữ kiện, "
+                "giải thích từng bước và tự kiểm tra kết quả."
+            )
+
+        problem_text = str(session.problem_text or "").strip()
+        prompt = (
+            f"Đề bài/yêu cầu ban đầu của {session.display_name}:\n"
+            f"{problem_text or '[đề nằm trong ảnh đính kèm]'}\n\n"
+            f"Yêu cầu Study Mode:\n{request}"
+        )
+        instructions = "\n\n".join(
+            (
+                CONVERSATION_STYLE_PROMPT,
+                MATH_FORMATTING_PROMPT,
+                STUDY_MODE_PROMPT,
+            )
+        )
+        input_data = self._to_xai_input([], prompt, image_parts=image_parts)
+
+        try:
+            response = await self._create_response(
+                instructions=instructions,
+                input_data=input_data,
+                max_output_tokens=1800,
+                use_tools=False,
+            )
+            return self._safe_content(response)
+        except XaiOAuthError:
+            return "❌ Peto chưa đăng nhập SuperGrok để dùng Study Mode."
+        except RateLimitError:
+            return "❌ Study Mode đang bị giới hạn tốc độ, thử lại sau nhé."
+        except (AuthenticationError, APIStatusError, APIError):
+            logger.exception("Study Mode API thất bại (action=%s)", action)
+            return "❌ Study Mode chưa thể gọi Grok lúc này, thử lại sau nhé."
+        except Exception:
+            logger.exception("Study Mode lỗi không xác định (action=%s)", action)
+            return "❌ Study Mode gặp lỗi, thử lại sau nhé."
 
     # ==========================================
     # EVENT: on_message
@@ -1405,7 +1542,34 @@ class GrokChat(commands.Cog):
                 send_kwargs["embeds"] = embeds
             if reply_files:
                 send_kwargs["files"] = reply_files[:10]
-            await message.reply(**send_kwargs)
+
+            study_view = None
+            if (
+                reply_text
+                and not embeds
+                and not reply_files
+                and not reply_text.startswith("❌")
+                and self._looks_like_study_request(
+                    clean_text,
+                    has_images=bool(image_parts),
+                )
+            ):
+                from study_mode import StudySession, StudyView
+
+                attachments = await self._iter_image_attachments(message)
+                session = StudySession(
+                    owner_id=message.author.id,
+                    display_name=message.author.display_name,
+                    problem_text=clean_text,
+                    attachments=attachments[:MAX_IMAGES_PER_MESSAGE],
+                    latest_solution=reply_text,
+                )
+                study_view = StudyView(self, session)
+                send_kwargs["view"] = study_view
+
+            sent_message = await message.reply(**send_kwargs)
+            if study_view:
+                study_view.message = sent_message
 
     # ==========================================
     # GỌI GROK + XỬ LÝ TOOL CALLING

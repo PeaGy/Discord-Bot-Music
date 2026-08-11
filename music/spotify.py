@@ -1,5 +1,9 @@
 import urllib.request
+import logging
 import re
+
+
+logger = logging.getLogger(__name__)
 
 def is_spotify_url(query: str) -> bool:
     return "open.spotify.com" in query or "spotify:" in query
@@ -39,5 +43,5 @@ def get_spotify_info(url: str) -> dict:
             "search_query": f"{title} {artist} audio"
         }
     except Exception as e:
-        print(f"Spotify extraction error: {e}")
+        logger.warning("Không lấy được metadata Spotify: %s", e)
         return None

@@ -2,12 +2,16 @@ import os
 import json
 import hashlib
 import asyncio
+import logging
 import subprocess
 import tempfile
 from contextlib import asynccontextmanager
 
 import yt_dlp
 import discord
+
+
+logger = logging.getLogger(__name__)
 
 # ==============================
 # CACHE DIR
@@ -227,13 +231,13 @@ async def get_audio_source(url):
     _, final_path = get_cache_paths(url)
 
     if _is_valid_file(final_path):
-        print(f"🎵 [CACHE HIT] Đang phát file cục bộ (đã normalize): {final_path}")
+        logger.info("Cache hit: %s", final_path)
         return discord.FFmpegPCMAudio(final_path, options="-vn")
 
-    print(f"⬇️ [CACHE MISS] Tải, đo loudness (pass 1) & normalize (pass 2): {url}")
+    logger.info("Cache miss, bắt đầu tải và normalize: %s", url)
     final_path = await ensure_audio_cached(url)
 
-    print(f"✅ Đã cache + normalize xong, bắt đầu phát!")
+    logger.info("Đã cache và normalize: %s", final_path)
     return discord.FFmpegPCMAudio(final_path, options="-vn")
 
 
@@ -248,9 +252,9 @@ async def preload_audio(url):
     if _is_valid_file(final_path):
         return 
 
-    print(f"🔄 [PRELOAD] Đang âm thầm tải trước bài hát vào Cache...")
+    logger.info("Bắt đầu tải trước: %s", url)
     try:
         await ensure_audio_cached(url)
-        print(f"✅ [PRELOAD] Tải trước thành công! Bài tiếp theo đã sẵn sàng.")
+        logger.info("Tải trước thành công: %s", url)
     except Exception as e:
-        print(f"❌ [PRELOAD LỖI]: Không thể tải trước - {e}")
+        logger.warning("Không thể tải trước %s: %s", url, e)

@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from music.player import autoplay_guilds
+from music.state import get_guild_state
 
 class AutoPlay(commands.Cog):
     def __init__(self, bot):
@@ -10,14 +10,14 @@ class AutoPlay(commands.Cog):
     @app_commands.command(name="autoplay", description="🔀 Toggle Autoplay")
     async def autoplay(self, interaction: discord.Interaction):
 
-        guild_id = interaction.guild.id
+        state = get_guild_state(interaction.guild)
 
-        if guild_id in autoplay_guilds:
-            autoplay_guilds.remove(guild_id)
+        if state.autoplay:
+            state.autoplay = False
             embed = discord.Embed(description="**Autoplay disabled**")
             return await interaction.response.send_message(embed=embed)
 
-        autoplay_guilds.add(guild_id)
+        state.autoplay = True
         embed = discord.Embed(description="**Autoplay enabled**")
         await interaction.response.send_message(embed=embed)
 

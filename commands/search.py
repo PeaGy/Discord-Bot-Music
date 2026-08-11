@@ -3,7 +3,11 @@ from discord import app_commands
 from discord.ext import commands
 import yt_dlp
 import asyncio
+import logging
 from cache_manager import preload_audio
+
+
+logger = logging.getLogger(__name__)
 
 # Cấu hình yt-dlp tối ưu cho việc tìm kiếm
 YDL_SEARCH_OPTIONS = {
@@ -71,15 +75,42 @@ class SearchSelect(discord.ui.Select):
         # Xóa luôn khung tìm kiếm sau khi đã chọn bài
         try:
             await interaction.message.delete()
-        except:
+        except discord.HTTPException:
             pass
 
-        from music.player import queue, play_next
-        
+        from music.player import play_next
+        from music.state import get_guild_state
+
+        queue = get_guild_state(interaction.guild).queue
+
         # 1. TỰ ĐỘNG KẾT NỐI VÀO VOICE GIỐNG LỆNH /PLAY
+        voice_state = interaction.user.voice
+        if not voice_state or not voice_state.channel:
+            return await interaction.followup.send(
+                "❌ Bạn đã rời voice channel. Hãy vào lại rồi tìm bài lần nữa.",
+                ephemeral=True,
+            )
+
         vc = interaction.guild.voice_client
+        if vc and vc.channel != voice_state.channel:
+            return await interaction.followup.send(
+                f"❌ Bot đang phát nhạc ở **{vc.channel.name}**.",
+                ephemeral=True,
+            )
+
         if not vc or not vc.is_connected():
-            vc = await interaction.user.voice.channel.connect()
+            try:
+                vc = await voice_state.channel.connect(self_deaf=True)
+            except Exception as error:
+                logger.warning(
+                    "Không kết nối được voice từ /search (guild=%s): %s",
+                    interaction.guild.id,
+                    error,
+                )
+                return await interaction.followup.send(
+                    "❌ Không thể kết nối voice lúc này. Hãy thử lại sau.",
+                    ephemeral=True,
+                )
 
         # Thêm bài hát vào hàng đợi
         queue.append(song)
@@ -154,7 +185,16 @@ class Search(commands.Cog):
             info = await loop.run_in_executor(None, do_search)
             entries = info.get("entries", [])
         except Exception as e:
-            return await interaction.followup.send(f"❌ **Lỗi khi tải dữ liệu:** {e}")
+            logger.warning(
+                "Tìm kiếm YouTube thất bại (guild=%s, query=%r): %s",
+                interaction.guild.id,
+                query,
+                e,
+            )
+            return await interaction.followup.send(
+                "❌ Không tải được kết quả tìm kiếm. Hãy thử lại sau.",
+                ephemeral=True,
+            )
             
         if not entries:
             return await interaction.followup.send(f"⚠️ **Không tìm thấy kết quả nào cho:** `{query}`")

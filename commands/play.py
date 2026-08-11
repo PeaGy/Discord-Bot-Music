@@ -3,10 +3,15 @@ from discord import app_commands
 from discord.ext import commands
 import yt_dlp
 import asyncio
+import logging
 
 from music.spotify import is_spotify_url, get_spotify_info
-from music.player import queue, play_next
+from music.player import play_next, start_idle_timer
+from music.state import get_guild_state
 from cache_manager import preload_audio
+
+
+logger = logging.getLogger(__name__)
 
 
 # ==============================
@@ -120,19 +125,35 @@ class Play(commands.Cog):
 
         loop = asyncio.get_running_loop()
 
-        # 🎵 SPOTIFY LINK
-        if is_spotify_url(query):
-            song = await loop.run_in_executor(None, get_spotify_info, query)
-            if not song:
-                embed = discord.Embed(
-                    title="❌ Failed to load Spotify link",
-                    description="Make sure it's a valid track link, not a playlist or album."
-                )
-                return await interaction.followup.send(embed=embed)
-        else:
-            # 🔎 tim info spotify
-            song = await loop.run_in_executor(None, get_song_info, query)
+        try:
+            # 🎵 SPOTIFY LINK
+            if is_spotify_url(query):
+                song = await loop.run_in_executor(None, get_spotify_info, query)
+                if not song:
+                    embed = discord.Embed(
+                        title="❌ Failed to load Spotify link",
+                        description="Make sure it's a valid track link, not a playlist or album."
+                    )
+                    if not vc.is_playing() and not vc.is_paused():
+                        await start_idle_timer(vc, channel=interaction.channel)
+                    return await interaction.followup.send(embed=embed)
+            else:
+                song = await loop.run_in_executor(None, get_song_info, query)
+        except Exception as error:
+            logger.warning(
+                "Không lấy được metadata cho /play (guild=%s, query=%r): %s",
+                interaction.guild.id,
+                query,
+                error,
+            )
+            if not vc.is_playing() and not vc.is_paused():
+                await start_idle_timer(vc, channel=interaction.channel)
+            return await interaction.followup.send(
+                "❌ Không lấy được thông tin bài hát. Hãy kiểm tra URL hoặc thử lại sau.",
+                ephemeral=True,
+            )
 
+        queue = get_guild_state(interaction.guild).queue
         queue.append({
             **song,
             "requester": interaction.user
