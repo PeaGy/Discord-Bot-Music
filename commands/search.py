@@ -4,6 +4,7 @@ from discord.ext import commands
 import yt_dlp
 import asyncio
 import logging
+import music_library
 from cache_manager import preload_audio
 
 
@@ -111,6 +112,13 @@ class SearchSelect(discord.ui.Select):
                     "❌ Không thể kết nối voice lúc này. Hãy thử lại sau.",
                     ephemeral=True,
                 )
+
+        key = music_library.track_key(song)
+        duplicate = next((i for i, item in enumerate(queue, 1) if music_library.track_key(item) == key), None)
+        state = get_guild_state(interaction.guild)
+        if duplicate or (state.history and music_library.track_key(state.history[-1]) == key):
+            location = "đang phát" if state.history and music_library.track_key(state.history[-1]) == key else f"đã ở vị trí #{duplicate}"
+            return await interaction.followup.send(f"⚠️ **{song.get('title', 'Bài này')}** {location}; dùng `/play` nếu bạn muốn xác nhận thêm trùng.", ephemeral=True)
 
         # Thêm bài hát vào hàng đợi
         queue.append(song)

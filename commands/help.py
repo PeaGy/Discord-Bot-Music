@@ -46,6 +46,12 @@ class HelpDropdown(discord.ui.View):
                 emoji="🎨",
                 value="art_ai",
             ),
+            discord.SelectOption(
+                label="Tải media",
+                description="Tải TikTok, YouTube và X",
+                emoji="📥",
+                value="media",
+            ),
         ],
     )
     async def select_callback(
@@ -84,6 +90,8 @@ class HelpDropdown(discord.ui.View):
                     "`/play <query>` — Phát nhạc từ từ khóa hoặc URL\n"
                     "`/search <query>` — Tìm 5 kết quả YouTube để lựa chọn\n"
                     "`/queue` — Xem bài hiện tại và hàng đợi\n"
+                    "`/playnext <query>` — Ưu tiên phát bài kế tiếp\n"
+                    "`/remove` · `/move` · `/shuffle` · `/clear` — Quản lý hàng đợi\n"
                     "`/favorite` · `/favorites` — Lưu hoặc xem nhạc yêu thích\n"
                     "`/recent` — Xem lịch sử nghe gần đây của server\n"
                     "`/previous` — Quay lại bài trước\n"
@@ -94,14 +102,18 @@ class HelpDropdown(discord.ui.View):
                     "`/resume` — Tiếp tục phát\n"
                     "`/loop` — Chuyển trạng thái lặp\n"
                     "`/autoplay` — Bật hoặc tắt phát bài liên quan\n"
-                    "`/lyric` — Xem lời bài đang phát\n"
+                    "`/lyric` — Xem trước, mở đầy đủ hoặc dịch lời bài hát\n"
+                    "`/stats` · `/wrapped` — Thống kê và tổng kết nghe nhạc\n"
                     "`/radio` — Chọn và phát radio internet\n\n"
                     "**Playlist cá nhân**\n"
                     "`/playlist create <name>` — Tạo playlist\n"
                     "`/playlist list` — Xem các playlist\n"
-                    "`/playlist add <name>` — Thêm bài đang phát\n"
+                    "`/playlist add <name> [query]` — Thêm bài đang phát hoặc link/tên bài\n"
                     "`/playlist show <name>` — Xem nội dung playlist\n"
-                    "`/playlist play <name>` — Thêm playlist vào queue\n"
+                    "`/playlist play <name> [shuffle]` — Phát playlist, có xáo thông minh\n"
+                    "`/playlist savequeue <name>` — Lưu hàng đợi vào playlist\n"
+                    "`/playlist share` · `/playlist clone` — Chia sẻ và sao chép\n"
+                    "`/playlist import` — Nhập playlist YouTube\n"
                     "`/playlist delete <name>` — Xóa playlist\n\n"
                     "**Kết nối và tiện ích**\n"
                     "`/connect` — Kết nối vào voice channel\n"
@@ -111,14 +123,15 @@ class HelpDropdown(discord.ui.View):
                     "`/help` — Mở bảng trợ giúp này\n\n"
                     "⬇️ **Nút Tải xuống:** Gửi riêng file MP3 cho bài tối đa 10 phút; "
                     "không áp dụng cho radio hoặc file vượt giới hạn upload.\n\n"
-                    "❤️ **Nút Yêu thích:** Thêm hoặc xóa bài hiện tại khỏi favorites của bạn.\n\n"
+                    "❤️ **Nút Yêu thích:** Thêm hoặc xóa bài hiện tại khỏi favorites của bạn.\n"
+                    "➕ **Nút Playlist:** Chọn playlist và lưu bài đang phát bằng menu riêng tư.\n\n"
                     "🧩 **Music Panel V2:** Ảnh bìa, thông tin bài, tiến trình và hai hàng nút "
                     "được sắp xếp bằng giao diện Components V2 của Discord.\n\n"
                     "-# Nút Loop và lệnh /loop cùng chuyển theo chu kỳ Off → Track → Queue."
                 ),
             )
 
-        else:
+        elif value == "art_ai":
             embed = build_embed(
                 "🎨 Art & AI",
                 (
@@ -135,10 +148,22 @@ class HelpDropdown(discord.ui.View):
                     "Peto có thể xem ảnh đính kèm, tìm thông tin mới trên web qua Tavily, "
                     "phát nhạc, bỏ qua bài và duy trì trí nhớ hội thoại bằng SQLite. "
                     "Bạn cũng có thể nhờ Peto tìm fanart SFW trực tiếp từ Danbooru.\n\n"
+                    "Peto hiểu tối đa 8 tin trong chuỗi reply. Bạn có thể hỏi "
+                    "`mọi người đang bàn gì?` để tóm tắt tối đa 40 tin gần nhất "
+                    "trong đúng kênh hiện tại.\n\n"
+                    "Nhấp phải một tin nhắn → **Apps → Hỏi Peto** để giải thích, "
+                    "dịch, tóm tắt hoặc soạn câu trả lời. Peto cũng có thể đọc link "
+                    "công khai được gửi kèm yêu cầu.\n\n"
+                    "Câu hỏi thực tế có nút **Kiểm tra nguồn**. Nhấp phải tin có ảnh "
+                    "→ **Apps → Tạo sticker & emoji** để nhận PNG 320px và 128px.\n\n"
+                    "`/sticker image:<ảnh>` · `/emoji image:<ảnh>` — Tạo file trực tiếp. "
+                    "Bạn cũng có thể reply ảnh và nói `@Peto tạo sticker`; thao tác "
+                    "này xử lý cục bộ, không gọi AI tạo ảnh.\n\n"
                     "**Study Mode**\n"
                     "Mention Peto kèm đề bài hoặc ảnh và nói `giải bài này`. "
                     "Peto sẽ hiện các nút **Gợi ý**, **Giải chi tiết**, "
-                    "**Kiểm tra đáp án** và **Xuất PNG**. Chỉ người gửi đề sử dụng "
+                    "**Kiểm tra đáp án**, **Chép đề** và **Xuất PNG**. Có thể gửi "
+                    "nhiều trang bằng chuỗi reply. Chỉ người gửi đề sử dụng "
                     "được phiên này; nút tự khóa sau 15 phút.\n\n"
                     "**Điều khiển bộ nhớ AI**\n"
                     "`/private` — Mở cuộc trò chuyện riêng qua DM\n"
@@ -146,6 +171,30 @@ class HelpDropdown(discord.ui.View):
                     "`/resetmemory` — Xóa toàn bộ trí nhớ đã lưu của chính bạn\n"
                     "`/resetmemoryall` — Admin xóa trí nhớ trong server hiện tại\n"
                     "`/resetmemoryglobal` — Chủ bot xóa toàn bộ trí nhớ AI"
+                ),
+            )
+
+        else:
+            embed = build_embed(
+                "📥 Universal Media Downloader",
+                (
+                    "Dùng `/download link:<URL>` để tạo embed có tiêu đề, thumbnail, tác giả, "
+                    "thời lượng, định dạng và nút tải. Bot không tự quét các link được gửi "
+                    "trong chat. Toàn bộ panel và file tải đều **Only Visible to you**; "
+                    "file chỉ được xử lý khi bạn bấm nút.\n\n"
+                    "**Quy tắc định dạng**\n"
+                    "🎵 **YouTube** — Tải MP3\n"
+                    "🎬 **TikTok video** — Tải MP4 không watermark\n"
+                    "🖼️ **TikTok photo** — Tải toàn bộ ảnh gốc theo từng file\n"
+                    "🎬 **X / Twitter** — Tải MP4\n\n"
+                    "Chỉ xử lý link video cụ thể dài tối đa 10 phút. Một bài TikTok photo "
+                    "được tải tối đa 35 ảnh; bot tự chia thành nhiều lượt gửi, mỗi lượt tối đa "
+                    "10 file và vẫn tuân theo giới hạn upload của Discord. Playlist, "
+                    "livestream, nội dung riêng tư và file vượt giới hạn upload "
+                    "hiện tại của Discord sẽ bị từ chối. Mỗi người chỉ có một lượt "
+                    "tải đang chạy; nút tải hết hạn sau 10 phút và file tạm được xóa "
+                    "ngay sau khi gửi.\n\n"
+                    "-# Facebook và Instagram hiện không nằm trong phạm vi hỗ trợ."
                 ),
             )
 
@@ -169,7 +218,8 @@ class Help(commands.Cog):
                 "**Danh mục trợ giúp**\n"
                 "📢 **Giới thiệu** — Tổng quan tính năng và công nghệ\n"
                 "🎵 **Lệnh âm nhạc** — Phát nhạc, hàng đợi và voice\n"
-                "🎨 **Art & AI** — Danbooru, Peto và bộ nhớ hội thoại\n\n"
+                "🎨 **Art & AI** — Danbooru, Peto và bộ nhớ hội thoại\n"
+                "📥 **Tải media** — TikTok video/ảnh, YouTube MP3 và X MP4\n\n"
                 "Chọn một danh mục trong menu bên dưới để xem chi tiết."
             ),
         )

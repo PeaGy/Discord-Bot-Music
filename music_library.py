@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import secrets
 import urllib.parse
 
 import aiosqlite
@@ -153,6 +154,20 @@ async def init_db() -> None:
                 played_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS music_play_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                requester_id INTEGER,
+                track_key TEXT NOT NULL,
+                title TEXT NOT NULL,
+                author TEXT NOT NULL,
+                url TEXT NOT NULL,
+                listened_seconds INTEGER NOT NULL DEFAULT 0,
+                completed INTEGER NOT NULL DEFAULT 0,
+                skipped INTEGER NOT NULL DEFAULT 0,
+                played_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE INDEX IF NOT EXISTS idx_music_favorites_user
                 ON music_favorites(guild_id, user_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_music_playlists_owner
@@ -161,7 +176,22 @@ async def init_db() -> None:
                 ON music_playlist_tracks(playlist_id, position);
             CREATE INDEX IF NOT EXISTS idx_music_recent_guild
                 ON music_recent(guild_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_music_events_guild_time
+                ON music_play_events(guild_id, played_at DESC);
             """
+        )
+        columns = {
+            row[1] for row in await (await db.execute("PRAGMA table_info(music_playlists)")).fetchall()
+        }
+        if "is_shared" not in columns:
+            await db.execute(
+                "ALTER TABLE music_playlists ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0"
+            )
+        if "share_code" not in columns:
+            await db.execute("ALTER TABLE music_playlists ADD COLUMN share_code TEXT")
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_music_playlist_share_code "
+            "ON music_playlists(share_code) WHERE share_code IS NOT NULL"
         )
         await db.commit()
 
@@ -292,6 +322,13 @@ async def add_track_to_playlist(
 
         playlist_id = playlist[0]
         cursor = await db.execute(
+            "SELECT 1 FROM music_playlist_tracks WHERE playlist_id = ? AND track_key = ?",
+            (playlist_id, track_key(track)),
+        )
+        if await cursor.fetchone():
+            await db.rollback()
+            return "duplicate"
+        cursor = await db.execute(
             """
             SELECT COUNT(*), COALESCE(MAX(position), 0)
             FROM music_playlist_tracks WHERE playlist_id = ?
@@ -396,3 +433,106 @@ async def list_recent(guild_id: int, limit: int = 15) -> list[dict]:
             (guild_id, limit),
         )
         return [_row_to_track(row) for row in await cursor.fetchall()]
+
+
+async def add_tracks_to_playlist(guild_id: int, owner_id: int, name: str, tracks: list[dict]) -> dict:
+    """Thêm nhiều bài, tự bỏ bài trùng và tôn trọng giới hạn playlist."""
+    added = duplicates = 0
+    for track in tracks:
+        result = await add_track_to_playlist(guild_id, owner_id, name, track)
+        if result == "added":
+            added += 1
+        elif result == "duplicate":
+            duplicates += 1
+        elif result in {"limit", "not_found"}:
+            return {"status": result, "added": added, "duplicates": duplicates}
+    return {"status": "ok", "added": added, "duplicates": duplicates}
+
+
+async def share_playlist(guild_id: int, owner_id: int, name: str, shared: bool = True) -> str | None:
+    _, normalized = normalize_playlist_name(name)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT id, share_code FROM music_playlists WHERE guild_id=? AND owner_id=? AND normalized_name=?",
+            (guild_id, owner_id, normalized),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        code = row[1] or secrets.token_hex(4).upper()
+        await db.execute(
+            "UPDATE music_playlists SET is_shared=?, share_code=? WHERE id=?",
+            (1 if shared else 0, code, row[0]),
+        )
+        await db.commit()
+        return code
+
+
+async def clone_shared_playlist(guild_id: int, owner_id: int, code: str, new_name: str) -> dict:
+    display, normalized = normalize_playlist_name(new_name)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id FROM music_playlists WHERE share_code=? AND is_shared=1",
+            (code.strip().upper(),),
+        )
+        source = await cursor.fetchone()
+        if not source:
+            return {"status": "not_found", "added": 0}
+        cursor = await db.execute(
+            f"SELECT {TRACK_COLUMNS} FROM music_playlist_tracks WHERE playlist_id=? ORDER BY position",
+            (source["id"],),
+        )
+        tracks = [_row_to_track(row) for row in await cursor.fetchall()]
+    created = await create_playlist(guild_id, owner_id, display)
+    if created != "created":
+        return {"status": created, "added": 0}
+    result = await add_tracks_to_playlist(guild_id, owner_id, normalized, tracks)
+    return {"status": "cloned", "added": result["added"]}
+
+
+async def record_play_event(guild_id: int, track: dict, listened_seconds: int, *, skipped: bool) -> None:
+    requester_id = getattr(track.get("requester"), "id", None)
+    duration = int(track.get("duration") or 0)
+    listened = max(0, int(listened_seconds))
+    completed = int(not skipped and (duration <= 0 or listened >= max(30, duration * 0.8)))
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO music_play_events
+               (guild_id, requester_id, track_key, title, author, url,
+                listened_seconds, completed, skipped)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (guild_id, requester_id, track_key(track), str(track.get("title") or "Unknown"),
+             str(track.get("author") or "Unknown"), str(track.get("url") or ""),
+             listened, completed, int(skipped)),
+        )
+        await db.commit()
+
+
+async def listening_stats(guild_id: int, days: int = 30, user_id: int | None = None) -> dict:
+    where = "guild_id=? AND played_at >= datetime('now', ?) AND listened_seconds >= 30"
+    params: list = [guild_id, f"-{max(1, days)} days"]
+    if user_id is not None:
+        where += " AND requester_id=?"
+        params.append(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        total = await (await db.execute(
+            f"SELECT COUNT(*) plays, COALESCE(SUM(listened_seconds),0) seconds FROM music_play_events WHERE {where}",
+            params,
+        )).fetchone()
+        tracks = await (await db.execute(
+            f"SELECT title, author, COUNT(*) plays, SUM(listened_seconds) seconds FROM music_play_events WHERE {where} GROUP BY track_key ORDER BY plays DESC, seconds DESC LIMIT 5",
+            params,
+        )).fetchall()
+        artists = await (await db.execute(
+            f"SELECT author, COUNT(*) plays FROM music_play_events WHERE {where} GROUP BY lower(author) ORDER BY plays DESC LIMIT 5",
+            params,
+        )).fetchall()
+        requesters = await (await db.execute(
+            f"SELECT requester_id, COUNT(*) plays, SUM(listened_seconds) seconds FROM music_play_events WHERE {where} AND requester_id IS NOT NULL GROUP BY requester_id ORDER BY seconds DESC LIMIT 5",
+            params,
+        )).fetchall()
+    return {"plays": total["plays"], "seconds": total["seconds"],
+            "tracks": [dict(x) for x in tracks], "artists": [dict(x) for x in artists],
+            "requesters": [dict(x) for x in requesters]}

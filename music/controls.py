@@ -47,6 +47,45 @@ def _linked_title(track):
     return title
 
 
+class PlaylistPicker(discord.ui.Select):
+    def __init__(self, guild_id, user_id, track, playlists):
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.track = track
+        options = [
+            discord.SelectOption(
+                label=item["name"][:100],
+                value=item["name"],
+                description=f"{item['track_count']} bài",
+                emoji="📀",
+            )
+            for item in playlists[:25]
+        ]
+        super().__init__(placeholder="Chọn playlist để lưu bài này…", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Menu playlist này không thuộc về bạn.", ephemeral=True)
+        name = self.values[0]
+        result = await music_library.add_track_to_playlist(
+            self.guild_id, self.user_id, name, self.track
+        )
+        messages = {
+            "added": f"✅ Đã thêm **{self.track.get('title', 'Unknown')}** vào **{name}**.",
+            "duplicate": f"⚠️ Bài này đã có trong **{name}**.",
+            "not_found": "❌ Playlist không còn tồn tại.",
+            "limit": f"❌ Playlist đã đạt giới hạn {music_library.MAX_PLAYLIST_TRACKS} bài.",
+        }
+        self.disabled = True
+        await interaction.response.edit_message(content=messages[result], view=self.view)
+
+
+class PlaylistPickerView(discord.ui.View):
+    def __init__(self, guild_id, user_id, track, playlists):
+        super().__init__(timeout=60)
+        self.add_item(PlaylistPicker(guild_id, user_id, track, playlists))
+
+
 class MusicStatusPanel(discord.ui.LayoutView):
     """Panel V2 gọn cho các trạng thái tải, lỗi, radio, dừng và hết queue."""
 
@@ -240,6 +279,9 @@ class MusicControl(discord.ui.LayoutView):
         )
         self.download_button = self._add_button(
             self.secondary_row, self.download, label="Tải xuống", emoji="⬇️"
+        )
+        self.playlist_button = self._add_button(
+            self.secondary_row, self.add_to_playlist, label="Playlist", emoji="➕"
         )
 
         self.panel_container = discord.ui.Container(
@@ -680,6 +722,24 @@ class MusicControl(discord.ui.LayoutView):
         else:
             message = f"❌ Bạn đã đạt giới hạn {music_library.MAX_FAVORITES} bài yêu thích."
         await interaction.followup.send(message, ephemeral=True)
+
+    async def add_to_playlist(self, interaction: discord.Interaction, button: discord.ui.Button):
+        playlists = await music_library.list_playlists(
+            interaction.guild.id, interaction.user.id
+        )
+        if not playlists:
+            return await interaction.response.send_message(
+                "Bạn chưa có playlist. Hãy dùng `/playlist create` trước nhé.",
+                ephemeral=True,
+            )
+        view = PlaylistPickerView(
+            interaction.guild.id, interaction.user.id, self.track, playlists
+        )
+        await interaction.response.send_message(
+            f"📀 Lưu **{self.track.get('title', 'Unknown')}** vào playlist nào?",
+            view=view,
+            ephemeral=True,
+        )
 
     # ==========================================
     # HÀM LÀM MỚI NỘI DUNG COMPONENTS V2

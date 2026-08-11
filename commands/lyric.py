@@ -1,94 +1,74 @@
-import discord
-import aiohttp
+import io
 import logging
-import urllib.parse
-import re
 
+import discord
+from discord.ext import commands
+
+from lyrics_service import fetch_lyrics, translate_lyrics
 from music.state import get_guild_state
-
 
 logger = logging.getLogger(__name__)
 
-async def fetch_lyrics(title, artist=""):
-    # Clean up song titles for better search results
-    clean_title = re.sub(r'\(.*?\)|\[.*?\]', '', title)
-    clean_title = re.sub(r'(?i)(official|music video|lyric video|audio|video)', '', clean_title)
-    clean_title = " ".join(clean_title.split())
-    if not clean_title:
-        clean_title = title  # Fallback if cleaning removed everything
 
-    clean_artist = ""
-    if artist and artist != "Unknown":
-        clean_artist = re.sub(r'(?i)(official|vevo|topic|- topic)', '', artist)
-        clean_artist = " ".join(clean_artist.split())
+async def send_full(interaction, title, text, suffix="lyrics"):
+    if len(text) <= 3900:
+        await interaction.response.send_message(embed=discord.Embed(title=title, description=text, color=0x2B2D31), ephemeral=True)
+    else:
+        file = discord.File(io.BytesIO(text.encode("utf-8")), filename=f"{suffix}.txt")
+        await interaction.response.send_message(f"📄 **{title}**", file=file, ephemeral=True)
 
-    search_query = f"{clean_title} {clean_artist}".strip()
-    query = urllib.parse.quote(search_query)
-    url = f"https://lrclib.net/api/search?q={query}"
-    
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url, headers={'User-Agent': 'Mozilla/5.0'}) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data:
-                        # Ưu tiên lời bài hát đồng bộ (có dấu thời gian)
-                        return data[0].get("syncedLyrics") or data[0].get("plainLyrics")
-        except Exception as e:
-            logger.warning("Không lấy được lyrics từ LRCLIB: %s", e)
-    return None
 
-async def setup(bot):
-    @bot.tree.command(
-        name="lyric",
-        description="🎵 Displaying The Lyrics Of The Currently Playing Music"
-    )
-    async def lyric(interaction: discord.Interaction):
-        history = get_guild_state(interaction.guild).history
+class LyricsView(discord.ui.View):
+    def __init__(self, title, lyrics, owner_id):
+        super().__init__(timeout=180)
+        self.title, self.lyrics, self.owner_id = title, lyrics, owner_id
 
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Dùng `/lyric` để mở lời bài hát riêng của bạn nhé.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Xem toàn bộ", emoji="📄", style=discord.ButtonStyle.primary)
+    async def full(self, interaction, _button): await send_full(interaction, self.title, self.lyrics)
+
+    async def translate(self, interaction, language, suffix):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try: text = await translate_lyrics(self.lyrics, language)
+        except Exception as error:
+            logger.warning("Không dịch được lyrics: %s", error)
+            return await interaction.followup.send(f"❌ {error}", ephemeral=True)
+        if len(text) <= 3900:
+            await interaction.followup.send(embed=discord.Embed(title=f"{self.title} • {language}", description=text, color=0x2B2D31), ephemeral=True)
+        else:
+            await interaction.followup.send(file=discord.File(io.BytesIO(text.encode()), filename=f"lyrics-{suffix}.txt"), ephemeral=True)
+
+    @discord.ui.button(label="Dịch Việt", emoji="🇻🇳", style=discord.ButtonStyle.secondary)
+    async def vi(self, interaction, _button): await self.translate(interaction, "Vietnamese", "vi")
+
+    @discord.ui.button(label="Translate EN", emoji="🇬🇧", style=discord.ButtonStyle.secondary)
+    async def en(self, interaction, _button): await self.translate(interaction, "English", "en")
+
+
+class Lyrics(commands.Cog):
+    def __init__(self, bot): self.bot = bot
+
+    @discord.app_commands.command(name="lyric", description="Xem lời bài hát đang phát")
+    async def lyric(self, interaction: discord.Interaction):
+        state = get_guild_state(interaction.guild)
         vc = interaction.guild.voice_client
-        if not vc or not (vc.is_playing() or vc.is_paused()):
-            embed = discord.Embed(
-                title="Không có nhạc đang phát",
-                color=0x2b2d31
-            )
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-            
-        if len(history) == 0:
-            embed = discord.Embed(
-                description="Không có bài hát nào được phát vào lần cuối.",
-                color=0x2b2d31
-            )
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-            
-        # Lấy bài hát đang phát hiện tại (bài hát cuối cùng được thêm vào lịch sử phát)
-        current_song = history[-1]
-        title = current_song.get("title", "Unknown")
-        artist = current_song.get("author", "")
-        
-        await interaction.response.defer(ephemeral=False)
-        
-        lyrics = await fetch_lyrics(title, artist)
-        
+        if not vc or not (vc.is_playing() or vc.is_paused()) or not state.history:
+            return await interaction.response.send_message("❌ Không có nhạc đang phát.", ephemeral=True)
+        song = state.history[-1]
+        await interaction.response.defer()
+        lyrics = await fetch_lyrics(song.get("title", "Unknown"), song.get("author", ""))
         if not lyrics:
-            embed = discord.Embed(
-                description=f"❌ Không tìm thấy lời bài hát cho **{title}** .",
-                color=0x2b2d31
-            )
-            return await interaction.followup.send(embed=embed)
-            
-        # Cắt bớt lời bài hát nếu chúng vượt quá giới hạn mô tả nhúng của Discord (4096 ký tự).
-        if len(lyrics) > 4000:
-            lyrics = lyrics[:3997] + "..."
-            
-        embed = discord.Embed(
-            title=f"🎶 Lyrics: {title}",
-            description=lyrics,
-            color=0x2b2d31
-        )
-        
-        thumbnail = current_song.get("thumbnail")
-        if thumbnail:
-            embed.set_thumbnail(url=thumbnail)
-            
-        await interaction.followup.send(embed=embed)
+            return await interaction.followup.send(f"❌ Không tìm thấy lời cho **{song.get('title', 'Unknown')}**.")
+        preview = lyrics[:950].rsplit("\n", 1)[0] + ("\n…" if len(lyrics) > 950 else "")
+        embed = discord.Embed(title=f"🎶 {song.get('title', 'Unknown')}", description=preview, color=0x2B2D31)
+        if song.get("thumbnail"): embed.set_thumbnail(url=song["thumbnail"])
+        embed.set_footer(text="Bản xem trước • Các nút trả lời riêng tư để tránh spam")
+        await interaction.followup.send(embed=embed, view=LyricsView(song.get("title", "Lyrics"), lyrics, interaction.user.id))
+
+
+async def setup(bot): await bot.add_cog(Lyrics(bot))

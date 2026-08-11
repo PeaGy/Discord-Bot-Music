@@ -35,6 +35,7 @@ class StudySession:
     problem_text: str
     attachments: list[Any] = field(default_factory=list)
     latest_solution: str = ""
+    extracted_problem: str = ""
 
 
 def _font_candidates() -> list[str]:
@@ -254,13 +255,27 @@ class StudyView(discord.ui.View):
     async def check_answer(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(AnswerCheckModal(self))
 
+    @discord.ui.button(label="Chép đề", emoji="🔎", style=discord.ButtonStyle.secondary)
+    async def extract_problem(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        result = await self.cog.generate_study_response(
+            self.session,
+            action="extract",
+        )
+        if not result.startswith("❌"):
+            self.session.extracted_problem = result
+        await interaction.followup.send(
+            truncate_for_discord(result),
+            ephemeral=True,
+        )
+
     @discord.ui.button(label="Xuất PNG", emoji="🖼️", style=discord.ButtonStyle.secondary)
     async def export_png(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             image_data = await asyncio.to_thread(
                 render_solution_png,
-                self.session.problem_text,
+                self.session.extracted_problem or self.session.problem_text,
                 self.session.latest_solution,
             )
             upload_limit = getattr(interaction, "filesize_limit", None)

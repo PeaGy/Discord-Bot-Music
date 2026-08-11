@@ -1,7 +1,7 @@
 discord.py[voice]
 PyNaCl
 davey
-yt-dlp
+yt-dlp==2026.8.4.234419.dev0
 aiohttp
 python-dotenv
 openai

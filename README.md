@@ -15,6 +15,10 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Music Panel dùng Discord Components V2 với ảnh bìa, thanh tiến trình, hai hàng điều khiển, loop track/queue, autoplay và tải MP3 riêng tư.
 - Thư viện nhạc SQLite theo người dùng/server: yêu thích, playlist cá nhân và lịch sử nghe gần đây.
 - Nút **Yêu thích** ngay trên Music Panel; playlist và favorites vẫn còn sau khi bot khởi động lại.
+- Quản lý queue đầy đủ: ưu tiên bài kế tiếp, xóa, di chuyển, xáo trộn và dọn hàng đợi; bot cảnh báo trước khi thêm bài trùng.
+- Playlist nâng cao: lưu cả queue, chia sẻ/sao chép bằng mã, nhập playlist YouTube và xáo thông minh tránh các bài vừa nghe.
+- Thống kê nghe nhạc `/stats`, tổng kết `/wrapped`; chỉ tính bài đã nghe ít nhất 30 giây.
+- Lyrics gọn với nút xem đầy đủ và dịch Việt/Anh riêng tư, tránh làm đầy kênh chat.
 - Autoplay lấy bài liên quan từ YouTube Mix hoặc kết quả tìm kiếm dự phòng.
 - Radio internet từ Radio Browser với giao diện phân trang.
 - Lấy lời bài hát từ LRCLIB.
@@ -24,21 +28,40 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Cache nhạc ngắn trên ổ đĩa và chuẩn hóa âm lượng hai lượt về khoảng `-16 LUFS`.
 - Bài dài hơn 10 phút và radio được stream trực tiếp thay vì lưu cache.
 
+### Universal Media Downloader
+
+- Lệnh `/download link:<URL>` tạo custom embed **Only Visible to you** có metadata, thumbnail và nút tải cho YouTube, TikTok hoặc X/Twitter; bot không tự quét link trong chat.
+- YouTube được chuyển sang MP3, TikTok video tải MP4 không watermark, TikTok photo tải toàn bộ ảnh gốc và X/Twitter tải MP4.
+- File chỉ bắt đầu được tạo khi có người bấm nút và được gửi riêng tư cho người đó qua Discord.
+- Panel và nút tải có hiệu lực trong 10 phút. Với TikTok photo, bot nhận tối đa 35 ảnh, giới hạn tổng dữ liệu tạm 80 MiB và tự chia kết quả thành các lượt tối đa 10 file theo giới hạn upload hiện tại của Discord.
+- Chỉ xử lý một video công khai dài tối đa 10 phút; không nhận playlist, livestream, Facebook hoặc Instagram.
+- Chất lượng MP3 được chọn theo thời lượng và giới hạn upload hiện tại, nhưng không hạ dưới 96 kbps.
+- MP4 giữ nguyên luồng hình/tiếng phù hợp từ nguồn thay vì encode lại; file vượt giới hạn upload sẽ bị từ chối.
+- Tối đa hai lượt tải chạy đồng thời trên toàn bot và mỗi người chỉ có một lượt; file tạm được xóa ngay sau khi gửi.
+
 ### Trợ lý AI Peto
 
 - Trò chuyện trong server bằng cách mention/reply bot, hoặc dùng `/private` để mở DM và nhắn tự nhiên không cần mention.
 - Sử dụng Grok qua xAI Responses API; model mặc định là `grok-4.5` và có thể đổi bằng `XAI_MODEL`.
 - Hỗ trợ đăng nhập SuperGrok bằng OAuth PKCE, tự refresh token và dùng `XAI_API_KEY` làm phương án dự phòng.
-- Có thể đọc tối đa 4 ảnh đính kèm trong tin nhắn Discord; hỗ trợ JPEG, PNG, WebP và GIF.
+- Có thể đọc tối đa 6 ảnh từ tin hiện tại hoặc chuỗi reply; hỗ trợ JPEG, PNG, WebP và GIF.
+- Hiểu tối đa 8 tin nhắn trong chuỗi reply và có thể tóm tắt 40 tin gần nhất trong đúng kênh khi được hỏi rõ.
 - Có thể tìm thông tin mới trên web thông qua Tavily.
+- Menu chuột phải **Hỏi Peto** cho phép giải thích, dịch, tóm tắt hoặc soạn phản hồi từ một tin nhắn mà không cần copy nội dung.
+- Có thể đọc trực tiếp tối đa hai link công khai trong yêu cầu, với kiểm tra URL/redirect để chặn địa chỉ mạng nội bộ.
+- Câu hỏi thực tế có nút **Kiểm tra nguồn** để Tavily tìm nguồn độc lập rồi Grok đối chiếu câu trả lời.
+- Menu **Tạo sticker & emoji** crop ảnh, thử xóa nền nối với mép và xuất PNG 320×320 cùng 128×128.
+- `/sticker` và `/emoji` nhận ảnh đính kèm; reply ảnh rồi nói `@Peto tạo sticker/emoji` cũng dùng cùng bộ xử lý cục bộ và không gọi Grok Imagine.
 - Có thể gọi công cụ để phát nhạc, bỏ qua bài hoặc tìm fanart SFW từ Danbooru ngay trong hội thoại.
 - Lưu lịch sử theo người dùng và kênh bằng SQLite; trí nhớ dài hạn được tách riêng giữa DM và từng server.
+- Quan hệ với Peto tiến triển riêng theo từng người và từng phạm vi; trí nhớ riêng không được mang sang nơi khác hoặc tiết lộ cho người khác.
 - Giữ tối đa 15 tin nhắn gần nhất làm ngữ cảnh và cập nhật tóm tắt riêng cho đúng phạm vi sau mỗi 20 lượt tương tác.
 - Dữ liệu hội thoại vẫn còn sau khi bot khởi động lại.
 - `/andanh` bật chế độ **Ẩn danh** theo DM hoặc server: chỉ giữ ngữ cảnh tạm trong RAM, không đọc/ghi trí nhớ SQLite.
 - Có lệnh để người dùng, admin server hoặc chủ bot xóa dữ liệu ở phạm vi phù hợp.
-- Tự nhận diện bài tập/toán học để mở **Study Mode** với các nút Gợi ý, Giải chi tiết, Kiểm tra đáp án và Xuất PNG.
+- Tự nhận diện bài tập/toán học để mở **Study Mode** với các nút Gợi ý, Giải chi tiết, Kiểm tra đáp án, Chép đề và Xuất PNG.
 - Study Mode đọc lại ảnh đề khi bấm nút, chỉ người gửi đề được thao tác và tự khóa sau 15 phút.
+- Các nút Study Mode chỉ xuất hiện khi tin nhắn hiện tại có ý định học tập rõ ràng như giải, tính, kiểm tra, gợi ý cách làm hoặc chép đề; từ khóa chủ đề đứng riêng không tự kích hoạt.
 
 ### Danbooru
 
@@ -186,6 +209,7 @@ Trong phần cấu hình Bot:
    - View Channels
    - Send Messages
    - Embed Links
+   - Attach Files
    - Read Message History
    - Connect
    - Speak
@@ -223,14 +247,21 @@ Trên Windows có thể dùng:
 | `/play` | `query` | Phát hoặc thêm nhạc từ từ khóa/URL YouTube, SoundCloud hay Spotify track. |
 | `/search` | `query` | Tìm 5 kết quả YouTube và chọn bài bằng menu. |
 | `/queue` | — | Xem bài đang phát và hàng đợi, 10 bài mỗi trang. |
+| `/playnext` | `query` | Thêm bài vào đầu hàng đợi. |
+| `/remove`, `/move` | vị trí | Xóa hoặc di chuyển bài trong queue. |
+| `/shuffle`, `/clear` | — | Xáo trộn hoặc dọn queue. |
+| `/stats`, `/wrapped` | tùy chọn | Thống kê và tổng kết nghe nhạc. |
 | `/favorite` | — | Thêm hoặc xóa bài đang phát khỏi danh sách yêu thích cá nhân. |
 | `/favorites` | — | Xem tối đa 20 bài yêu thích gần nhất của bạn trong server. |
 | `/recent` | — | Xem 15 bài được phát gần nhất trong server. |
 | `/playlist create` | `name` | Tạo playlist cá nhân. |
 | `/playlist list` | — | Liệt kê playlist và số bài của bạn. |
-| `/playlist add` | `name` | Thêm bài đang phát vào playlist. |
+| `/playlist add` | `name`, `query` tùy chọn | Thêm bài đang phát hoặc một link/tên bài vào playlist. |
 | `/playlist show` | `name` | Xem các bài trong playlist. |
-| `/playlist play` | `name` | Thêm toàn bộ playlist vào hàng đợi hiện tại. |
+| `/playlist play` | `name`, `shuffle` | Thêm playlist vào queue, tùy chọn xáo thông minh. |
+| `/playlist savequeue` | `name` | Lưu toàn bộ queue vào playlist. |
+| `/playlist share`, `/playlist clone` | tên/mã | Chia sẻ và sao chép playlist. |
+| `/playlist import` | `name`, `url` | Nhập playlist YouTube (tối đa 100 bài). |
 | `/playlist delete` | `name` | Xóa playlist và các mục đã lưu trong đó. |
 | `/pause` | — | Tạm dừng bài đang phát. |
 | `/resume` | — | Tiếp tục bài đang tạm dừng. |
@@ -245,6 +276,7 @@ Trên Windows có thể dùng:
 | `/lyric` | — | Lấy lời của bài đang phát từ LRCLIB. |
 | `/radio` | — | Mở danh sách radio internet và chọn đài để phát. |
 | `/latency` | — | Hiển thị độ trễ giữa bot và Discord. |
+| `/download` | `link` | Tải YouTube MP3, TikTok video MP4 không watermark, TikTok photo hoặc X/Twitter MP4. |
 | `/help` | — | Mở bảng trợ giúp tương tác. |
 
 Nút **Loop** trên Music Panel và lệnh `/loop` cùng sử dụng một trạng thái, theo chu kỳ `Off → Track → Queue → Off`.
@@ -288,9 +320,10 @@ Mention hoặc reply Peto kèm đề bài, ví dụ `@Peto giải bài này`, c�
 - **Gợi ý**: đưa hướng đi tăng dần nhưng không tiết lộ đáp án cuối.
 - **Giải chi tiết**: giải lại từng bước và tự kiểm tra kết quả.
 - **Kiểm tra đáp án**: mở hộp nhập bài làm, chỉ ra bước sai đầu tiên và cách sửa.
+- **Chép đề**: OCR toàn bộ ảnh theo thứ tự reply, tách dữ kiện/yêu cầu và đánh dấu phần không đọc rõ mà không tự bịa.
 - **Xuất PNG**: render lời giải gần nhất thành ảnh nền tối để lưu hoặc chia sẻ.
 
-Chỉ người gửi đề sử dụng được bảng nút. Phiên tồn tại trong RAM 15 phút và sẽ hết hiệu lực nếu bot restart. Người dùng vẫn có thể reply Peto để hỏi tiếp về một bước trong lời giải như hội thoại bình thường.
+Chỉ người gửi đề sử dụng được bảng nút. Có thể gửi đề nhiều trang bằng chuỗi reply, tối đa 6 ảnh. Phiên tồn tại trong RAM 15 phút và sẽ hết hiệu lực nếu bot restart. Người dùng vẫn có thể reply Peto để hỏi tiếp về một bước trong lời giải như hội thoại bình thường.
 
 ## Cách hoạt động của hệ thống phát nhạc
 
@@ -318,6 +351,8 @@ Nếu đã có bài hợp lệ trong `audio_cache/`, bot phát lại file cục 
 
 Nút **Tải xuống** trên Music Panel hỗ trợ bài có thời lượng tối đa 10 phút. Bot chuyển bản cache Opus sang MP3 128 kbps, gửi riêng cho người bấm và xóa MP3 tạm sau khi gửi. Radio, bài không xác định thời lượng và file vượt giới hạn upload hiện tại của Discord sẽ không được gửi.
 
+Universal Media Downloader hoạt động độc lập với Music Panel. Người dùng gọi `/download link:<URL>` để bot tạo custom embed và button **Only Visible to you**; việc tải và chuyển đổi chỉ chạy sau khi bấm nút, file kết quả cũng được gửi riêng tư. Các link được gửi như tin nhắn bình thường không kích hoạt bot.
+
 ## Cấu trúc dự án
 
 ```text
@@ -325,7 +360,8 @@ Nút **Tải xuống** trên Music Panel hỗ trợ bài có thời lượng t�
 ├── bot.py                  # Điểm khởi động, nạp extension và đồng bộ lệnh
 ├── commands/               # Các slash command
 ├── features/
-│   └── ai_chat.py          # Grok, vision, Tavily và tool calling
+│   ├── ai_chat.py          # Grok, vision, Tavily và tool calling
+│   └── media_downloader.py # Lệnh /download video/ảnh cho YouTube/TikTok/X
 ├── music/
 │   ├── player.py           # Hàng đợi, autoplay, phát nhạc và radio
 │   ├── controls.py         # Music Panel và các nút tương tác
@@ -361,6 +397,7 @@ Các file `scratch_*.py` và `test_*.py` là script kiểm tra thủ công cho D
 - `audio_cache/` chưa có cơ chế giới hạn dung lượng hoặc tự dọn file cũ.
 - Lịch sử AI thường được lưu trong `bot_memory.db` và tồn tại qua restart; nội dung Ẩn danh không được ghi vào file này.
 - Các API bên ngoài có thể giới hạn tần suất, đổi định dạng hoặc tạm thời không phản hồi.
+- Media Downloader phụ thuộc vào extractor của `yt-dlp`; nền tảng có thể thay đổi cách phân phối media khiến một link tạm thời không tải được.
 
 ## Xử lý lỗi thường gặp
 
@@ -385,11 +422,17 @@ Nếu OAuth bị từ chối với mã `403`, hãy kiểm tra quyền/gói Super
 
 ### Không phát được YouTube
 
-Cập nhật yt-dlp và làm mới `cookies.txt`:
+Cài lại dependency để nhận đúng bản `yt-dlp` đã khóa và làm mới `cookies.txt`:
 
 ```bash
-pip install --upgrade yt-dlp
+pip install -r requirements.txt
 ```
+
+### TikTok báo `Unable to extract universal data for rehydration`
+
+Đây là lỗi tương thích khi TikTok thay đổi dữ liệu trang, không đồng nghĩa video riêng tư. Dự án khóa `yt-dlp` ở bản nightly đã được kiểm thử với TikTok hiện tại. Chạy lại `pip install -r requirements.txt` rồi khởi động lại bot; nếu lỗi tái xuất hiện trong tương lai, hãy kiểm tra một bản nightly mới hơn của `yt-dlp`.
+
+URL ảnh TikTok do CDN cấp có thể hết hạn. Nếu panel cũ không tải được ảnh, hãy chạy lại `/download` để bot lấy URL mới rồi bấm **Tải ảnh** trong vòng 10 phút.
 
 ### Không thấy slash command
 

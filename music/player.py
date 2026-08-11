@@ -78,6 +78,14 @@ async def _record_recent_safely(guild_id: int, song: dict) -> None:
     except Exception:
         logger.exception("Không thể lưu lịch sử nghe (guild=%s)", guild_id)
 
+
+async def _record_play_event_safely(guild_id: int, song: dict, seconds: int, skipped: bool) -> None:
+    try:
+        import music_library
+        await music_library.record_play_event(guild_id, song, seconds, skipped=skipped)
+    except Exception:
+        logger.exception("Không thể lưu thống kê nghe (guild=%s)", guild_id)
+
 # ==============================
 # ⏳ IDLE TIMER (3 Phut)
 # ==============================
@@ -298,6 +306,16 @@ async def play_song_by_query(
         return {"ok": False, "reason": "Không lấy được thông tin bài hát"}
 
     state = get_guild_state(guild)
+    import music_library
+    key = music_library.track_key(song)
+    duplicate = next(
+        (index for index, item in enumerate(state.queue, start=1)
+         if music_library.track_key(item) == key),
+        None,
+    )
+    if duplicate or (state.history and music_library.track_key(state.history[-1]) == key):
+        location = "đang phát" if state.history and music_library.track_key(state.history[-1]) == key else f"đã ở vị trí #{duplicate}"
+        return {"ok": False, "reason": f"Bài này {location}, nên Peto không thêm trùng"}
     state.queue.append({**song, "requester": requester})
 
     duration = int(song.get("duration") or 0)
@@ -411,20 +429,32 @@ async def _play_next_locked(
         if error:
             logger.warning("Audio player báo lỗi (guild=%s): %s", vc.guild.id, error)
 
-        if not vc or not vc.is_connected():
-            return
-
         guild_id = vc.guild.id
 
         is_skip = getattr(vc, 'skip_request', False)
         is_prev = getattr(vc, 'is_previous_action', False)
         is_stop = getattr(vc, 'stop_request', False)
 
+        started = getattr(vc, "play_start_time", time.time())
+        paused = getattr(vc, "total_paused_duration", 0) or 0
+        if getattr(vc, "paused_at", None):
+            paused += max(0, time.time() - vc.paused_at)
+        listened = max(0, int(time.time() - started - paused))
+        _schedule_from_audio_thread(
+            bot,
+            _record_play_event_safely(guild_id, song, listened, bool(is_skip or is_prev or is_stop)),
+            guild_id=guild_id,
+            action="lưu thống kê nghe",
+        )
+
         if hasattr(vc, 'skip_request'): del vc.skip_request
         if hasattr(vc, 'is_previous_action'): del vc.is_previous_action
         if hasattr(vc, 'stop_request'): del vc.stop_request
 
         if is_stop:
+            return
+
+        if not vc or not vc.is_connected():
             return
 
         # 🔁 LOOP MODE

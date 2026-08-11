@@ -1,4 +1,7 @@
+import asyncio
 import logging
+import random
+import yt_dlp
 
 import discord
 from discord import app_commands
@@ -179,13 +182,24 @@ class MusicLibrary(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @playlist.command(name="add", description="Thêm bài đang phát vào playlist")
-    @app_commands.describe(name="Tên playlist đã tạo")
-    async def playlist_add(self, interaction: discord.Interaction, name: str):
-        track = current_track(interaction)
+    @playlist.command(name="add", description="Thêm bài đang phát hoặc link/tên bài vào playlist")
+    @app_commands.describe(name="Tên playlist đã tạo", query="Link hoặc tên bài; bỏ trống để dùng bài đang phát")
+    async def playlist_add(self, interaction: discord.Interaction, name: str, query: str | None = None):
+        await interaction.response.defer(ephemeral=True, thinking=bool(query))
+        track = None
+        if query:
+            from commands.play import get_song_info
+            from music.spotify import get_spotify_info, is_spotify_url
+            try:
+                getter = get_spotify_info if is_spotify_url(query) else get_song_info
+                track = await asyncio.get_running_loop().run_in_executor(None, getter, query)
+            except Exception as error:
+                logger.warning("Không lấy được metadata /playlist add query=%r: %s", query, error)
+        else:
+            track = current_track(interaction)
         if not track:
-            return await interaction.response.send_message(
-                "❌ Không có bài nào đang phát.",
+            return await interaction.followup.send(
+                "❌ Không tìm thấy bài hát hoặc hiện không có bài đang phát.",
                 ephemeral=True,
             )
 
@@ -197,15 +211,17 @@ class MusicLibrary(commands.Cog):
                 track,
             )
         except ValueError as error:
-            return await send_name_error(interaction, error)
+            return await interaction.followup.send(f"❌ {error}", ephemeral=True)
 
         if result == "added":
             message = f"✅ Đã thêm **{track.get('title', 'Unknown')}** vào **{name.strip()}**."
+        elif result == "duplicate":
+            message = f"⚠️ **{track.get('title', 'Unknown')}** đã có trong **{name.strip()}**."
         elif result == "not_found":
             message = "❌ Không tìm thấy playlist này. Dùng `/playlist list` để kiểm tra."
         else:
             message = f"❌ Playlist đã đạt giới hạn {music_library.MAX_PLAYLIST_TRACKS} bài."
-        await interaction.response.send_message(message, ephemeral=True)
+        await interaction.followup.send(message, ephemeral=True)
 
     @playlist.command(name="show", description="Xem các bài trong playlist")
     @app_commands.describe(name="Tên playlist")
@@ -245,7 +261,7 @@ class MusicLibrary(commands.Cog):
 
     @playlist.command(name="play", description="Thêm toàn bộ playlist vào hàng đợi")
     @app_commands.describe(name="Tên playlist")
-    async def playlist_play(self, interaction: discord.Interaction, name: str):
+    async def playlist_play(self, interaction: discord.Interaction, name: str, shuffle: bool = False):
         if not interaction.user.voice or not interaction.user.voice.channel:
             return await interaction.response.send_message(
                 "❌ Bạn phải vào voice channel trước.",
@@ -296,11 +312,26 @@ class MusicLibrary(commands.Cog):
                 )
 
         state = get_guild_state(interaction.guild)
+        if shuffle:
+            recent_keys = {music_library.track_key(track) for track in await music_library.list_recent(interaction.guild.id, 20)}
+            fresh = [track for track in tracks if music_library.track_key(track) not in recent_keys]
+            repeated = [track for track in tracks if music_library.track_key(track) in recent_keys]
+            random.shuffle(fresh)
+            random.shuffle(repeated)
+            tracks = fresh + repeated
+        existing = {music_library.track_key(track) for track in state.queue}
+        added = 0
         for track in tracks:
+            key = music_library.track_key(track)
+            if key in existing:
+                continue
             state.queue.append({**track, "requester": interaction.user})
+            existing.add(key)
+            added += 1
 
         await interaction.followup.send(
-            f"▶️ Đã thêm **{len(tracks)} bài** từ playlist **{name.strip()}** vào hàng đợi."
+            f"▶️ Đã thêm **{added} bài** từ playlist **{name.strip()}** vào hàng đợi"
+            + (f"; bỏ qua **{len(tracks) - added} bài trùng**." if added < len(tracks) else ".")
         )
         if not vc.is_playing() and not vc.is_paused():
             await play_next(self.bot, vc, interaction.channel)
@@ -323,6 +354,58 @@ class MusicLibrary(commands.Cog):
             else "❌ Không tìm thấy playlist này."
         )
         await interaction.response.send_message(message, ephemeral=True)
+
+
+    @playlist.command(name="savequeue", description="Lưu toàn bộ hàng đợi vào playlist")
+    async def playlist_savequeue(self, interaction: discord.Interaction, name: str):
+        tracks = list(get_guild_state(interaction.guild).queue)
+        if not tracks:
+            return await interaction.response.send_message("❌ Hàng đợi đang trống.", ephemeral=True)
+        result = await music_library.add_tracks_to_playlist(interaction.guild.id, interaction.user.id, name, tracks)
+        if result["status"] == "not_found":
+            return await interaction.response.send_message("❌ Không tìm thấy playlist.", ephemeral=True)
+        await interaction.response.send_message(f"💾 Đã lưu **{result['added']} bài**; bỏ qua **{result['duplicates']} bài trùng**.", ephemeral=True)
+
+    @playlist.command(name="share", description="Tạo mã chia sẻ playlist")
+    async def playlist_share(self, interaction: discord.Interaction, name: str):
+        code = await music_library.share_playlist(interaction.guild.id, interaction.user.id, name)
+        text = f"🔗 Mã chia sẻ: `{code}` — người khác dùng `/playlist clone`." if code else "❌ Không tìm thấy playlist."
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @playlist.command(name="clone", description="Sao chép playlist được chia sẻ")
+    async def playlist_clone(self, interaction: discord.Interaction, code: str, new_name: str):
+        try:
+            result = await music_library.clone_shared_playlist(interaction.guild.id, interaction.user.id, code, new_name)
+        except ValueError as error:
+            return await send_name_error(interaction, error)
+        errors = {"not_found": "❌ Mã chia sẻ không tồn tại.", "exists": "❌ Bạn đã có playlist tên này.", "limit": "❌ Bạn đã đạt giới hạn playlist."}
+        await interaction.response.send_message(errors.get(result["status"], f"✅ Đã sao chép **{result['added']} bài** vào **{new_name}**."), ephemeral=True)
+
+    @playlist.command(name="import", description="Nhập playlist YouTube từ đường dẫn")
+    async def playlist_import(self, interaction: discord.Interaction, name: str, url: str):
+        if "spotify.com/playlist" in url:
+            return await interaction.response.send_message("ℹ️ Spotify playlist cần Spotify Web API; hiện bot hỗ trợ nhập YouTube playlist.", ephemeral=True)
+        if "youtube.com" not in url and "youtu.be" not in url:
+            return await interaction.response.send_message("❌ URL này chưa được hỗ trợ.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        def extract():
+            options = {"quiet": True, "extract_flat": "in_playlist", "playlistend": music_library.MAX_PLAYLIST_TRACKS}
+            with yt_dlp.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return [{"title": x.get("title") or "Unknown", "author": x.get("uploader") or x.get("channel") or "Unknown",
+                         "url": x.get("url") if str(x.get("url", "")).startswith("http") else f"https://www.youtube.com/watch?v={x.get('id')}",
+                         "duration": x.get("duration") or 0, "thumbnail": x.get("thumbnail"), "source": "youtube"}
+                        for x in (info.get("entries") or []) if x]
+        try:
+            tracks = await asyncio.get_running_loop().run_in_executor(None, extract)
+        except Exception as error:
+            logger.warning("Không nhập được YouTube playlist: %s", error)
+            return await interaction.followup.send("❌ Không đọc được playlist YouTube này.", ephemeral=True)
+        created = await music_library.create_playlist(interaction.guild.id, interaction.user.id, name)
+        if created != "created":
+            return await interaction.followup.send("❌ Tên playlist đã tồn tại hoặc đã đạt giới hạn.", ephemeral=True)
+        result = await music_library.add_tracks_to_playlist(interaction.guild.id, interaction.user.id, name, tracks)
+        await interaction.followup.send(f"✅ Đã nhập **{result['added']} bài** vào **{name}**.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
