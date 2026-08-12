@@ -7,10 +7,12 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -24,13 +26,19 @@ from discord.ext import commands
 logger = logging.getLogger(__name__)
 
 PANEL_TIMEOUT = 10 * 60
-MAX_MEDIA_DURATION = 10 * 60
+# /download nhận nội dung ngắn hơn một giờ. Mốc 60:00 bị từ chối để giữ
+# thời gian xử lý, dung lượng tạm và băng thông máy nhà trong phạm vi hợp lý.
+MAX_MEDIA_DURATION = 60 * 60
 DEFAULT_UPLOAD_LIMIT = 10 * 1024 * 1024
 UPLOAD_SAFETY_MARGIN = 128 * 1024
 MAX_PARALLEL_DOWNLOADS = 2
 MAX_PARALLEL_PROBES = 3
 MAX_TIKTOK_IMAGES = 35
 MAX_PHOTO_TOTAL_BYTES = 80 * 1024 * 1024
+MAX_GATEWAY_FILE_BYTES = max(
+    10,
+    int(os.getenv("DOWNLOAD_MAX_FILE_MIB", "512")),
+) * 1024 * 1024
 TIKWM_API_URL = "https://www.tikwm.com/api/"
 TIKWM_RESPONSE_LIMIT = 2 * 1024 * 1024
 _TIKTOK_MEDIA_HOST_SUFFIXES = (
@@ -67,6 +75,110 @@ class MediaDownloadError(RuntimeError):
     """Lỗi tải media có thể hiển thị an toàn cho người dùng."""
 
 
+class MediaDownloadProgress:
+    """Trạng thái thread-safe; hook yt-dlp tuyệt đối không gọi Discord trực tiếp."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.stage = "waiting"
+        self.downloaded = 0
+        self.total = 0
+        self.speed = 0.0
+        self.eta: int | None = None
+        self.detail = ""
+        self.revision = 0
+
+    def set_stage(self, stage: str, detail: str = "", *, reset: bool = True) -> None:
+        with self._lock:
+            self.stage = stage
+            self.detail = detail
+            self.revision += 1
+            if reset:
+                self.downloaded = 0
+                self.total = 0
+                self.speed = 0.0
+                self.eta = None
+
+    def update_download(self, data: dict) -> None:
+        status = data.get("status")
+        if status == "finished":
+            info = data.get("info_dict") if isinstance(data.get("info_dict"), dict) else {}
+            vcodec = info.get("vcodec")
+            acodec = info.get("acodec")
+            if acodec == "none" and vcodec not in {None, "none"}:
+                self.set_stage("audio_pending")
+            elif vcodec == "none" and acodec not in {None, "none"}:
+                self.set_stage("merging")
+            else:
+                self.set_stage("processing")
+            return
+        if status != "downloading":
+            return
+        info = data.get("info_dict") if isinstance(data.get("info_dict"), dict) else {}
+        vcodec = info.get("vcodec")
+        acodec = info.get("acodec")
+        if vcodec == "none" and acodec not in {None, "none"}:
+            stage = "audio"
+        elif acodec == "none" and vcodec not in {None, "none"}:
+            stage = "video"
+        else:
+            stage = "media"
+        try:
+            downloaded = int(data.get("downloaded_bytes") or 0)
+            total = int(data.get("total_bytes") or data.get("total_bytes_estimate") or 0)
+            speed = float(data.get("speed") or 0)
+            eta_value = data.get("eta")
+            eta = max(0, int(float(eta_value))) if eta_value is not None else None
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            # MP4 tách video/audio có thể chạy 100% rồi về 0%. Đổi tên giai đoạn
+            # giúp người dùng hiểu đây là luồng thứ hai chứ không phải tải lại.
+            self.stage = stage
+            self.downloaded = downloaded
+            self.total = total
+            self.speed = speed
+            self.eta = eta
+            self.revision += 1
+
+    def update_postprocessor(self, data: dict) -> None:
+        status = data.get("status")
+        name = str(data.get("postprocessor") or "FFmpeg")
+        if status in {"started", "processing"}:
+            stage = "merging" if name.casefold() == "merger" else "processing"
+            self.set_stage(stage, name)
+        elif status == "finished":
+            if name.casefold() == "merger":
+                self.set_stage("finalizing", "Kiểm tra container MP4")
+            elif name.casefold() == "movefiles":
+                self.set_stage("verifying")
+
+    def set_counts(self, downloaded: int, total: int) -> None:
+        with self._lock:
+            self.downloaded = max(0, int(downloaded))
+            self.total = max(0, int(total))
+            self.revision += 1
+
+    def snapshot(self) -> tuple[str, int, int, float, int | None, str, int]:
+        with self._lock:
+            return (
+                self.stage,
+                self.downloaded,
+                self.total,
+                self.speed,
+                self.eta,
+                self.detail,
+                self.revision,
+            )
+
+
+@dataclass(frozen=True)
+class YouTubeVideoVariant:
+    height: int
+    format_id: str
+    estimated_size: int = 0
+
+
 @dataclass(frozen=True)
 class MediaItem:
     platform: str
@@ -80,6 +192,9 @@ class MediaItem:
     direct_headers: dict[str, str] | None = None
     media_kind: str = "video"
     image_sources: tuple[tuple[str, ...], ...] = ()
+    output_format: str | None = None
+    youtube_video_variants: tuple[YouTubeVideoVariant, ...] = ()
+    youtube_audio_format_id: str | None = None
 
 
 def _clean_url(raw_url: str) -> str:
@@ -220,8 +335,8 @@ def _probe_tikwm_sync(url: str) -> MediaItem:
         duration = 0
     if duration <= 0:
         raise MediaDownloadError("TikWM fallback không xác định được thời lượng video.")
-    if duration > MAX_MEDIA_DURATION:
-        raise MediaDownloadError("Chỉ hỗ trợ video có thời lượng tối đa 10 phút.")
+    if duration >= MAX_MEDIA_DURATION:
+        raise MediaDownloadError("Chỉ hỗ trợ nội dung có thời lượng dưới 60 phút.")
 
     logger.info("TikWM fallback đọc được TikTok video: %s", url)
     return MediaItem(
@@ -242,6 +357,67 @@ def _format_duration(seconds: int) -> str:
     minutes, seconds = divmod(int(seconds), 60)
     hours, minutes = divmod(minutes, 60)
     return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+def _format_bytes(value: int | float) -> str:
+    size = max(0.0, float(value or 0))
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.0f} {unit}" if unit in {"B", "KiB"} else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GiB"
+
+
+def _format_eta(seconds: int | None) -> str:
+    if seconds is None:
+        return "chưa rõ"
+    if seconds < 60:
+        return f"{seconds} giây"
+    minutes, seconds = divmod(seconds, 60)
+    return f"{minutes} phút {seconds:02d} giây"
+
+
+def _render_download_progress(progress: MediaDownloadProgress) -> str:
+    stage, downloaded, total, speed, eta, detail, _revision = progress.snapshot()
+    labels = {
+        "waiting": "⏳ **Đang chờ lượt tải…**",
+        "preparing": "🔎 **Đang chuẩn bị nguồn tải…**",
+        "video": "🎬 **Đang tải hình ảnh…**",
+        "audio_pending": "🎵 **Hình ảnh đã xong — đang chuẩn bị audio gốc…**",
+        "audio": "🎵 **Đang tải audio gốc…**",
+        "media": "⬇️ **Đang tải media…**",
+        "images": "🖼️ **Đang tải ảnh…**",
+        "processing": "🔧 **Đang ghép/chuyển đổi file…**",
+        "merging": "🔧 **Đang ghép hình ảnh và audio gốc…**",
+        "finalizing": "📦 **Đang hoàn thiện file MP4…**",
+        "verifying": "🔍 **Đang kiểm tra file kết quả…**",
+        "uploading": "📤 **Đang gửi file lên Discord…**",
+        "publishing": "☁️ **Đang tạo liên kết tải riêng…**",
+    }
+    lines = [labels.get(stage, "⏳ **Đang xử lý…**")]
+    if stage in {"video", "audio", "media", "images"}:
+        if total > 0:
+            ratio = min(1.0, downloaded / total)
+            filled = min(12, int(ratio * 12))
+            bar = "█" * filled + "░" * (12 - filled)
+            lines.append(f"`{bar}` **{ratio * 100:.0f}%**")
+            if stage == "images":
+                lines.append(f"`{downloaded}/{total} ảnh`")
+            else:
+                lines.append(f"`{_format_bytes(downloaded)} / {_format_bytes(total)}`")
+        elif downloaded > 0:
+            lines.append(f"Đã nhận `{_format_bytes(downloaded)}`")
+        extras = []
+        if speed > 0:
+            extras.append(f"{_format_bytes(speed)}/s")
+        if eta is not None:
+            extras.append(f"còn khoảng {_format_eta(eta)}")
+        if extras:
+            lines.append(" • ".join(extras))
+    elif detail:
+        lines.append(f"`{detail[:100]}`")
+    lines.append("-# Bạn có thể tiếp tục dùng Discord; Peto sẽ báo khi file sẵn sàng.")
+    return "\n".join(lines)
 
 
 def _safe_filename(title: str, extension: str) -> str:
@@ -352,9 +528,9 @@ def _select_mp4_format(info: dict, platform: str, upload_limit: int) -> str | No
 
         if looks_combined:
             combined.append(media_format)
-        elif platform == "x" and looks_video_only:
+        elif platform in {"x", "youtube"} and looks_video_only:
             video_only.append(media_format)
-        elif platform == "x" and looks_audio:
+        elif platform in {"x", "youtube"} and looks_audio:
             audio_only.append(media_format)
 
     def rank(media_format: dict) -> tuple:
@@ -380,7 +556,7 @@ def _select_mp4_format(info: dict, platform: str, upload_limit: int) -> str | No
     if combined:
         return str(max(combined, key=rank).get("format_id") or "") or None
 
-    if platform != "x" or not video_only or not audio_only:
+    if platform not in {"x", "youtube"} or not video_only or not audio_only:
         return None
 
     pairs: list[tuple[dict, dict]] = []
@@ -411,7 +587,184 @@ def _select_mp4_format(info: dict, platform: str, upload_limit: int) -> str | No
     return f"{video_id}+{audio_id}" if video_id and audio_id else None
 
 
-def _probe_media_sync(platform: str, url: str) -> MediaItem:
+def _select_youtube_mp4_variants(
+    info: dict,
+    output_limit: int,
+) -> tuple[YouTubeVideoVariant, ...]:
+    """Chọn tối đa ba bản MP4 phổ biến, có audio và không vượt giới hạn gateway."""
+    safe_limit = max(1, output_limit - UPLOAD_SAFETY_MARGIN)
+    duration = int(info.get("duration") or 0)
+    formats = [
+        media_format
+        for media_format in info.get("formats") or []
+        if media_format.get("url")
+        and "unplayable" not in str(media_format.get("format_note") or "").casefold()
+    ]
+    audio_only = [
+        media_format
+        for media_format in formats
+        if media_format.get("vcodec") == "none"
+        and media_format.get("acodec") not in {None, "none"}
+    ]
+
+    original_language = str(info.get("language") or "").casefold()
+
+    def audio_rank(media_format: dict) -> tuple:
+        extension = str(media_format.get("ext") or "").casefold()
+        acodec = str(media_format.get("acodec") or "").casefold()
+        language = str(media_format.get("language") or "").casefold()
+        note = str(media_format.get("format_note") or "").casefold()
+        try:
+            language_preference = float(media_format.get("language_preference") or 0)
+        except (TypeError, ValueError):
+            language_preference = 0
+        bitrate = float(media_format.get("abr") or media_format.get("tbr") or 0)
+        is_original = "original" in note or "default" in note or language_preference > 0
+        matches_original_language = bool(
+            original_language
+            and language
+            and (
+                language == original_language
+                or language.split("-", 1)[0] == original_language.split("-", 1)[0]
+            )
+        )
+        return (
+            is_original,
+            language_preference,
+            matches_original_language,
+            extension in {"m4a", "mp4"},
+            acodec.startswith("mp4a"),
+            bitrate,
+        )
+
+    audio_only.sort(key=audio_rank, reverse=True)
+    candidates_by_height: dict[int, list[tuple[tuple, YouTubeVideoVariant]]] = {}
+
+    for video in formats:
+        try:
+            height = int(video.get("height") or 0)
+        except (TypeError, ValueError):
+            height = 0
+        if height <= 0 or height > 1080 or video.get("vcodec") in {None, "none"}:
+            continue
+
+        video_id = str(video.get("format_id") or "")
+        if not video_id:
+            continue
+        video_size = _estimated_format_size(video, duration)
+        acodec = video.get("acodec")
+        selected_audio: dict | None = None
+        format_id = video_id
+        estimated_size = video_size
+
+        if acodec == "none":
+            for audio in audio_only:
+                audio_size = _estimated_format_size(audio, duration)
+                if video_size and audio_size and video_size + audio_size > safe_limit:
+                    continue
+                selected_audio = audio
+                audio_id = str(audio.get("format_id") or "")
+                if audio_id:
+                    format_id = f"{video_id}+{audio_id}"
+                    estimated_size = video_size + audio_size if video_size and audio_size else 0
+                    break
+            if selected_audio is None:
+                continue
+
+        if estimated_size and estimated_size > safe_limit:
+            continue
+
+        extension = str(video.get("ext") or "").casefold()
+        vcodec = str(video.get("vcodec") or "").casefold()
+        dynamic_range = str(video.get("dynamic_range") or "SDR").upper()
+        fps = float(video.get("fps") or 0)
+        bitrate = float(video.get("tbr") or 0)
+        mp4_compatible_audio = selected_audio is None or (
+            str(selected_audio.get("ext") or "").casefold() in {"m4a", "mp4"}
+            and str(selected_audio.get("acodec") or "").casefold().startswith("mp4a")
+        )
+        rank = (
+            extension == "mp4",
+            vcodec.startswith(("avc", "h264")),
+            mp4_compatible_audio,
+            dynamic_range == "SDR",
+            bool(estimated_size),
+            fps,
+            bitrate,
+        )
+        candidates_by_height.setdefault(height, []).append(
+            (rank, YouTubeVideoVariant(height, format_id, estimated_size))
+        )
+
+    best_by_height = {
+        height: max(candidates, key=lambda candidate: candidate[0])[1]
+        for height, candidates in candidates_by_height.items()
+    }
+    if not best_by_height:
+        return ()
+
+    # Ưu tiên đúng ba mốc quen thuộc. Nếu nguồn thiếu một mốc, lấy bản gần nhất
+    # nhưng không tạo hai nút trỏ tới cùng một độ phân giải.
+    selected: list[YouTubeVideoVariant] = []
+    remaining_heights = set(best_by_height)
+    for target in (360, 720, 1080):
+        if not remaining_heights:
+            break
+        height = min(
+            remaining_heights,
+            key=lambda value: (abs(value - target), value > target, -value),
+        )
+        selected.append(best_by_height[height])
+        remaining_heights.remove(height)
+
+    return tuple(sorted(selected, key=lambda variant: variant.height))
+
+
+def _select_youtube_original_audio(info: dict) -> str | None:
+    """Chọn audio gốc/default tốt nhất, không để track lồng tiếng thắng vì bitrate."""
+    original_language = str(info.get("language") or "").casefold()
+    candidates: list[dict] = []
+    for media_format in info.get("formats") or []:
+        if (
+            media_format.get("url")
+            and media_format.get("vcodec") == "none"
+            and media_format.get("acodec") not in {None, "none"}
+            and "unplayable"
+            not in str(media_format.get("format_note") or "").casefold()
+        ):
+            candidates.append(media_format)
+    if not candidates:
+        return None
+
+    def rank(media_format: dict) -> tuple:
+        language = str(media_format.get("language") or "").casefold()
+        note = str(media_format.get("format_note") or "").casefold()
+        try:
+            language_preference = float(media_format.get("language_preference") or 0)
+        except (TypeError, ValueError):
+            language_preference = 0
+        matches_original_language = bool(
+            original_language
+            and language
+            and (
+                language == original_language
+                or language.split("-", 1)[0] == original_language.split("-", 1)[0]
+            )
+        )
+        is_original = "original" in note or "default" in note or language_preference > 0
+        bitrate = float(media_format.get("abr") or media_format.get("tbr") or 0)
+        quality = float(media_format.get("quality") or 0)
+        return is_original, language_preference, matches_original_language, quality, bitrate
+
+    return str(max(candidates, key=rank).get("format_id") or "") or None
+
+
+def _probe_media_sync(
+    platform: str,
+    url: str,
+    output_limit: int = DEFAULT_UPLOAD_LIMIT,
+    requested_format: str | None = None,
+) -> MediaItem:
     options = _common_ydl_options(platform)
     options.update({"skip_download": True})
 
@@ -480,18 +833,31 @@ def _probe_media_sync(platform: str, url: str) -> MediaItem:
         duration = 0
     if duration <= 0:
         raise MediaDownloadError("Không xác định được thời lượng của nội dung này.")
-    if duration > MAX_MEDIA_DURATION:
-        raise MediaDownloadError("Chỉ hỗ trợ video có thời lượng tối đa 10 phút.")
+    if duration >= MAX_MEDIA_DURATION:
+        raise MediaDownloadError("Chỉ hỗ trợ nội dung có thời lượng dưới 60 phút.")
 
     format_id = None
     direct_url = None
     direct_headers = None
-    if platform in {"tiktok", "x"}:
-        format_id = _select_mp4_format(info, platform, DEFAULT_UPLOAD_LIMIT)
+    youtube_video_variants: tuple[YouTubeVideoVariant, ...] = ()
+    youtube_audio_format_id = None
+    if platform == "youtube":
+        youtube_video_variants = _select_youtube_mp4_variants(info, output_limit)
+        youtube_audio_format_id = _select_youtube_original_audio(info)
+    wants_mp4 = platform in {"tiktok", "x"} or (
+        platform == "youtube" and requested_format == "mp4"
+    )
+    if wants_mp4:
+        if platform == "youtube" and youtube_video_variants:
+            format_id = youtube_video_variants[-1].format_id
+        else:
+            format_id = _select_mp4_format(info, platform, output_limit)
         if not format_id:
             if platform == "tiktok":
                 raise MediaDownloadError("Không tìm thấy bản MP4 không watermark phù hợp để tải.")
-            raise MediaDownloadError("Không tìm thấy bản MP4 có cả hình và tiếng phù hợp.")
+            raise MediaDownloadError(
+                "Không tìm thấy bản MP4 có cả hình và tiếng phù hợp trong giới hạn tải."
+            )
 
         # URL playback của TikTok thường là CDN đã ký và không watermark. Giữ URL này
         # để nút tải không phải gọi trang TikTok lần thứ hai (rất dễ dính challenge).
@@ -532,6 +898,9 @@ def _probe_media_sync(platform: str, url: str) -> MediaItem:
         format_id=format_id,
         direct_url=direct_url,
         direct_headers=direct_headers,
+        output_format="mp4" if wants_mp4 else "mp3",
+        youtube_video_variants=youtube_video_variants,
+        youtube_audio_format_id=youtube_audio_format_id,
     )
 
 
@@ -628,7 +997,7 @@ def _probe_tiktok_photo_sync(url: str) -> MediaItem:
 def _choose_mp3_bitrate(duration: int, upload_limit: int) -> int | None:
     safe_bytes = max(1, upload_limit - UPLOAD_SAFETY_MARGIN)
     budget_kbps = safe_bytes * 8 / max(1, duration) / 1000
-    for bitrate in (192, 160, 128, 112, 96):
+    for bitrate in (320, 256, 224, 192, 160, 128, 112, 96):
         if bitrate <= budget_kbps:
             return bitrate
     return None
@@ -647,7 +1016,12 @@ def _find_downloaded_file(directory: str, extension: str) -> str:
     return str(max(candidates, key=lambda path: path.stat().st_mtime))
 
 
-def _download_direct_mp4_sync(item: MediaItem, upload_limit: int, directory: str) -> tuple[str, str]:
+def _download_direct_mp4_sync(
+    item: MediaItem,
+    upload_limit: int,
+    directory: str,
+    progress: MediaDownloadProgress | None = None,
+) -> tuple[str, str]:
     if not item.direct_url:
         raise MediaDownloadError("Link tải TikTok tạm thời không còn hợp lệ.")
 
@@ -669,18 +1043,27 @@ def _download_direct_mp4_sync(item: MediaItem, upload_limit: int, directory: str
                 content_length = 0
             if content_length and content_length > upload_limit:
                 raise MediaDownloadError(
-                    "Bản MP4 không watermark vượt giới hạn upload hiện tại của Discord."
+                    "Bản MP4 không watermark vượt giới hạn tải ngoài hiện tại."
                 )
 
             downloaded = 0
+            if progress:
+                progress.set_stage("media")
             with open(destination, "wb") as output:
                 while chunk := response.read(256 * 1024):
                     downloaded += len(chunk)
                     if downloaded > upload_limit:
                         raise MediaDownloadError(
-                            "Bản MP4 không watermark vượt giới hạn upload hiện tại của Discord."
+                            "Bản MP4 không watermark vượt giới hạn tải ngoài hiện tại."
                         )
                     output.write(chunk)
+                    if progress:
+                        progress.update_download({
+                            "status": "downloading",
+                            "downloaded_bytes": downloaded,
+                            "total_bytes": content_length,
+                            "info_dict": {"vcodec": "unknown", "acodec": "unknown"},
+                        })
     except MediaDownloadError:
         raise
     except (HTTPError, URLError, TimeoutError, OSError) as error:
@@ -697,6 +1080,7 @@ def _download_tiktok_images_sync(
     item: MediaItem,
     upload_limit: int,
     directory: str,
+    progress: MediaDownloadProgress | None = None,
 ) -> list[tuple[str, str]]:
     if not item.image_sources:
         raise MediaDownloadError("Album TikTok này không có danh sách ảnh hợp lệ.")
@@ -709,6 +1093,8 @@ def _download_tiktok_images_sync(
     }
     downloaded_files: list[tuple[str, str]] = []
     total_bytes = 0
+    if progress:
+        progress.set_stage("images", f"0/{len(item.image_sources)} ảnh")
 
     for index, sources in enumerate(item.image_sources, start=1):
         last_error: Exception | None = None
@@ -750,6 +1136,13 @@ def _download_tiktok_images_sync(
                     raise MediaDownloadError(f"Ảnh số {index} bị rỗng.")
                 total_bytes += image_bytes
                 downloaded_files.append((destination, f"tiktok_{index:02d}.{extension}"))
+                if progress:
+                    progress.set_stage(
+                        "images",
+                        f"{index}/{len(item.image_sources)} ảnh",
+                        reset=False,
+                    )
+                    progress.set_counts(index, len(item.image_sources))
                 completed = True
                 break
             except MediaDownloadError:
@@ -765,9 +1158,14 @@ def _download_tiktok_images_sync(
     return downloaded_files
 
 
-def _download_media_sync(item: MediaItem, upload_limit: int, directory: str) -> tuple[str, str]:
+def _download_media_sync(
+    item: MediaItem,
+    upload_limit: int,
+    directory: str,
+    progress: MediaDownloadProgress | None = None,
+) -> tuple[str, str]:
     if item.platform == "tiktok" and item.direct_url:
-        return _download_direct_mp4_sync(item, upload_limit, directory)
+        return _download_direct_mp4_sync(item, upload_limit, directory, progress)
 
     options = _common_ydl_options(item.platform)
     options.update({
@@ -775,9 +1173,13 @@ def _download_media_sync(item: MediaItem, upload_limit: int, directory: str) -> 
         "restrictfilenames": True,
         "overwrites": True,
     })
+    if progress:
+        progress.set_stage("preparing")
+        options["progress_hooks"] = [progress.update_download]
+        options["postprocessor_hooks"] = [progress.update_postprocessor]
 
     extension: str
-    if item.platform == "youtube":
+    if item.platform == "youtube" and item.output_format != "mp4":
         bitrate = _choose_mp3_bitrate(item.duration, upload_limit)
         if bitrate is None:
             raise MediaDownloadError(
@@ -785,7 +1187,7 @@ def _download_media_sync(item: MediaItem, upload_limit: int, directory: str) -> 
             )
         extension = "mp3"
         options.update({
-            "format": "bestaudio/best",
+            "format": item.youtube_audio_format_id or "bestaudio/best",
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
@@ -798,6 +1200,7 @@ def _download_media_sync(item: MediaItem, upload_limit: int, directory: str) -> 
             raise MediaDownloadError("Không còn tìm thấy định dạng MP4 phù hợp.")
         options["format"] = item.format_id
         options["merge_output_format"] = "mp4"
+        options["remuxvideo"] = "mp4"
         options["max_filesize"] = max(1, upload_limit - UPLOAD_SAFETY_MARGIN)
 
     try:
@@ -810,6 +1213,9 @@ def _download_media_sync(item: MediaItem, upload_limit: int, directory: str) -> 
             "Nguồn tải từ nền tảng đang từ chối hoặc file vượt giới hạn dung lượng."
         ) from error
 
+    if progress:
+        progress.set_stage("verifying")
+
     filepath = _find_downloaded_file(directory, extension)
     size = os.path.getsize(filepath)
     if size <= 0:
@@ -818,7 +1224,7 @@ def _download_media_sync(item: MediaItem, upload_limit: int, directory: str) -> 
         size_mib = size / (1024 * 1024)
         limit_mib = upload_limit / (1024 * 1024)
         raise MediaDownloadError(
-            f"File có dung lượng {size_mib:.1f} MiB, vượt giới hạn Discord {limit_mib:.1f} MiB."
+            f"File có dung lượng {size_mib:.1f} MiB, vượt giới hạn xử lý {limit_mib:.1f} MiB."
         )
 
     return filepath, _safe_filename(item.title, extension)
@@ -830,7 +1236,13 @@ def _build_media_embed(item: MediaItem) -> discord.Embed:
         detail_name = "🖼️ Nội dung"
         detail_value = "TikTok photo post"
     else:
-        output = "MP3" if item.platform == "youtube" else "MP4"
+        if item.platform == "youtube" and item.youtube_video_variants:
+            qualities = ", ".join(
+                f"{variant.height}p" for variant in item.youtube_video_variants
+            )
+            output = f"MP3 chất lượng cao • MP4 {qualities}"
+        else:
+            output = "MP3" if item.output_format == "mp3" else "MP4"
         detail_name = "⏱️ Thời lượng"
         detail_value = _format_duration(item.duration)
     if item.platform == "tiktok" and item.media_kind != "photo":
@@ -851,25 +1263,32 @@ def _build_media_embed(item: MediaItem) -> discord.Embed:
 
 
 class MediaDownloadButton(discord.ui.Button):
-    def __init__(self, item: MediaItem):
+    def __init__(
+        self,
+        item: MediaItem,
+        *,
+        label: str | None = None,
+        style: discord.ButtonStyle = discord.ButtonStyle.success,
+    ):
         if item.media_kind == "photo":
-            label = "Tải ảnh"
+            default_label = "Tải ảnh"
             emoji = "🖼️"
-        elif item.platform == "youtube":
-            label = "Tải MP3"
-            emoji = "⬇️"
+        elif item.platform == "youtube" and item.output_format != "mp4":
+            default_label = "MP3 chất lượng cao"
+            emoji = "🎵"
         elif item.platform == "tiktok":
-            label = "Tải MP4 không watermark"
+            default_label = "Tải MP4 không watermark"
             emoji = "⬇️"
         else:
-            label = "Tải MP4"
-            emoji = "⬇️"
-        super().__init__(label=label, emoji=emoji, style=discord.ButtonStyle.success)
+            default_label = "Tải MP4"
+            emoji = "🎬" if item.platform == "youtube" else "⬇️"
+        super().__init__(label=label or default_label, emoji=emoji, style=style)
+        self.download_item = item
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
         if isinstance(view, MediaDownloadView):
-            await view.download(interaction)
+            await view.download(interaction, self.download_item)
 
 
 class MediaDownloadView(discord.ui.View):
@@ -878,7 +1297,26 @@ class MediaDownloadView(discord.ui.View):
         self.cog = cog
         self.item = item
         self.message: discord.Message | None = None
-        self.add_item(MediaDownloadButton(item))
+        if item.platform == "youtube":
+            self.add_item(
+                MediaDownloadButton(
+                    replace(item, output_format="mp3", format_id=None),
+                )
+            )
+            for variant in item.youtube_video_variants:
+                self.add_item(
+                    MediaDownloadButton(
+                        replace(
+                            item,
+                            output_format="mp4",
+                            format_id=variant.format_id,
+                        ),
+                        label=f"MP4 {variant.height}p",
+                        style=discord.ButtonStyle.primary,
+                    )
+                )
+        else:
+            self.add_item(MediaDownloadButton(item))
 
     async def on_timeout(self) -> None:
         for child in self.children:
@@ -889,7 +1327,43 @@ class MediaDownloadView(discord.ui.View):
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
 
-    async def download(self, interaction: discord.Interaction) -> None:
+    @staticmethod
+    async def _run_progress_tracker(
+        interaction: discord.Interaction,
+        progress: MediaDownloadProgress,
+        stop_event: asyncio.Event,
+    ) -> None:
+        last_content = ""
+        last_stage = ""
+        last_revision = -1
+        last_edit_at = 0.0
+        while not stop_event.is_set():
+            stage, *_values, revision = progress.snapshot()
+            now = asyncio.get_running_loop().time()
+            stage_changed = stage != last_stage
+            progress_due = revision != last_revision and now - last_edit_at >= 4.0
+            if stage_changed or progress_due or not last_content:
+                content = _render_download_progress(progress)
+                try:
+                    await interaction.edit_original_response(content=content)
+                    last_content = content
+                    last_stage = stage
+                    last_revision = revision
+                    last_edit_at = now
+                except (discord.NotFound, discord.Forbidden):
+                    return
+                except discord.HTTPException:
+                    logger.debug("Không thể cập nhật Download Tracker lúc này", exc_info=True)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=0.5)
+            except asyncio.TimeoutError:
+                pass
+
+    async def download(
+        self,
+        interaction: discord.Interaction,
+        selected_item: MediaItem | None = None,
+    ) -> None:
         user_id = interaction.user.id
         if user_id in self.cog.active_users:
             return await interaction.response.send_message(
@@ -900,13 +1374,35 @@ class MediaDownloadView(discord.ui.View):
         self.cog.active_users.add(user_id)
         await interaction.response.defer(ephemeral=True, thinking=True)
         temp_dir: str | None = None
+        progress = MediaDownloadProgress()
+        stop_tracker = asyncio.Event()
+        tracker_task = asyncio.create_task(
+            self._run_progress_tracker(interaction, progress, stop_tracker),
+            name=f"media-download-progress-{interaction.id}",
+        )
+
+        async def stop_progress_tracker() -> None:
+            stop_tracker.set()
+            try:
+                await tracker_task
+            except asyncio.CancelledError:
+                pass
+
         try:
             async with self.cog.download_semaphore:
                 upload_limit = int(
                     getattr(interaction, "filesize_limit", None) or DEFAULT_UPLOAD_LIMIT
                 )
-                item = self.item
+                gateway = self.cog.bot.get_cog("DownloadGateway")
+                gateway_enabled = bool(gateway and getattr(gateway, "enabled", False))
+                processing_limit = (
+                    max(upload_limit, int(getattr(gateway, "max_file_bytes", 0)))
+                    if gateway_enabled
+                    else upload_limit
+                )
+                item = selected_item or self.item
                 if item.media_kind == "photo" and not item.image_sources:
+                    progress.set_stage("preparing", "Đang đọc album TikTok")
                     item = await asyncio.to_thread(_probe_tiktok_photo_sync, item.url)
                     self.item = item
                 elif (
@@ -914,10 +1410,12 @@ class MediaDownloadView(discord.ui.View):
                     and item.platform == "tiktok"
                     and not item.direct_url
                 ):
+                    progress.set_stage("preparing", "Đang làm mới link TikTok")
                     item = await asyncio.to_thread(
                         _probe_media_sync,
                         item.platform,
                         item.url,
+                        processing_limit,
                     )
                     self.item = item
                 temp_dir = tempfile.mkdtemp(prefix="peto-media-")
@@ -928,6 +1426,7 @@ class MediaDownloadView(discord.ui.View):
                         item,
                         upload_limit,
                         temp_dir,
+                        progress,
                     )
                     batches: list[list[tuple[str, str]]] = []
                     current_batch: list[tuple[str, str]] = []
@@ -947,19 +1446,33 @@ class MediaDownloadView(discord.ui.View):
                         batches.append(current_batch)
 
                     for batch_index, batch in enumerate(batches, start=1):
+                        progress.set_stage(
+                            "uploading",
+                            f"Lượt {batch_index}/{len(batches)}",
+                        )
                         uploads = [
                             discord.File(path, filename=filename)
                             for path, filename in batch
                         ]
                         try:
-                            await interaction.followup.send(
-                                (
-                                    f"✅ Ảnh TikTok của bạn đã sẵn sàng "
-                                    f"({batch_index}/{len(batches)}):"
-                                ),
-                                files=uploads,
-                                ephemeral=True,
-                            )
+                            if batch_index == 1:
+                                await stop_progress_tracker()
+                                await interaction.edit_original_response(
+                                    content=(
+                                        f"✅ Ảnh TikTok đã sẵn sàng "
+                                        f"({batch_index}/{len(batches)}):"
+                                    ),
+                                    attachments=uploads,
+                                )
+                            else:
+                                await interaction.followup.send(
+                                    (
+                                        f"✅ Ảnh TikTok của bạn đã sẵn sàng "
+                                        f"({batch_index}/{len(batches)}):"
+                                    ),
+                                    files=uploads,
+                                    ephemeral=True,
+                                )
                         finally:
                             for upload in uploads:
                                 upload.close()
@@ -968,16 +1481,49 @@ class MediaDownloadView(discord.ui.View):
                 filepath, filename = await asyncio.to_thread(
                     _download_media_sync,
                     item,
-                    upload_limit,
+                    processing_limit,
                     temp_dir,
+                    progress,
                 )
 
+                file_size = os.path.getsize(filepath)
+                if file_size > upload_limit:
+                    if not gateway_enabled:
+                        raise MediaDownloadError(
+                            "File vượt giới hạn upload của Discord và Download Gateway "
+                            "chưa được kết nối Cloudflare."
+                        )
+                    try:
+                        progress.set_stage("publishing")
+                        public_url = await gateway.publish_file(
+                            filepath,
+                            display_name=filename,
+                            owner_id=user_id,
+                        )
+                    except Exception as error:
+                        from features.download_gateway import DownloadGatewayError
+
+                        if isinstance(error, DownloadGatewayError):
+                            raise MediaDownloadError(str(error)) from error
+                        raise
+                    await stop_progress_tracker()
+                    await interaction.edit_original_response(
+                        content=(
+                            "✅ File lớn đã sẵn sàng tải bên ngoài Discord:\n"
+                            f"<{public_url}>\n"
+                            "-# Link riêng tư, hết hạn sau 2 giờ; đừng chia sẻ cho người khác."
+                        ),
+                        attachments=[],
+                    )
+                    return
+
+                progress.set_stage("uploading")
                 upload = discord.File(filepath, filename=filename)
                 try:
-                    await interaction.followup.send(
-                        "✅ File của bạn đã sẵn sàng:",
-                        file=upload,
-                        ephemeral=True,
+                    await stop_progress_tracker()
+                    await interaction.edit_original_response(
+                        content="✅ File của bạn đã sẵn sàng:",
+                        attachments=[upload],
                     )
                 finally:
                     upload.close()
@@ -989,18 +1535,24 @@ class MediaDownloadView(discord.ui.View):
                 user_id,
                 error,
             )
-            await interaction.followup.send(f"❌ {error}", ephemeral=True)
+            await stop_progress_tracker()
+            await interaction.edit_original_response(
+                content=f"❌ {error}",
+                attachments=[],
+            )
         except Exception:
             logger.exception(
                 "Universal Media Downloader thất bại (platform=%s, user=%s)",
                 self.item.platform,
                 user_id,
             )
-            await interaction.followup.send(
-                "❌ Không thể chuẩn bị file lúc này. Hãy thử lại sau nhé.",
-                ephemeral=True,
+            await stop_progress_tracker()
+            await interaction.edit_original_response(
+                content="❌ Không thể chuẩn bị file lúc này. Hãy thử lại sau nhé.",
+                attachments=[],
             )
         finally:
+            await stop_progress_tracker()
             self.cog.active_users.discard(user_id)
             if temp_dir:
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -1017,11 +1569,15 @@ class MediaDownloader(commands.Cog):
         name="download",
         description="Tải media từ YouTube, TikTok hoặc X",
     )
-    @app_commands.describe(link="Link YouTube, TikTok video/photo hoặc X/Twitter")
+    @app_commands.describe(
+        link="Link YouTube, TikTok video/photo hoặc X/Twitter",
+        format="Định dạng đầu ra; auto = YouTube MP3, TikTok/X MP4",
+    )
     async def download_command(
         self,
         interaction: discord.Interaction,
         link: str,
+        format: Literal["auto", "mp3", "mp4"] = "auto",
     ) -> None:
         url = _clean_url(link)
         platform = _platform_from_url(url)
@@ -1030,15 +1586,40 @@ class MediaDownloader(commands.Cog):
                 "❌ Chỉ hỗ trợ link YouTube, TikTok và X/Twitter.",
                 ephemeral=True,
             )
+        if platform != "youtube" and format == "mp3":
+            return await interaction.response.send_message(
+                "❌ Tùy chọn MP3 hiện chỉ áp dụng cho YouTube. TikTok và X tải MP4.",
+                ephemeral=True,
+            )
+        requested_format = (
+            "mp3" if platform == "youtube" and format == "auto" else
+            "mp4" if platform != "youtube" and format == "auto" else
+            format
+        )
 
         await interaction.response.defer(thinking=True, ephemeral=True)
         is_tiktok_photo = bool(_tiktok_photo_id(url))
         try:
             async with self.probe_semaphore:
+                upload_limit = int(
+                    getattr(interaction, "filesize_limit", None) or DEFAULT_UPLOAD_LIMIT
+                )
+                gateway = self.bot.get_cog("DownloadGateway")
+                probe_limit = (
+                    max(upload_limit, int(getattr(gateway, "max_file_bytes", 0)))
+                    if gateway and getattr(gateway, "enabled", False)
+                    else upload_limit
+                )
                 if is_tiktok_photo:
                     item = await asyncio.to_thread(_probe_tiktok_photo_sync, url)
                 else:
-                    item = await asyncio.to_thread(_probe_media_sync, platform, url)
+                    item = await asyncio.to_thread(
+                        _probe_media_sync,
+                        platform,
+                        url,
+                        probe_limit,
+                        requested_format,
+                    )
         except MediaDownloadError as error:
             if is_tiktok_photo and "chưa trả dữ liệu album" in str(error):
                 logger.info(

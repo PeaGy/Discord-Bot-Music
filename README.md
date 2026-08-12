@@ -30,15 +30,18 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 
 ### Universal Media Downloader
 
-- Lệnh `/download link:<URL>` tạo custom embed **Only Visible to you** có metadata, thumbnail và nút tải cho YouTube, TikTok hoặc X/Twitter; bot không tự quét link trong chat.
-- YouTube được chuyển sang MP3, TikTok video tải MP4 không watermark, TikTok photo tải toàn bộ ảnh gốc và X/Twitter tải MP4.
+- Lệnh `/download link:<URL> [format]` tạo custom embed **Only Visible to you** có metadata, thumbnail và nút tải cho YouTube, TikTok hoặc X/Twitter; bot không tự quét link trong chat.
+- YouTube hiện một hàng lựa chọn gồm **MP3 chất lượng cao** (mục tiêu 320 kbps) và tối đa ba nút MP4 gần các mốc **360p, 720p, 1080p**. Bot chỉ hiện độ phân giải thật sự có trên video và còn nằm trong giới hạn Download Gateway. TikTok/X giữ MP4; TikTok video không watermark và TikTok photo tải toàn bộ ảnh gốc.
+- Với video YouTube có nhiều track lồng tiếng, MP3 và MP4 luôn ưu tiên track được YouTube đánh dấu **original/default** hoặc trùng ngôn ngữ gốc; bitrate của bản dub không được phép ghi đè lựa chọn này.
 - TikTok ưu tiên `yt-dlp`; khi extractor gặp challenge/rehydration hoặc IP bị chặn, bot tự thử TikWM. Link TikTok chỉ được gửi tới dịch vụ bên thứ ba này khi nguồn chính thất bại.
 - File chỉ bắt đầu được tạo khi có người bấm nút và được gửi riêng tư cho người đó qua Discord.
+- Sau khi bấm nút, phản hồi riêng tư hiển thị **Download Tracker** theo từng giai đoạn: chờ lượt, tải hình, tải audio gốc, ghép bằng FFmpeg, hoàn thiện/kiểm tra MP4, gửi Discord hay tạo link Cloudflare. Thay đổi giai đoạn được hiện gần như ngay; phần trăm, số MiB, tốc độ và ETA trong cùng một giai đoạn được giới hạn khoảng bốn giây một lần để tránh Discord rate-limit.
 - Panel và nút tải có hiệu lực trong 10 phút. Với TikTok photo, bot nhận tối đa 35 ảnh, giới hạn tổng dữ liệu tạm 80 MiB và tự chia kết quả thành các lượt tối đa 10 file theo giới hạn upload hiện tại của Discord.
-- Chỉ xử lý một video công khai dài tối đa 10 phút; không nhận playlist, livestream, Facebook hoặc Instagram.
-- Chất lượng MP3 được chọn theo thời lượng và giới hạn upload hiện tại, nhưng không hạ dưới 96 kbps.
-- MP4 giữ nguyên luồng hình/tiếng phù hợp từ nguồn thay vì encode lại; file vượt giới hạn upload sẽ bị từ chối.
+- `/download` xử lý một video công khai có thời lượng **dưới 60 phút**; không nhận playlist, livestream, Facebook hoặc Instagram. Giới hạn 10 phút của nút tải trên Music Panel là luồng riêng và không thay đổi.
+- Khi Download Gateway hoạt động, YouTube MP3 được xuất ở 320 kbps. Nếu gateway bị tắt, bot tự chọn từ 320 xuống tối thiểu 96 kbps theo giới hạn upload Discord.
+- MP4 giữ nguyên luồng hình và ghép luồng tiếng phù hợp từ YouTube thay vì encode lại; file vượt giới hạn gateway sẽ bị từ chối.
 - Tối đa hai lượt tải chạy đồng thời trên toàn bot và mỗi người chỉ có một lượt; file tạm được xóa ngay sau khi gửi.
+- File vừa giới hạn Discord vẫn được gửi trực tiếp. Khi Download Gateway được bật, file lớn hơn được chuyển sang `https://download.pearto.shop` bằng token ngẫu nhiên, không lộ đường dẫn thật và hết hạn sau 2 giờ.
 
 ### Trợ lý AI Peto
 
@@ -279,7 +282,7 @@ Trên Windows có thể dùng:
 | `/lyric` | — | Lấy lời của bài đang phát từ LRCLIB. |
 | `/radio` | — | Mở danh sách radio internet và chọn đài để phát. |
 | `/latency` | — | Hiển thị độ trễ giữa bot và Discord. |
-| `/download` | `link` | Tải YouTube MP3, TikTok video MP4 không watermark, TikTok photo hoặc X/Twitter MP4. |
+| `/download` | `link`, `format` | YouTube: chọn MP3 chất lượng cao hoặc MP4 theo chất lượng có sẵn; TikTok video MP4 không watermark, TikTok photo hoặc X/Twitter MP4. |
 | `/help` | — | Mở bảng trợ giúp tương tác. |
 
 Nút **Loop** trên Music Panel và lệnh `/loop` cùng sử dụng một trạng thái, theo chu kỳ `Off → Track → Queue → Off`.
@@ -356,6 +359,8 @@ Nút **Tải xuống** trên Music Panel hỗ trợ bài có thời lượng t�
 
 Universal Media Downloader hoạt động độc lập với Music Panel. Người dùng gọi `/download link:<URL>` để bot tạo custom embed và button **Only Visible to you**; việc tải và chuyển đổi chỉ chạy sau khi bấm nút, file kết quả cũng được gửi riêng tư. Các link được gửi như tin nhắn bình thường không kích hoạt bot.
 
+`features/download_gateway.py` mở một file gateway chỉ tại `127.0.0.1:8765`; Cloudflare Tunnel ánh xạ `download.pearto.shop` vào cổng này. Gateway dùng bearer token ngẫu nhiên, `Cache-Control: no-store`, giới hạn lượt/IP, file tối đa 512 MiB, kho tạm mặc định 2 GiB và tự hết hạn sau 2 giờ. Không mở port router và không đổi host thành `0.0.0.0` khi dùng Tunnel.
+
 ## Cấu trúc dự án
 
 ```text
@@ -364,7 +369,8 @@ Universal Media Downloader hoạt động độc lập với Music Panel. Ngư�
 ├── commands/               # Các slash command
 ├── features/
 │   ├── ai_chat.py          # Grok, vision, Tavily và tool calling
-│   └── media_downloader.py # Lệnh /download video/ảnh cho YouTube/TikTok/X
+│   ├── media_downloader.py # Lệnh /download video/ảnh cho YouTube/TikTok/X
+│   └── download_gateway.py # Link tải file lớn qua Cloudflare Tunnel
 ├── music/
 │   ├── player.py           # Hàng đợi, autoplay, phát nhạc và radio
 │   ├── controls.py         # Music Panel và các nút tương tác

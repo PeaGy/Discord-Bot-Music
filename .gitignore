@@ -13,6 +13,7 @@ ENV/
 .txt
 cookies.txt
 audio_cache
+temp_downloads/
 *.env
 .xai_tokens.json
 xai_tokens.json
