@@ -46,6 +46,7 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Hỗ trợ đăng nhập SuperGrok bằng OAuth PKCE, tự refresh token và dùng `XAI_API_KEY` làm phương án dự phòng.
 - Có thể đọc tối đa 6 ảnh từ tin hiện tại hoặc chuỗi reply; hỗ trợ JPEG, PNG, WebP và GIF.
 - Hiểu tối đa 8 tin nhắn trong chuỗi reply và có thể tóm tắt 40 tin gần nhất trong đúng kênh khi được hỏi rõ.
+- Câu trả lời dài được chia theo đoạn thành tối đa ba tin Discord và giữ code block. Nội dung dài hơn được gửi trọn vẹn bằng file `.txt` UTF-8 dễ mở trên điện thoại; các nút tương tác vẫn nằm dưới tin cuối.
 - Có thể tìm thông tin mới trên web thông qua Tavily.
 - Menu chuột phải **Hỏi Peto** cho phép giải thích, dịch, tóm tắt hoặc soạn phản hồi từ một tin nhắn mà không cần copy nội dung.
 - Có thể đọc trực tiếp tối đa hai link công khai trong yêu cầu, với kiểm tra URL/redirect để chặn địa chỉ mạng nội bộ.
@@ -53,15 +54,16 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Menu **Tạo sticker & emoji** crop ảnh, thử xóa nền nối với mép và xuất PNG 320×320 cùng 128×128.
 - `/sticker` và `/emoji` nhận ảnh đính kèm; reply ảnh rồi nói `@Peto tạo sticker/emoji` cũng dùng cùng bộ xử lý cục bộ và không gọi Grok Imagine.
 - Có thể gọi công cụ để phát nhạc, bỏ qua bài hoặc tìm fanart SFW từ Danbooru ngay trong hội thoại.
-- Lưu lịch sử theo người dùng và kênh bằng SQLite; trí nhớ dài hạn được tách riêng giữa DM và từng server.
-- Quan hệ với Peto tiến triển riêng theo từng người và từng phạm vi; trí nhớ riêng không được mang sang nơi khác hoặc tiết lộ cho người khác.
-- Giữ tối đa 15 tin nhắn gần nhất làm ngữ cảnh và cập nhật tóm tắt riêng cho đúng phạm vi sau mỗi 20 lượt tương tác.
+- Lưu lịch sử gần theo người dùng và kênh bằng SQLite; trí nhớ dài hạn cá nhân được đồng bộ theo Discord user ID giữa DM và mọi server.
+- Quan hệ với Peto tiến triển riêng theo từng người. Bot có thể giữ cách xưng hô và sở thích khi chuyển server, nhưng không tiết lộ trí nhớ đó cho người khác hoặc trích nguyên văn chat riêng ở nơi công cộng.
+- Giữ tối đa 15 tin nhắn gần nhất làm ngữ cảnh trong từng kênh và cập nhật bản tóm tắt cá nhân dùng chung sau mỗi 20 lượt tương tác.
 - Dữ liệu hội thoại vẫn còn sau khi bot khởi động lại.
 - `/andanh` bật chế độ **Ẩn danh** theo DM hoặc server: chỉ giữ ngữ cảnh tạm trong RAM, không đọc/ghi trí nhớ SQLite.
 - Có lệnh để người dùng, admin server hoặc chủ bot xóa dữ liệu ở phạm vi phù hợp.
 - Tự nhận diện bài tập/toán học để mở **Study Mode** với các nút Gợi ý, Giải chi tiết, Kiểm tra đáp án, Chép đề và Xuất PNG.
 - Study Mode đọc lại ảnh đề khi bấm nút, chỉ người gửi đề được thao tác và tự khóa sau 15 phút.
 - Các nút Study Mode chỉ xuất hiện khi tin nhắn hiện tại có ý định học tập rõ ràng như giải, tính, kiểm tra, gợi ý cách làm hoặc chép đề; từ khóa chủ đề đứng riêng không tự kích hoạt.
+- Study Mode tự giải từ đúng dữ kiện người dùng cung cấp và không dùng Tavily để tìm một bài tương tự. Nếu đề nhắc đến hình/đồ thị nhưng chưa có ảnh trong tin hoặc chuỗi reply, bot yêu cầu gửi ảnh thay vì đoán đáp án.
 
 ### Danbooru
 
@@ -308,7 +310,7 @@ agnes_tachyon_(umamusume)
 | `/private` | Người dùng hiện tại | Mở cuộc trò chuyện DM riêng với Peto. |
 | `/andanh` | DM hoặc server hiện tại | Bật/tắt Ẩn danh; ngữ cảnh chỉ giữ tạm trong RAM và không lưu SQLite. |
 | `/resetmemory` | Người dùng hiện tại | Xóa lịch sử và bản tóm tắt của chính người gọi trong DM và mọi server. |
-| `/resetmemoryall` | Admin server | Xóa lịch sử và tóm tắt chỉ trong server hiện tại. |
+| `/resetmemoryall` | Admin server | Xóa lịch sử chat trong server hiện tại; không xóa trí nhớ cá nhân dùng chung. |
 | `/resetmemoryglobal` | Chủ bot | Xóa toàn bộ lịch sử, bộ đếm và tóm tắt của mọi người dùng. |
 
 Ẩn danh chỉ ngăn bot lưu nội dung vào database cục bộ; yêu cầu vẫn phải được gửi đến Grok/xAI để tạo câu trả lời. Khi tắt Ẩn danh hoặc bot khởi động lại, ngữ cảnh tạm sẽ bị xóa. `/resetmemory` vẫn là lệnh duy nhất để người dùng xóa toàn bộ trí nhớ đã lưu của chính họ; dự án không tạo thêm lệnh `/forgetme` trùng chức năng.
@@ -392,7 +394,7 @@ Các file `scratch_*.py` và `test_*.py` là script kiểm tra thủ công cho D
 - Hàng đợi, lịch sử phát, loop, autoplay và 24/7 được tách riêng theo từng Discord server nhưng vẫn chỉ giữ trong RAM, nên sẽ mất khi bot khởi động lại.
 - Favorites, playlist và 100 lượt nghe gần nhất mỗi server được lưu trong `music_library.db`, nên không mất khi restart.
 - Mỗi người có tối đa 100 favorites, 25 playlist/server và 100 bài/playlist.
-- Phiên nút Study Mode chỉ giữ trong RAM 15 phút; lời giải chat tuân theo phạm vi bộ nhớ hoặc chế độ Ẩn danh hiện tại.
+- Phiên nút Study Mode chỉ giữ trong RAM 15 phút; chế độ Ẩn danh không đọc hoặc cập nhật trí nhớ cá nhân dùng chung.
 - Spotify hiện chỉ hỗ trợ link track; bot lấy metadata Spotify rồi tìm nguồn phát tương ứng trên YouTube.
 - `audio_cache/` chưa có cơ chế giới hạn dung lượng hoặc tự dọn file cũ.
 - Lịch sử AI thường được lưu trong `bot_memory.db` và tồn tại qua restart; nội dung Ẩn danh không được ghi vào file này.

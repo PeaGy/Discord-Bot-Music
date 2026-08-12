@@ -33,7 +33,7 @@ class ResetMemory(commands.Cog):
     # ==========================================
     @app_commands.command(
         name="resetmemoryall",
-        description="🧹 [Admin server] Xoá trí nhớ chat của mọi người TRONG SERVER NÀY",
+        description="🧹 [Admin server] Xoá lịch sử chat của mọi người TRONG SERVER NÀY",
     )
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(administrator=True)
@@ -42,9 +42,9 @@ class ResetMemory(commands.Cog):
         await user_memory.clear_guild(interaction.guild.id, channel_ids)
         embed = discord.Embed(
             description=(
-                "🧹 Đã xoá lịch sử và bản tóm tắt trí nhớ của mọi người "
+                "🧹 Đã xoá lịch sử trò chuyện của mọi người "
                 "**trong server này**.\n"
-                "-# Trí nhớ DM và các server khác không bị ảnh hưởng."
+                "-# Trí nhớ cá nhân dùng chung, DM và các server khác không bị ảnh hưởng."
             )
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)

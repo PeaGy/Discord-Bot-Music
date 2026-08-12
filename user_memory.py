@@ -1,4 +1,4 @@
-"""Bộ nhớ AI tách biệt theo DM hoặc từng Discord server."""
+"""Lịch sử AI theo kênh; trí nhớ dài hạn cá nhân dùng chung mọi server/DM."""
 
 from collections import deque
 
@@ -7,6 +7,7 @@ import aiosqlite
 DB_PATH = "bot_memory.db"
 LEGACY_SCOPE = "legacy"
 DM_SCOPE = "dm"
+GLOBAL_MEMORY_SCOPE = "user:global"
 
 # Chế độ Ẩn danh chỉ giữ ngữ cảnh trong RAM, không ghi nội dung xuống SQLite.
 _anonymous_history: dict[tuple[str, int], deque[dict]] = {}
@@ -105,6 +106,71 @@ async def init_db() -> None:
                 PRIMARY KEY (user_id, scope)
             )
             """
+        )
+
+        # Nâng cấp từ cơ chế tóm tắt tách theo DM/server sang trí nhớ cá nhân
+        # dùng chung. Chỉ gom một lần rồi xóa các bản scope cũ để lần khởi động
+        # sau không nhập trùng nội dung.
+        cursor = await db.execute(
+            """
+            SELECT user_id, summary FROM scoped_user_summary
+            WHERE scope != ? ORDER BY user_id, scope
+            """,
+            (GLOBAL_MEMORY_SCOPE,),
+        )
+        legacy_summaries: dict[int, list[str]] = {}
+        for user_id, summary in await cursor.fetchall():
+            clean = str(summary or "").strip()
+            if clean:
+                legacy_summaries.setdefault(int(user_id), []).append(clean)
+        for user_id, summaries in legacy_summaries.items():
+            existing_cursor = await db.execute(
+                "SELECT summary FROM scoped_user_summary "
+                "WHERE user_id = ? AND scope = ?",
+                (user_id, GLOBAL_MEMORY_SCOPE),
+            )
+            existing_row = await existing_cursor.fetchone()
+            combined = "\n".join(
+                dict.fromkeys(
+                    ([str(existing_row[0]).strip()] if existing_row and existing_row[0] else [])
+                    + summaries
+                )
+            )[:6000]
+            await db.execute(
+                """
+                INSERT INTO scoped_user_summary (user_id, scope, summary)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, scope) DO UPDATE SET summary = excluded.summary
+                """,
+                (user_id, GLOBAL_MEMORY_SCOPE, combined),
+            )
+        await db.execute(
+            "DELETE FROM scoped_user_summary WHERE scope != ?",
+            (GLOBAL_MEMORY_SCOPE,),
+        )
+
+        # Bộ đếm tóm tắt cũng theo người dùng toàn cục để hội thoại ở server
+        # khác tiếp tục chu kỳ cập nhật thay vì bắt đầu lại từ đầu.
+        cursor = await db.execute(
+            """
+            SELECT user_id, COALESCE(SUM(count), 0)
+            FROM scoped_message_count WHERE scope != ? GROUP BY user_id
+            """,
+            (GLOBAL_MEMORY_SCOPE,),
+        )
+        for user_id, count in await cursor.fetchall():
+            await db.execute(
+                """
+                INSERT INTO scoped_message_count (user_id, scope, count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, scope) DO UPDATE
+                SET count = MAX(scoped_message_count.count, excluded.count)
+                """,
+                (int(user_id), GLOBAL_MEMORY_SCOPE, int(count)),
+            )
+        await db.execute(
+            "DELETE FROM scoped_message_count WHERE scope != ?",
+            (GLOBAL_MEMORY_SCOPE,),
         )
         await db.commit()
 
@@ -255,17 +321,14 @@ async def clear_all() -> None:
 
 async def clear_guild(guild_id: int, channel_ids: list[int]) -> None:
     """
-    Xoá lịch sử và tóm tắt thuộc đúng một server; không đụng tới DM hoặc
-    server khác. ``channel_ids`` chỉ dùng để dọn dữ liệu legacy.
+    Xoá lịch sử thuộc đúng một server. Trí nhớ dài hạn cá nhân dùng chung nên
+    admin server không được phép xóa nó. ``channel_ids`` dùng dọn legacy.
     """
     scope = scope_for_guild(guild_id)
     clear_anonymous_scope(scope)
     async with aiosqlite.connect(DB_PATH) as db:
         # Dữ liệu mới xóa thẳng theo scope, bao gồm cả thread đã lưu.
         await db.execute("DELETE FROM chat_history WHERE scope = ?", (scope,))
-        await db.execute("DELETE FROM scoped_user_summary WHERE scope = ?", (scope,))
-        await db.execute("DELETE FROM scoped_message_count WHERE scope = ?", (scope,))
-
         # Dọn thêm lịch sử legacy theo channel cho database nâng cấp từ bản cũ.
         if channel_ids:
             placeholders = ",".join("?" for _ in channel_ids)
@@ -300,7 +363,8 @@ async def get_recent_for_scope(
 
 
 async def increment_message_count(user_id: int, scope: str) -> int:
-    """Tăng bộ đếm riêng trong đúng scope."""
+    """Tăng bộ đếm tóm tắt dùng chung của người dùng (scope giữ để tương thích)."""
+    scope = GLOBAL_MEMORY_SCOPE
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -321,7 +385,8 @@ async def increment_message_count(user_id: int, scope: str) -> int:
 
 
 async def get_summary(user_id: int, scope: str) -> str | None:
-    """Lấy tóm tắt dài hạn trong đúng DM hoặc đúng server."""
+    """Lấy trí nhớ dài hạn dùng chung của người dùng ở mọi server và DM."""
+    scope = GLOBAL_MEMORY_SCOPE
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT summary FROM scoped_user_summary "
@@ -333,7 +398,8 @@ async def get_summary(user_id: int, scope: str) -> str | None:
 
 
 async def set_summary(user_id: int, scope: str, summary: str) -> None:
-    """Ghi đè tóm tắt dài hạn trong đúng scope."""
+    """Ghi đè trí nhớ dài hạn dùng chung (scope giữ để tương thích API cũ)."""
+    scope = GLOBAL_MEMORY_SCOPE
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
