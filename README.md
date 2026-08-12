@@ -32,6 +32,7 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 
 - Lệnh `/download link:<URL>` tạo custom embed **Only Visible to you** có metadata, thumbnail và nút tải cho YouTube, TikTok hoặc X/Twitter; bot không tự quét link trong chat.
 - YouTube được chuyển sang MP3, TikTok video tải MP4 không watermark, TikTok photo tải toàn bộ ảnh gốc và X/Twitter tải MP4.
+- TikTok ưu tiên `yt-dlp`; khi extractor gặp challenge/rehydration hoặc IP bị chặn, bot tự thử TikWM. Link TikTok chỉ được gửi tới dịch vụ bên thứ ba này khi nguồn chính thất bại.
 - File chỉ bắt đầu được tạo khi có người bấm nút và được gửi riêng tư cho người đó qua Discord.
 - Panel và nút tải có hiệu lực trong 10 phút. Với TikTok photo, bot nhận tối đa 35 ảnh, giới hạn tổng dữ liệu tạm 80 MiB và tự chia kết quả thành các lượt tối đa 10 file theo giới hạn upload hiện tại của Discord.
 - Chỉ xử lý một video công khai dài tối đa 10 phút; không nhận playlist, livestream, Facebook hoặc Instagram.
@@ -432,7 +433,9 @@ pip install -r requirements.txt
 
 ### TikTok báo `Unable to extract universal data for rehydration`
 
-Đây là lỗi tương thích khi TikTok thay đổi dữ liệu trang, không đồng nghĩa video riêng tư. Dự án khóa `yt-dlp` ở bản nightly đã được kiểm thử với TikTok hiện tại. Chạy lại `pip install -r requirements.txt` rồi khởi động lại bot; nếu lỗi tái xuất hiện trong tương lai, hãy kiểm tra một bản nightly mới hơn của `yt-dlp`.
+Đây là lỗi tương thích/challenge khi TikTok thay đổi dữ liệu trang, không đồng nghĩa video riêng tư. Bot sẽ tự thử TikWM sau khi `yt-dlp` thất bại. Nếu cả hai nguồn đều lỗi với nhiều link công khai, chạy `pip install --pre --upgrade yt-dlp`, cập nhật phiên bản được khóa trong `requirements.txt` theo bản vừa cài, rồi khởi động lại bot. Nếu chỉ một link lỗi, nội dung đó có thể đã bị gỡ, giới hạn khu vực hoặc yêu cầu đăng nhập; hãy thử mở link trong cửa sổ ẩn danh trước.
+
+Nếu TikWM riêng lẻ ngừng hoạt động, kiểm tra `https://www.tikwm.com/` trên cùng mạng. Khi website cũng lỗi thì chờ dịch vụ phục hồi; khi website hoạt động nhưng bot lỗi, xem log `features.media_downloader` để phân biệt lỗi HTTP, dữ liệu API không hợp lệ và CDN hết hạn. TikWM là fallback bên thứ ba nên không nên đưa cookie hoặc thông tin đăng nhập TikTok vào request của nó.
 
 URL ảnh TikTok do CDN cấp có thể hết hạn. Nếu panel cũ không tải được ảnh, hãy chạy lại `/download` để bot lấy URL mới rồi bấm **Tải ảnh** trong vòng 10 phút.
 

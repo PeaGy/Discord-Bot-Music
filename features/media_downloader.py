@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -11,7 +12,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 import discord
@@ -30,6 +31,17 @@ MAX_PARALLEL_DOWNLOADS = 2
 MAX_PARALLEL_PROBES = 3
 MAX_TIKTOK_IMAGES = 35
 MAX_PHOTO_TOTAL_BYTES = 80 * 1024 * 1024
+TIKWM_API_URL = "https://www.tikwm.com/api/"
+TIKWM_RESPONSE_LIMIT = 2 * 1024 * 1024
+_TIKTOK_MEDIA_HOST_SUFFIXES = (
+    "tiktokcdn.com",
+    "tiktokcdn-us.com",
+    "tiktokcdn-eu.com",
+    "byteoversea.com",
+    "ibytedtos.com",
+    "tikwm.com",
+    "tikwmcdn.com",
+)
 
 PLATFORM_LABELS = {
     "youtube": "YouTube",
@@ -94,6 +106,134 @@ def _tiktok_photo_id(url: str) -> str | None:
         return None
     match = re.search(r"/photo/(\d+)(?:[/?#]|$)", urlparse(url).path + "/")
     return match.group(1) if match else None
+
+
+def _trusted_tiktok_media_url(raw_url: object) -> str | None:
+    """Chỉ nhận HTTPS từ CDN TikTok/TikWM, không tin URL tùy ý từ API phụ."""
+    value = str(raw_url or "").strip()
+    if value.startswith("//"):
+        value = f"https:{value}"
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if parsed.scheme != "https" or not host:
+        return None
+    if not any(host == suffix or host.endswith(f".{suffix}") for suffix in _TIKTOK_MEDIA_HOST_SUFFIXES):
+        return None
+    return value
+
+
+def _tikwm_headers(referer: str) -> dict[str, str]:
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+        ),
+        "Referer": referer,
+    }
+
+
+def _probe_tikwm_sync(url: str) -> MediaItem:
+    """Fallback TikWM cho TikTok video/photo khi yt-dlp bị challenge."""
+    request = Request(
+        TIKWM_API_URL,
+        data=urlencode({"url": url, "hd": "1"}).encode("utf-8"),
+        headers={
+            **_tikwm_headers("https://www.tikwm.com/"),
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            raw = response.read(TIKWM_RESPONSE_LIMIT + 1)
+    except (HTTPError, URLError, TimeoutError, OSError) as error:
+        raise MediaDownloadError("TikWM fallback hiện không kết nối được.") from error
+
+    if len(raw) > TIKWM_RESPONSE_LIMIT:
+        raise MediaDownloadError("TikWM fallback trả metadata quá lớn.")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise MediaDownloadError("TikWM fallback trả dữ liệu không hợp lệ.") from error
+
+    if not isinstance(payload, dict) or payload.get("code") != 0:
+        detail = str(payload.get("msg") or "không rõ nguyên nhân")[:160] if isinstance(payload, dict) else "không rõ nguyên nhân"
+        raise MediaDownloadError(f"TikWM fallback từ chối link này: {detail}.")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise MediaDownloadError("TikWM fallback không trả metadata media.")
+
+    author = data.get("author") if isinstance(data.get("author"), dict) else {}
+    uploader = str(
+        author.get("nickname")
+        or author.get("unique_id")
+        or author.get("uniqueId")
+        or "TikTok"
+    )[:100]
+    title = str(data.get("title") or "Nội dung TikTok")[:250]
+    cover = _trusted_tiktok_media_url(
+        data.get("cover") or data.get("origin_cover")
+    )
+    headers = _tikwm_headers(url)
+
+    raw_images = data.get("images")
+    if isinstance(raw_images, list) and raw_images:
+        image_sources: list[tuple[str, ...]] = []
+        for raw_image in raw_images[:MAX_TIKTOK_IMAGES]:
+            candidates = raw_image if isinstance(raw_image, list) else [raw_image]
+            trusted = tuple(
+                dict.fromkeys(
+                    candidate
+                    for candidate in (
+                        _trusted_tiktok_media_url(value) for value in candidates
+                    )
+                    if candidate
+                )
+            )
+            if trusted:
+                image_sources.append(trusted)
+        if not image_sources:
+            raise MediaDownloadError("TikWM fallback không trả URL ảnh TikTok an toàn.")
+        logger.info("TikWM fallback đọc được TikTok photo (%s ảnh): %s", len(image_sources), url)
+        return MediaItem(
+            platform="tiktok",
+            url=url,
+            title=title or "Album ảnh TikTok",
+            uploader=uploader,
+            duration=0,
+            thumbnail=cover or image_sources[0][0],
+            direct_headers=headers,
+            media_kind="photo",
+            image_sources=tuple(image_sources),
+        )
+
+    direct_url = _trusted_tiktok_media_url(data.get("hdplay")) or _trusted_tiktok_media_url(data.get("play"))
+    if not direct_url:
+        raise MediaDownloadError("TikWM fallback không trả MP4 không watermark an toàn.")
+    try:
+        duration = int(float(data.get("duration") or 0))
+    except (TypeError, ValueError):
+        duration = 0
+    if duration <= 0:
+        raise MediaDownloadError("TikWM fallback không xác định được thời lượng video.")
+    if duration > MAX_MEDIA_DURATION:
+        raise MediaDownloadError("Chỉ hỗ trợ video có thời lượng tối đa 10 phút.")
+
+    logger.info("TikWM fallback đọc được TikTok video: %s", url)
+    return MediaItem(
+        platform="tiktok",
+        url=url,
+        title=title,
+        uploader=uploader,
+        duration=duration,
+        thumbnail=cover,
+        direct_url=direct_url,
+        direct_headers=headers,
+    )
 
 
 def _format_duration(seconds: int) -> str:
@@ -307,15 +447,25 @@ def _probe_media_sync(platform: str, url: str) -> MediaItem:
         raise
     except yt_dlp.utils.DownloadError as error:
         error_text = str(error).casefold()
-        if platform == "tiktok" and "universal data for rehydration" in error_text:
-            raise MediaDownloadError(
-                "TikTok vừa thay đổi dữ liệu trang nên extractor chưa đọc được video này. "
-                "Hãy cập nhật yt-dlp hoặc thử lại sau."
-            ) from error
-        if platform == "tiktok" and "ip address is blocked" in error_text:
-            raise MediaDownloadError(
-                "TikTok đang chặn IP hiện tại truy cập video này."
-            ) from error
+        if platform == "tiktok" and any(
+            marker in error_text
+            for marker in (
+                "universal data for rehydration",
+                "ip address is blocked",
+                "sign in to confirm",
+                "challenge",
+            )
+        ):
+            logger.info("yt-dlp không đọc được TikTok; chuyển TikWM fallback: %s", url)
+            try:
+                return _probe_tikwm_sync(url)
+            except MediaDownloadError as fallback_error:
+                logger.info("Cả yt-dlp và TikWM đều không đọc được %s: %s", url, fallback_error)
+                raise MediaDownloadError(
+                    "Cả yt-dlp và TikWM fallback đều chưa đọc được TikTok này. "
+                    "Hãy thử lại sau; nếu nhiều link cùng lỗi, cập nhật `yt-dlp` "
+                    "trong `requirements.txt` rồi khởi động lại bot."
+                ) from fallback_error
         raise MediaDownloadError(
             "Không đọc được nội dung này. Video có thể riêng tư, đã bị gỡ hoặc cần đăng nhập."
         ) from error
@@ -412,9 +562,18 @@ def _probe_tiktok_photo_sync(url: str) -> MediaItem:
         time.sleep(0.25 * (attempt + 1))
 
     if not video_data:
-        raise MediaDownloadError(
-            "TikTok chưa trả dữ liệu album ảnh này; hãy thử lại sau."
-        ) from last_error
+        logger.info("yt-dlp không đọc được TikTok photo; chuyển TikWM fallback: %s", url)
+        try:
+            fallback = _probe_tikwm_sync(url)
+        except MediaDownloadError as fallback_error:
+            raise MediaDownloadError(
+                "Cả yt-dlp và TikWM fallback đều chưa đọc được album TikTok này. "
+                "Hãy thử lại sau; nếu nhiều link cùng lỗi, cập nhật `yt-dlp` "
+                "trong `requirements.txt` rồi khởi động lại bot."
+            ) from fallback_error
+        if fallback.media_kind != "photo":
+            raise MediaDownloadError("TikWM không nhận diện link này là TikTok photo.")
+        return fallback
 
     image_post = video_data.get("imagePost") or {}
     raw_images = image_post.get("images") or []
