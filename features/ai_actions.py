@@ -46,6 +46,7 @@ class AskPetoModal(discord.ui.Modal, title="Hỏi Peto về tin nhắn này"):
         send_kwargs = {
             "content": answer[:2000] or "Peto chưa tạo được câu trả lời.",
             "ephemeral": True,
+            "suppress_embeds": True,
         }
         # discord.py 2.7 không chấp nhận truyền view=None vào webhook followup.
         if view is not None:
@@ -71,7 +72,9 @@ class SourceCheckView(discord.ui.View):
     async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         result = await self.cog.verify_answer(self.question, self.answer)
-        await interaction.followup.send(result[:2000], ephemeral=True)
+        await interaction.followup.send(
+            result[:2000], ephemeral=True, suppress_embeds=True
+        )
 
 
 def _is_image_attachment(attachment: discord.Attachment) -> bool:

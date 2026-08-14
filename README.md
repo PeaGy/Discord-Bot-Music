@@ -52,6 +52,36 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Hiểu tối đa 8 tin nhắn trong chuỗi reply và có thể tóm tắt 40 tin gần nhất trong đúng kênh khi được hỏi rõ.
 - Câu trả lời dài được chia theo đoạn thành tối đa ba tin Discord và giữ code block. Nội dung dài hơn được gửi trọn vẹn bằng file `.txt` UTF-8 dễ mở trên điện thoại; các nút tương tác vẫn nằm dưới tin cuối.
 - Có thể tìm thông tin mới trên web thông qua Tavily.
+- Câu hỏi Limbus có tính thời sự như ngày phát hành, event, update, notice,
+  Reflectrial hoặc banner sắp tới sẽ tự tra thêm X Search của xAI trong tài khoản
+  chính thức `@LimbusCompany_B`, đọc cả ảnh/video và kiểm tra link Steam chính
+  thức. Nếu X Search không khả dụng với tài khoản/model hiện tại, bot tự quay về
+  Tavily; dữ kiện chung chung trong notice không được dùng để khẳng định một nội
+  dung cụ thể chưa được nguồn nhắc tên.
+- Với Steam News có notice dạng ảnh, bot đọc `announcement_body` để lấy toàn bộ
+  ảnh nội dung theo đúng thứ tự thay vì chỉ xem thumbnail OpenGraph. Mỗi trang
+  ảnh dài được vision đọc riêng rồi mới tổng hợp, tránh bỏ sót chữ hoặc bị xAI
+  thu nhỏ quá mức khi gửi nhiều infographic trong cùng một request.
+- Luồng tin Limbus còn đối chiếu Steam News API của app `1973530`; ngày đọc được
+  từ bài X/thumbnail được dùng để nối đúng notice dù tiêu đề Steam chỉ ghi chung
+  chung. Nhờ đó bot không chọn nhầm một Reflectrial cũ chỉ vì tiêu đề cũ khớp
+  nhiều từ khóa hơn.
+- Có kho kiến thức **Limbus Company Wiki** riêng theo mô hình RAG: tự đồng bộ khoảng 2.200 bài viết chính từ MediaWiki API vào SQLite FTS5, chỉ cập nhật trang có revision mới và vẫn dùng bản gần nhất khi wiki tạm lỗi.
+- Câu hỏi về Identity, E.G.O., skill/passive, status, enemy, lore, Mirror Dungeon hoặc team building được ưu tiên tra `limbuscompany.wiki.gg` trước Tavily. Bot dẫn link nguồn, phân biệt dữ kiện wiki với suy luận chiến thuật và không tự bịa khi nguồn chưa đủ.
+- Một số tên tắt cộng đồng được ánh xạ sang tên wiki chính thức trước khi tìm kiếm, chẳng hạn `NClair` và `RienSang`/`Rien Sang`; vì vậy alias ghép không bị hiểu nhầm thành trang NPC/enemy có tên gần giống.
+- Bộ nhận diện alias còn hiểu các tên ghép như `Lord Honglu`/`Hongyuan Honglu`, `Captain Ish`, `Spicebush`, `K Honglu`, `T Don`, `BL Meursault`, `Ring Sang`, `W Heath` và cách viết liền tên Sinner (`Honglu`, `Yisang`, `Donquixote`...). Alias Identity chỉ được ưu tiên trong truy vấn kit/skill và khi khớp đủ cụm để hạn chế chọn nhầm trang lore, NPC hoặc enemy.
+- Khi hỏi `full skill` hoặc `full kit` của một Identity, Peto đọc trực tiếp template wiki và trình bày từng skill/passive bằng embed riêng. Card tổng quan có HP và Defense Level theo level hiện hành, Speed ở Uptie cao nhất, cùng kháng Slash/Pierce/Blunt kèm rating và hệ số. Các card còn lại có viền màu theo Sin Affinity; badge damage/defense; emoji Sin, status, HP, Offense, Coin và Unbreakable Coin; đầy đủ Base/Coin Power cùng hiệu ứng từng Coin. Passive dài được tách card để không bị giới hạn field của Discord cắt mất.
+- Có thể hỏi riêng `Skill 1/2/3`, `S1/S2/S3` hoặc `Defense` của một Identity để nhận đúng một embed tương ứng, không kèm card tổng quan, skill khác hay passive. Yêu cầu `Skill 3` chỉ lấy Skill 3 gốc; biến thể `Skill 3-2/3-3` chỉ hiện khi gọi rõ biến thể đó.
+- Emoji Coin thường chỉ xuất hiện ở dòng chỉ số và tiêu đề từng Coin, không chen vào mọi cụm `Coin Power`, `[Coin Start]` hay câu mô tả damage. `Unbreakable Coin` vẫn giữ badge riêng để phân biệt cơ chế đặc biệt.
+- Loại Coin được đọc riêng cho từng Coin từ template wiki: skill toàn Unbreakable Coin dùng badge đỏ, còn skill trộn Coin thường/Unbreakable hiển thị đúng số lượng và đúng badge ở từng field.
+- Parser hỗ trợ cả cú pháp `complexcoin` của wiki (ví dụ `unbreakable,5`) và dùng số field `ceN` làm fallback, nên các skill đặc biệt không còn bị hiểu thành `0 Coin` hoặc chỉ hiện Coin 1.
+- Nếu template chứa đồng thời passive hiện tại và bản Uptie cũ (`2passiveN`), bot gộp theo tên/Sin/requirement và giữ effect đầy đủ nhất; vì vậy full kit không tạo hai card trùng tên.
+- Emoji status dùng phép khớp theo tên đầy đủ cho `Offense/Defense Level Up/Down`, tránh chèn badge chung vào câu thường như `Defense Skills`. Bộ emoji còn nhận Bind, Haste, Ammo, Shin, Tigermark/Savage Tigermark Round, The Living/The Departed, Magic Bullet, Bullet of Solitude và Butterfly.
+- Các status damage/power cũng được phân biệt theo cụm đầy đủ: Slash/Pierce/Blunt Resist Down, Protection, Power Up/Down, Fragility và DMG Up/Down; Attack/Defense/Clash/Base Power; Plus/Minus Coin Boost/Drop; Charge Barrier, Paralyze, Aggro, Damage Up/Down, Power Up/Down và Fragile. Defense skill dạng Counter dùng badge Counter riêng.
+- Câu hỏi về Identity/E.G.O **mới nhất** hoặc banner hiện tại được đối chiếu trực tiếp với thời gian bắt đầu–kết thúc trong `Extraction/Banner History`, thay vì xếp hạng theo từ khóa thông thường.
+- Các câu hỏi đếm/liệt kê roster như Nursefathers ưu tiên dữ liệu cấu trúc từ trang tổ chức; bot nêu rõ phạm vi đếm và không kết thúc bằng lời hứa “đang tra thêm”.
+- Link trích dẫn trong câu trả lời AI vẫn bấm được nhưng Discord không tự bung preview website lớn, giúp cuộc hội thoại gọn hơn.
+- Lần đồng bộ đầu chạy nền nên không chặn bot khởi động. Nếu một trang chưa được lập chỉ mục, câu hỏi đầu tiên có thể tra trực tiếp MediaWiki API rồi cache lại; những lần sau dùng database cục bộ nhanh hơn. Không có slash command đồng bộ thủ công.
 - Menu chuột phải **Hỏi Peto** cho phép giải thích, dịch, tóm tắt hoặc soạn phản hồi từ một tin nhắn mà không cần copy nội dung.
 - Có thể đọc trực tiếp tối đa hai link công khai trong yêu cầu, với kiểm tra URL/redirect để chặn địa chỉ mạng nội bộ.
 - Câu hỏi thực tế có nút **Kiểm tra nguồn** để Tavily tìm nguồn độc lập rồi Grok đối chiếu câu trả lời.
@@ -84,7 +114,7 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Một Discord Bot Token.
 - Tài khoản SuperGrok đã đăng nhập hoặc xAI API key.
 - Tavily API key.
-- Kết nối internet tới Discord, YouTube/Spotify/SoundCloud, LRCLIB, Radio Browser, Danbooru, xAI và Tavily.
+- Kết nối internet tới Discord, YouTube/Spotify/SoundCloud, LRCLIB, Radio Browser, Danbooru, xAI, Tavily và `limbuscompany.wiki.gg`.
 
 Bot dùng trực tiếp `discord.py` voice client, `yt-dlp` và FFmpeg; dự án hiện tại **không dùng Lavalink/Wavelink**.
 
@@ -169,6 +199,7 @@ XAI_MODEL=grok-4.5
 # XAI_BASE_URL=https://api.x.ai/v1
 # XAI_IMAGE_DETAIL=auto
 # XAI_MAX_IMAGES=4
+# LIMBUS_OFFICIAL_X_HANDLES=LimbusCompany_B
 
 # Mức chi tiết console log: DEBUG | INFO | WARNING | ERROR
 # LOG_LEVEL=INFO
@@ -319,6 +350,10 @@ agnes_tachyon_(umamusume)
 
 Ẩn danh chỉ ngăn bot lưu nội dung vào database cục bộ; yêu cầu vẫn phải được gửi đến Grok/xAI để tạo câu trả lời. Khi tắt Ẩn danh hoặc bot khởi động lại, ngữ cảnh tạm sẽ bị xóa. `/resetmemory` vẫn là lệnh duy nhất để người dùng xóa toàn bộ trí nhớ đã lưu của chính họ; dự án không tạo thêm lệnh `/forgetme` trùng chức năng.
 
+Trí nhớ dài hạn gắn với Discord `user_id`, không gắn với server: Peto có thể dùng cùng bản ghi nhớ cá nhân khi chính người đó chuyển giữa DM và các server. Những câu chủ động như **“hãy nhớ…”**, **“ghi nhớ…”** hoặc **“chốt từ giờ…”** được cập nhật ngay; hội thoại thông thường được gom định kỳ từ mọi nơi người đó đã nói chuyện. Khi nâng cấp, bot còn nhập lại các câu chốt còn tồn tại trong lịch sử cũ.
+
+Lịch sử gốc trong SQLite không còn tự xóa sau một số lượt. Chat thường vẫn chỉ gửi một cửa sổ gần cho Grok để giữ tốc độ; khi người dùng hỏi **“Peto còn nhớ…?”**, **“lần trước chúng ta đã chốt gì?”** hoặc câu tương tự, bot mới tìm cục bộ những đoạn liên quan trong toàn bộ kho của đúng `user_id` rồi bổ sung vào request hiện tại. Việc tìm sâu không gọi thêm dịch vụ AI/embedding. Lịch sử hội thoại gần vẫn tách theo kênh để tránh mang nguyên cuộc trò chuyện riêng sang nơi công cộng, và nội dung trong chế độ Ẩn danh không tham gia đồng bộ.
+
 ### Study Mode
 
 Mention hoặc reply Peto kèm đề bài, ví dụ `@Peto giải bài này`, có thể đính kèm ảnh. Khi nhận diện đây là bài tập, Peto gắn bảng nút dưới câu trả lời:
@@ -369,6 +404,8 @@ Universal Media Downloader hoạt động độc lập với Music Panel. Ngư�
 ├── commands/               # Các slash command
 ├── features/
 │   ├── ai_chat.py          # Grok, vision, Tavily và tool calling
+│   ├── limbus_kit_view.py  # Embed skill/passive theo Sin Affinity
+│   ├── limbus_wiki.py      # RAG Limbus Wiki tự đồng bộ vào SQLite FTS5
 │   ├── media_downloader.py # Lệnh /download video/ảnh cho YouTube/TikTok/X
 │   └── download_gateway.py # Link tải file lớn qua Cloudflare Tunnel
 ├── music/

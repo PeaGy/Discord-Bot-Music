@@ -1,6 +1,7 @@
 """Lịch sử AI theo kênh; trí nhớ dài hạn cá nhân dùng chung mọi server/DM."""
 
 from collections import deque
+import re
 
 import aiosqlite
 
@@ -51,6 +52,10 @@ async def init_db() -> None:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_history_user "
             "ON chat_history(channel_id, user_id)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_history_user_id "
+            "ON chat_history(user_id, id)"
         )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_history_scope "
@@ -106,6 +111,21 @@ async def init_db() -> None:
                 PRIMARY KEY (user_id, scope)
             )
             """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS explicit_user_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, content)
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_explicit_memory_user "
+            "ON explicit_user_memory(user_id, id)"
         )
 
         # Nâng cấp từ cơ chế tóm tắt tách theo DM/server sang trí nhớ cá nhân
@@ -181,12 +201,11 @@ async def add_message(
     scope: str,
     role: str,
     content: str,
-    max_history: int,
+    max_history: int | None,
 ) -> None:
     """
-    Thêm 1 tin nhắn vào lịch sử của đúng người đó, rồi tự xoá bớt tin cũ
-    -> mỗi người chỉ giữ tối đa `max_history` dòng gần nhất, bảng không
-    phình to vô hạn theo thời gian.
+    Thêm một tin nhắn vào lịch sử của đúng người đó. ``max_history=None`` giữ
+    nguyên kho lịch sử; số dương chỉ dành cho cấu hình muốn cắt dữ liệu cũ.
     """
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -195,26 +214,27 @@ async def add_message(
             "VALUES (?, ?, ?, ?, ?)",
             (channel_id, user_id, scope, role, content),
         )
-        await db.execute(
-            """
-            DELETE FROM chat_history
-            WHERE channel_id = ? AND user_id = ? AND scope = ?
-            AND id NOT IN (
-                SELECT id FROM chat_history
+        if max_history is not None and int(max_history) > 0:
+            await db.execute(
+                """
+                DELETE FROM chat_history
                 WHERE channel_id = ? AND user_id = ? AND scope = ?
-                ORDER BY id DESC LIMIT ?
+                AND id NOT IN (
+                    SELECT id FROM chat_history
+                    WHERE channel_id = ? AND user_id = ? AND scope = ?
+                    ORDER BY id DESC LIMIT ?
+                )
+                """,
+                (
+                    channel_id,
+                    user_id,
+                    scope,
+                    channel_id,
+                    user_id,
+                    scope,
+                    int(max_history),
+                ),
             )
-            """,
-            (
-                channel_id,
-                user_id,
-                scope,
-                channel_id,
-                user_id,
-                scope,
-                max_history,
-            ),
-        )
         await db.commit()
 
 
@@ -303,6 +323,9 @@ async def clear_user(user_id: int) -> None:
         await db.execute(
             "DELETE FROM scoped_message_count WHERE user_id = ?", (user_id,)
         )
+        await db.execute(
+            "DELETE FROM explicit_user_memory WHERE user_id = ?", (user_id,)
+        )
         await db.commit()
 
 
@@ -316,6 +339,7 @@ async def clear_all() -> None:
         await db.execute("DELETE FROM user_message_count")
         await db.execute("DELETE FROM scoped_user_summary")
         await db.execute("DELETE FROM scoped_message_count")
+        await db.execute("DELETE FROM explicit_user_memory")
         await db.commit()
 
 
@@ -360,6 +384,173 @@ async def get_recent_for_scope(
         )
         rows = await cursor.fetchall()
         return [{"role": row["role"], "content": row["content"]} for row in rows]
+
+
+async def get_recent_for_user(
+    user_id: int,
+    limit: int,
+) -> list[dict]:
+    """Lấy hội thoại gần nhất của một Discord user trên mọi server và DM.
+
+    Chỉ dùng dữ liệu đã lưu bền vững; nội dung Ẩn danh nằm trong RAM nên không
+    thể lọt vào bản tóm tắt cá nhân dùng chung.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT role, content, scope FROM (
+                SELECT role, content, scope, id FROM chat_history
+                WHERE user_id = ?
+                ORDER BY id DESC LIMIT ?
+            )
+            ORDER BY id ASC
+            """,
+            (user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "role": row["role"],
+                "content": row["content"],
+                "scope": row["scope"],
+            }
+            for row in rows
+        ]
+
+
+_MEMORY_SEARCH_STOPWORDS = {
+    "peto", "pearto", "bot", "bạn", "ban", "mình", "minh", "tôi", "toi",
+    "ta", "chúng", "chung", "tụi", "tui", "có", "co", "không", "khong",
+    "còn", "con", "nhớ", "nho", "đã", "da", "từng", "tung", "về", "ve",
+    "gì", "gi", "là", "la", "mà", "ma", "của", "cua", "ở", "o", "lúc",
+    "luc", "trước", "truoc", "đây", "day", "lần", "lan", "nào", "nao",
+    "what", "do", "you", "remember", "about", "we", "did", "before",
+}
+
+
+def _memory_search_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    for token in re.findall(r"[^\W_]+", str(query or "").casefold(), re.UNICODE):
+        if len(token) < 2 or token in _MEMORY_SEARCH_STOPWORDS or token.isdigit():
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms[:10]
+
+
+async def search_user_history(
+    user_id: int,
+    query: str,
+    limit: int = 14,
+) -> list[dict]:
+    """Tìm cục bộ những đoạn lịch sử liên quan của đúng user_id.
+
+    Đây chỉ chạy khi người dùng chủ động hỏi lại ký ức. Không có request AI hay
+    dịch vụ embedding riêng, nên độ trễ chủ yếu là một truy vấn SQLite nhỏ.
+    """
+    terms = _memory_search_terms(query)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if terms:
+            clauses = " OR ".join("LOWER(content) LIKE ?" for _ in terms)
+            params = [int(user_id), *[f"%{term}%" for term in terms], 160]
+            cursor = await db.execute(
+                f"""
+                SELECT id, role, content, scope FROM chat_history
+                WHERE user_id = ? AND ({clauses})
+                ORDER BY id DESC LIMIT ?
+                """,
+                params,
+            )
+        else:
+            cursor = await db.execute(
+                """
+                SELECT id, role, content, scope FROM chat_history
+                WHERE user_id = ? ORDER BY id DESC LIMIT ?
+                """,
+                (int(user_id), max(int(limit) * 3, 30)),
+            )
+        rows = await cursor.fetchall()
+
+    scored: list[tuple[int, int, dict]] = []
+    for row in rows:
+        content = str(row["content"] or "")
+        folded = content.casefold()
+        score = sum(folded.count(term) for term in terms)
+        item = {
+            "id": int(row["id"]),
+            "role": row["role"],
+            "content": content,
+            "scope": row["scope"],
+        }
+        scored.append((score, int(row["id"]), item))
+
+    # Chọn theo độ liên quan + độ mới, sau đó trả theo thời gian để model hiểu
+    # diễn biến và ưu tiên bản sửa/chốt mới nhất.
+    chosen = sorted(scored, key=lambda entry: (entry[0], entry[1]), reverse=True)[
+        : max(1, int(limit))
+    ]
+    return [entry[2] for entry in sorted(chosen, key=lambda entry: entry[1])]
+
+
+async def add_explicit_memory(
+    user_id: int,
+    content: str,
+) -> None:
+    """Lưu nguyên ý một điều người dùng chủ động yêu cầu nhớ, theo user_id."""
+    clean = " ".join(str(content or "").split()).strip()[:1200]
+    if not clean:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO explicit_user_memory (user_id, content) "
+            "VALUES (?, ?)",
+            (int(user_id), clean),
+        )
+        await db.commit()
+
+
+async def get_explicit_memories(user_id: int, limit: int = 12) -> list[str]:
+    """Lấy các điều đã chốt của đúng user, cũ → mới để mục mới được ưu tiên."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT content FROM (
+                SELECT content, id FROM explicit_user_memory
+                WHERE user_id = ? ORDER BY id DESC LIMIT ?
+            ) ORDER BY id ASC
+            """,
+            (int(user_id), int(limit)),
+        )
+        return [str(row[0]) for row in await cursor.fetchall() if row[0]]
+
+
+async def backfill_explicit_memories(predicate, scan_limit: int = 5000) -> int:
+    """Nhập các câu chốt gần đây từ database cũ; INSERT OR IGNORE nên chạy lại an toàn."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT user_id, content FROM chat_history
+            WHERE role = 'user' ORDER BY id DESC LIMIT ?
+            """,
+            (int(scan_limit),),
+        )
+        matches = [
+            (int(user_id), str(content))
+            for user_id, content in await cursor.fetchall()
+            if content and predicate(str(content))
+        ]
+        # Query đang mới → cũ; chèn đảo lại để id tăng theo đúng thời gian.
+        matches.reverse()
+        before = db.total_changes
+        await db.executemany(
+            "INSERT OR IGNORE INTO explicit_user_memory (user_id, content) "
+            "VALUES (?, ?)",
+            matches,
+        )
+        await db.commit()
+        return db.total_changes - before
 
 
 async def increment_message_count(user_id: int, scope: str) -> int:

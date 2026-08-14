@@ -6,6 +6,8 @@ env/
 ENV/
 .venv/
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 *.log
 .cache/
