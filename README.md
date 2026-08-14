@@ -46,7 +46,7 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 ### Trợ lý AI Peto
 
 - Trò chuyện trong server bằng cách mention/reply bot, hoặc dùng `/private` để mở DM và nhắn tự nhiên không cần mention.
-- Sử dụng Grok qua xAI Responses API; model mặc định là `grok-4.5` và có thể đổi bằng `XAI_MODEL`.
+- Sử dụng Grok qua xAI Responses API; model mặc định là `grok-4.6` và có thể đổi bằng `XAI_MODEL`.
 - Hỗ trợ đăng nhập SuperGrok bằng OAuth PKCE, tự refresh token và dùng `XAI_API_KEY` làm phương án dự phòng.
 - Có thể đọc tối đa 6 ảnh từ tin hiện tại hoặc chuỗi reply; hỗ trợ JPEG, PNG, WebP và GIF.
 - Hiểu tối đa 8 tin nhắn trong chuỗi reply và có thể tóm tắt 40 tin gần nhất trong đúng kênh khi được hỏi rõ.
@@ -196,7 +196,7 @@ Sau đó điền các giá trị thật:
 DISCORD_TOKEN=discord_bot_token_cua_ban
 TAVILY_API_KEY=tavily_api_key_cua_ban
 
-XAI_MODEL=grok-4.5
+XAI_MODEL=grok-4.6
 
 # Tùy chọn: chỉ cần khi không dùng SuperGrok OAuth
 # XAI_API_KEY=xai_api_key_cua_ban

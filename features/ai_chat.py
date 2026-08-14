@@ -127,7 +127,7 @@ def _split_for_discord(
 # ==============================
 # CẤU HÌNH
 # ==============================
-MODEL_NAME = os.getenv("XAI_MODEL", "grok-4.5")
+MODEL_NAME = os.getenv("XAI_MODEL", "grok-4.6")
 LIMBUS_OFFICIAL_X_HANDLES = [
     handle.strip().lstrip("@")
     for handle in os.getenv(

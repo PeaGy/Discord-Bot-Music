@@ -36,7 +36,7 @@ async def translate_lyrics(lyrics, language):
         raise RuntimeError("Cần XAI_API_KEY để dịch lời bài hát.")
     client = AsyncOpenAI(api_key=api_key, base_url=os.getenv("XAI_BASE_URL", "https://api.x.ai/v1"))
     response = await client.chat.completions.create(
-        model=os.getenv("XAI_MODEL", "grok-4.5"), temperature=0.2,
+        model=os.getenv("XAI_MODEL", "grok-4.6"), temperature=0.2,
         messages=[{"role": "system", "content": f"Translate these song lyrics into {language}. Preserve line breaks and return only the translation."},
                   {"role": "user", "content": lyrics[:12000]}],
     )
