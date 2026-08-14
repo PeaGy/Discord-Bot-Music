@@ -969,6 +969,45 @@ class GrokChat(commands.Cog):
             re.search(r"(?:\d|[a-z])\s*(?:\^|=|≤|≥|[+*/])\s*(?:\d|[a-z])", text)
         )
 
+    @classmethod
+    def _reasoning_effort_for_request(
+        cls,
+        user_text: str,
+        *,
+        study_request: bool = False,
+        has_external_context: bool = False,
+    ) -> str:
+        """Chọn độ suy luận: nhanh cho chat, sâu cho đúng loại bài khó."""
+        text = str(user_text or "").casefold()
+        high_markers = (
+            "logic nhiều bước", "suy luận nhiều bước", "chứng minh", "bài toán khó",
+            "câu đố logic", "giải từng bước", "lời giải chi tiết",
+            "competition math", "multi-step logic", "prove that",
+        )
+        if study_request or any(marker in text for marker in high_markers):
+            return "high"
+
+        technical_markers = (
+            "traceback", "exception", "debug", "lỗi code", "source code",
+            "python", "discord.py", "api", "sqlite", "database", "ffmpeg",
+            "yt-dlp", "wavelink", "lavalink", "vps", "latency", "websocket",
+            "kiến trúc", "tối ưu", "phân tích kỹ thuật", "so sánh kỹ thuật",
+            "algorithm", "architecture", "performance",
+        )
+        web_markers = (
+            "http://", "https://", "mới nhất", "hiện tại", "tin tức",
+            "khi nào ra", "vừa ra", "sắp ra", "release date", "latest",
+            "current", "news", "giá bao nhiêu", "thời tiết", "tỷ số",
+        )
+        if (
+            has_external_context
+            or cls._looks_like_limbus_question(text)
+            or any(marker in text for marker in technical_markers)
+            or any(marker in text for marker in web_markers)
+        ):
+            return "medium"
+        return "low"
+
     @staticmethod
     def _official_news_cache_key(question: str) -> str:
         """Gộp các cách hỏi tương đương thành cùng một khóa cache ngắn hạn."""
@@ -2389,6 +2428,7 @@ class GrokChat(commands.Cog):
             "tools": tools,
             "tool_choice": "auto",
             "max_output_tokens": 1400,
+            "reasoning": {"effort": "medium"},
         }
 
         async def send_news_request():
@@ -2399,6 +2439,7 @@ class GrokChat(commands.Cog):
                 elapsed=time.perf_counter() - started,
                 instructions_chars=len(research_prompt),
                 label="limbus_official_news",
+                reasoning_effort="medium",
             )
             return result
 
@@ -2529,6 +2570,7 @@ class GrokChat(commands.Cog):
                         tool_choice="none",
                         max_output_tokens=1000,
                         use_tools=False,
+                        reasoning_effort="medium",
                     )
                     extracted = self._last_response_message_text(page_response)
                     if extracted:
@@ -2587,6 +2629,7 @@ class GrokChat(commands.Cog):
                         tool_choice="none",
                         max_output_tokens=1400,
                         use_tools=False,
+                        reasoning_effort="medium",
                     )
                     reviewed_answer = self._last_response_message_text(reviewed)
                 except Exception:
@@ -2866,6 +2909,7 @@ class GrokChat(commands.Cog):
         elapsed: float,
         instructions_chars: int,
         label: str = "response",
+        reasoning_effort: str = "low",
     ) -> None:
         usage = getattr(response, "usage", None)
 
@@ -2881,14 +2925,22 @@ class GrokChat(commands.Cog):
             cached_tokens = details.get("cached_tokens")
         else:
             cached_tokens = getattr(details, "cached_tokens", None)
+        output_details = usage_value("output_tokens_details")
+        if isinstance(output_details, dict):
+            reasoning_tokens = output_details.get("reasoning_tokens")
+        else:
+            reasoning_tokens = getattr(output_details, "reasoning_tokens", None)
         logger.info(
-            "xAI usage label=%s model=%s input=%s cached=%s output=%s total=%s "
+            "xAI usage label=%s model=%s effort=%s input=%s cached=%s "
+            "output=%s reasoning=%s total=%s "
             "elapsed=%.2fs instructions_chars=%d",
             label,
             MODEL_NAME,
+            reasoning_effort,
             usage_value("input_tokens"),
             cached_tokens,
             usage_value("output_tokens"),
+            reasoning_tokens,
             usage_value("total_tokens"),
             elapsed,
             instructions_chars,
@@ -2904,6 +2956,7 @@ class GrokChat(commands.Cog):
         previous_response_id: str | None = None,
         use_tools: bool = True,
         retry_auth: bool = True,
+        reasoning_effort: str = "low",
     ):
         """Gọi xAI Responses API; tự refresh OAuth 1 lần nếu 401."""
         await self._prepare_client()
@@ -2911,6 +2964,11 @@ class GrokChat(commands.Cog):
             "model": MODEL_NAME,
             "input": input_data,
             "max_output_tokens": max_output_tokens,
+            "reasoning": {
+                "effort": reasoning_effort
+                if reasoning_effort in {"low", "medium", "high"}
+                else "low"
+            },
         }
         if instructions is not None:
             kwargs["instructions"] = instructions
@@ -2927,6 +2985,7 @@ class GrokChat(commands.Cog):
                 response,
                 elapsed=time.perf_counter() - started,
                 instructions_chars=len(instructions or ""),
+                reasoning_effort=str(kwargs["reasoning"]["effort"]),
             )
             return response
 
@@ -3012,6 +3071,11 @@ class GrokChat(commands.Cog):
             study_request=context_study_request,
             has_source_image=bool(images),
         )
+        context_reasoning_effort = self._reasoning_effort_for_request(
+            context_user_text,
+            study_request=context_study_request,
+            has_external_context=bool(link_context),
+        )
         instructions = (
             f"{base_prompt}\n\nNgười đang dùng context menu là "
             f"{interaction.user.display_name}. Hãy làm đúng yêu cầu của họ với "
@@ -3052,6 +3116,7 @@ class GrokChat(commands.Cog):
                 input_data=input_data,
                 max_output_tokens=1000,
                 use_tools=False,
+                reasoning_effort=context_reasoning_effort,
             )
             answer = self._safe_content(response)
         except Exception:
@@ -3111,6 +3176,7 @@ class GrokChat(commands.Cog):
                 input_data=prompt,
                 max_output_tokens=900,
                 use_tools=False,
+                reasoning_effort="medium",
             )
             return self._safe_content(response)
         except Exception:
@@ -3192,6 +3258,7 @@ class GrokChat(commands.Cog):
                 input_data=input_data,
                 max_output_tokens=1800,
                 use_tools=False,
+                reasoning_effort="high",
             )
             return self._safe_content(response)
         except XaiOAuthError:
@@ -3644,6 +3711,11 @@ class GrokChat(commands.Cog):
         input_messages = self._to_xai_input(
             history, user_text, image_parts=image_parts
         )
+        reasoning_effort = self._reasoning_effort_for_request(
+            user_text,
+            study_request=study_request,
+            has_external_context=bool(link_context),
+        )
         output_token_limit = (
             1800
             if study_request
@@ -3657,6 +3729,7 @@ class GrokChat(commands.Cog):
                 tool_choice="none" if study_request else "auto",
                 max_output_tokens=output_token_limit,
                 use_tools=not study_request,
+                reasoning_effort=reasoning_effort,
             )
         except XaiOAuthError as e:
             logger.warning("OAuth chưa sẵn sàng: %s", e)
@@ -4193,6 +4266,7 @@ class GrokChat(commands.Cog):
                 max_output_tokens=1000,
                 previous_response_id=prev_id,
                 use_tools=True,
+                reasoning_effort="medium",
             )
         except Exception:
             logger.exception("Lỗi khi Grok tổng hợp search theo function_call")
@@ -4266,6 +4340,7 @@ class GrokChat(commands.Cog):
             ),
             max_output_tokens=1400 if is_limbus else 1000,
             use_tools=False,
+            reasoning_effort="medium",
         )
         answer = self._safe_content(response)
         if self._looks_like_raw_search_payload(answer):
