@@ -1521,6 +1521,170 @@ class GrokChat(commands.Cog):
                     return "", []
         return "", []
 
+    @staticmethod
+    def _limbus_calendar_dates(text: str) -> set[datetime.date]:
+        """Đọc ngày từ tiêu đề/answer Steam ở cả dạng YMD, DMY và Aug. 13th."""
+        value = str(text or "")
+        found: set[datetime.date] = set()
+
+        def add_date(year: str, month: str, day: str) -> None:
+            try:
+                found.add(datetime.date(int(year), int(month), int(day)))
+            except ValueError:
+                pass
+
+        for year, month, day in re.findall(
+            r"\b(20\d{2})[./-](\d{1,2})[./-](\d{1,2})\b", value
+        ):
+            add_date(year, month, day)
+        for day, month, year in re.findall(
+            r"\b(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\b", value
+        ):
+            add_date(year, month, day)
+
+        months = {
+            "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+            "may": 5, "jun": 6, "jul": 7, "aug": 8,
+            "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        }
+        for year, month_name, day in re.findall(
+            r"\b(20\d{2})\s*[,.-]?\s*"
+            r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+            r"[a-z]*[.\s,-]+(\d{1,2})(?:st|nd|rd|th)?\b",
+            value,
+            flags=re.IGNORECASE,
+        ):
+            add_date(year, str(months[month_name[:3].casefold()]), day)
+        return found
+
+    @staticmethod
+    def _is_next_limbus_update_question(text: str) -> bool:
+        value = " ".join(str(text or "").casefold().split())
+        markers = (
+            "bản cập nhật lần tới", "ban cap nhat lan toi",
+            "cập nhật tiếp theo", "cap nhat tiep theo",
+            "bản update lần tới", "ban update lan toi",
+            "update tiếp theo", "update tiep theo",
+            "next update", "next patch", "upcoming update",
+        )
+        return any(marker in value for marker in markers)
+
+    @classmethod
+    def _official_news_cache_is_usable(
+        cls,
+        question: str,
+        answer: str,
+        *,
+        today: datetime.date | None = None,
+    ) -> bool:
+        """Không tái dùng câu trả lời 'lần tới' nếu nó chỉ chứa ngày đã qua."""
+        if not cls._is_next_limbus_update_question(question):
+            return True
+        today = today or datetime.datetime.now(
+            datetime.timezone(datetime.timedelta(hours=9))
+        ).date()
+        dates = cls._limbus_calendar_dates(answer)
+        return bool(dates) and any(date >= today for date in dates)
+
+    @classmethod
+    def _rank_limbus_steam_notices(
+        cls,
+        newsitems: list[dict],
+        question: str,
+        *,
+        hint_text: str = "",
+        limit: int = 5,
+        today: datetime.date | None = None,
+    ) -> list[dict]:
+        """Xếp hạng notice; câu hỏi 'lần tới' tuyệt đối loại ngày đã qua."""
+        today = today or datetime.datetime.now(
+            datetime.timezone(datetime.timedelta(hours=9))
+        ).date()
+        future_intent = cls._is_next_limbus_update_question(question)
+        stopwords = {
+            "ban", "bạn", "biet", "biết", "khong", "không", "khi", "nào",
+            "nao", "cua", "của", "cho", "lần", "lan", "tới", "toi", "peto",
+            "thế", "the", "gì", "cap", "nhat", "cập", "nhật",
+        }
+        question_tokens = {
+            token
+            for token in re.findall(r"[^\W_]{3,}", question.casefold(), re.UNICODE)
+            if token not in stopwords
+        }
+        hinted_dates = cls._limbus_calendar_dates(hint_text)
+        if future_intent:
+            hinted_dates = {date for date in hinted_dates if date >= today}
+
+        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        candidates: list[tuple[int, dict]] = []
+        for item in newsitems:
+            images = _steam_images_from_bbcode(item.get("contents", ""))
+            if not images:
+                continue
+            title = str(item.get("title") or "")
+            title_folded = title.casefold()
+            title_tokens = set(
+                re.findall(r"[^\W_]{3,}", title_folded, re.UNICODE)
+            )
+            title_dates = cls._limbus_calendar_dates(title)
+            target_date: datetime.date | None = None
+            if future_intent and title_dates:
+                future_dates = sorted(date for date in title_dates if date >= today)
+                if not future_dates:
+                    # Đây chính là lỗi cũ: notice 13/8 không được phép trả lời
+                    # câu "bản cập nhật lần tới" vào ngày 14/8.
+                    continue
+                target_date = future_dates[0]
+
+            age_days = max(0, (now - int(item.get("date") or 0)) // 86_400)
+            score = len(question_tokens & title_tokens) * 12 - min(age_days, 180) // 10
+            if title_dates & hinted_dates:
+                score += 120
+            if future_intent:
+                if target_date is not None:
+                    score += 140 - min((target_date - today).days, 120)
+                else:
+                    score -= 40
+                if "scheduled update" in title_folded:
+                    score += 45
+                elif "preliminary notice" in title_folded:
+                    score += 40
+                elif "target extraction" in title_folded:
+                    score += 25
+            if "reflectrial" in question.casefold() and "content" in title_folded:
+                score += 5
+            if (
+                "reflectrial" in question.casefold()
+                and "preliminary notice" in title_folded
+                and age_days <= 90
+            ):
+                score += 25
+            candidates.append(
+                (
+                    score,
+                    {
+                        "title": title,
+                        "date": int(item.get("date") or 0),
+                        "target_date": target_date.isoformat() if target_date else "",
+                        "url": str(item.get("url") or ""),
+                        "images": images,
+                    },
+                )
+            )
+
+        if future_intent:
+            dated = [item["target_date"] for _, item in candidates if item["target_date"]]
+            if dated:
+                nearest = min(dated)
+                # Gom các notice cùng đợt gần nhất (scheduled/preliminary/banner),
+                # không trộn một update xa hơn hay notice không rõ ngày.
+                candidates = [
+                    entry for entry in candidates
+                    if entry[1]["target_date"] == nearest
+                ]
+        candidates.sort(key=lambda value: (value[0], value[1]["date"]), reverse=True)
+        return [item for _, item in candidates[:max(1, int(limit))]]
+
     async def _recent_limbus_steam_notices(
         self, question: str, *, hint_text: str = "", limit: int = 5
     ) -> list[dict]:
@@ -1545,54 +1709,12 @@ class GrokChat(commands.Cog):
             logger.exception("Không đọc được Steam News API cho Limbus")
             return []
 
-        question_tokens = {
-            token for token in re.findall(r"[a-z0-9]{3,}", question.casefold())
-            if token not in {"ban", "biet", "khong", "khi", "nao", "cua", "cho"}
-        }
-        hinted_dates = {
-            match.replace("/", ".").replace("-", ".")
-            for match in re.findall(
-                r"\b20\d{2}[./-]\d{1,2}[./-]\d{1,2}\b",
-                str(hint_text or ""),
-            )
-        }
-        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-        candidates: list[tuple[int, dict]] = []
-        for item in (payload.get("appnews") or {}).get("newsitems", []):
-            images = _steam_images_from_bbcode(item.get("contents", ""))
-            if not images:
-                continue
-            title = str(item.get("title") or "")
-            title_tokens = set(re.findall(r"[a-z0-9]{3,}", title.casefold()))
-            age_days = max(0, (now - int(item.get("date") or 0)) // 86_400)
-            score = len(question_tokens & title_tokens) * 12 - min(age_days, 180) // 10
-            normalized_title = title.replace("/", ".").replace("-", ".")
-            if any(date in normalized_title for date in hinted_dates):
-                # X Search thường đọc được ngày từ post/thumbnail dù bỏ sót phần
-                # còn lại. Dùng ngày đó để nối đúng notice trong Steam API.
-                score += 120
-            if "reflectrial" in question.casefold() and "content" in title.casefold():
-                score += 5
-            if (
-                "reflectrial" in question.casefold()
-                and "preliminary notice" in title.casefold()
-                and age_days <= 90
-            ):
-                score += 25
-            source_url = str(item.get("url") or "")
-            candidates.append(
-                (
-                    score,
-                    {
-                        "title": title,
-                        "date": int(item.get("date") or 0),
-                        "url": source_url,
-                        "images": images,
-                    },
-                )
-            )
-        candidates.sort(key=lambda value: (value[0], value[1]["date"]), reverse=True)
-        return [item for _, item in candidates[:limit]]
+        return self._rank_limbus_steam_notices(
+            list((payload.get("appnews") or {}).get("newsitems", [])),
+            question,
+            hint_text=hint_text,
+            limit=limit,
+        )
 
     async def _collect_link_context(self, text: str) -> tuple[str, list[dict]]:
         if not self._link_read_intent(text):
@@ -2356,25 +2478,45 @@ class GrokChat(commands.Cog):
         self, question: str, *, wiki_context: str = ""
     ) -> str:
         """Tra nguồn thời sự Limbus chính thức bằng X Search + Web Search của xAI."""
+        today = datetime.datetime.now(
+            datetime.timezone(datetime.timedelta(hours=9))
+        ).date()
         cache_key = self._official_news_cache_key(question)
         cached_answer = await get_news_answer_cache(
             cache_key,
             LIMBUS_NEWS_ANSWER_CACHE_SECONDS,
         )
-        if cached_answer:
+        if cached_answer and self._official_news_cache_is_usable(
+            question,
+            cached_answer,
+            today=today,
+        ):
             logger.info("Limbus official news answer cache HIT: %s", cache_key[:12])
             return cached_answer
+        if cached_answer:
+            logger.warning(
+                "Bỏ cache tin Limbus đã cũ cho câu hỏi 'lần tới': %s",
+                cache_key[:12],
+            )
 
         await self._prepare_client()
         official_handles = LIMBUS_OFFICIAL_X_HANDLES or ["LimbusCompany_B"]
-        today = datetime.datetime.now(
-            datetime.timezone(datetime.timedelta(hours=7))
-        ).date()
         recent_from = today - datetime.timedelta(days=90)
+        next_update_rule = ""
+        if self._is_next_limbus_update_question(question):
+            next_update_rule = (
+                f" The user asks for the next/upcoming update. Today is {today.isoformat()} "
+                "in Korea (KST): reject every notice whose update date is before today, "
+                "continue to the newest official Steam News entries, and use the earliest "
+                "confirmed update date on or after today. Never present a completed patch "
+                "as the next update."
+            )
         research_prompt = (
             "Research the user's Limbus Company question using official sources only. "
-            f"Today is {today.isoformat()} (GMT+7). Search the newest relevant announcement, "
+            f"Today is {today.isoformat()} (KST). Search the newest relevant announcement, "
             "not an older event with a similar name. "
+            + next_update_rule
+            + " "
             f"First search the official X account(s) {', '.join('@' + h for h in official_handles)}. "
             "Read text, images, and videos in relevant posts. Follow and inspect linked "
             "official Steam announcements or limbuscompany.com pages. Steam announcements "
@@ -2468,7 +2610,7 @@ class GrokChat(commands.Cog):
         official_notices = await self._recent_limbus_steam_notices(
             question,
             hint_text=answer,
-            limit=1,
+            limit=3,
         )
         for notice in official_notices:
             notice_images: list[dict] = []
@@ -2608,12 +2750,20 @@ class GrokChat(commands.Cog):
             reviewed_answer = ""
             if page_facts:
                 sources = list(dict.fromkeys([*steam_urls, *citations]))
+                review_time_rule = ""
+                if self._is_next_limbus_update_question(question):
+                    review_time_rule = (
+                        f" Hôm nay là {today.isoformat()} theo KST. Chỉ dùng các thông báo "
+                        "có ngày cập nhật từ hôm nay trở đi; ngày hợp lệ gần nhất mới là "
+                        "bản cập nhật lần tới. Bỏ qua mọi kết luận ban đầu trỏ tới ngày đã qua."
+                    )
                 try:
                     reviewed = await self._create_response(
                         instructions=(
                             "Bạn đang kiểm chứng tin Limbus Company từ nguồn chính thức. "
                             "Chỉ xuất câu trả lời cuối bằng tiếng Việt; dữ kiện đọc trực tiếp "
                             "từ ảnh Steam ưu tiên hơn kết luận tìm kiếm ban đầu."
+                            + review_time_rule
                         ),
                         input_data=(
                             f"Câu hỏi người dùng:\n{question}\n\n"
@@ -2670,8 +2820,21 @@ class GrokChat(commands.Cog):
             official_handles,
             len(citations),
         )
-        if not answer.startswith("⚠️") and not answer.startswith("❌"):
+        cache_usable = self._official_news_cache_is_usable(
+            question,
+            answer,
+            today=today,
+        )
+        if (
+            not answer.startswith("⚠️")
+            and not answer.startswith("❌")
+            and cache_usable
+        ):
             await put_news_answer_cache(cache_key, question, answer)
+        elif self._is_next_limbus_update_question(question) and not cache_usable:
+            logger.warning(
+                "Không cache câu trả lời 'lần tới' vì thiếu ngày hiện tại/tương lai"
+            )
         return answer
 
     async def _resolve_tool_calls(
