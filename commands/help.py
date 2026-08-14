@@ -141,6 +141,11 @@ class HelpDropdown(discord.ui.View):
                     "`/artecchi [tags]` — Tìm ảnh ecchi, chỉ trong kênh NSFW\n"
                     "`/artnsfw [tags]` — Tìm ảnh explicit, chỉ trong kênh NSFW\n"
                     "`/artinfo <id>` — Xem artist, nguồn, score và tags của post\n\n"
+                    "**Tìm nguồn ảnh**\n"
+                    "`/saucy image:<ảnh>` — Mở panel riêng tư gồm Google Lens, "
+                    "SauceNAO, IQDB, TinEye, Yandex và Bing. Hoặc nhấp phải tin có "
+                    "ảnh → **Apps → Tìm nguồn ảnh**. Bot chỉ tạo liên kết tìm kiếm, "
+                    "không dùng API key và không tự đọc kết quả.\n\n"
                     "**Peto AI • Grok by xAI**\n"
                     "Mention **@Peto** hoặc reply tin nhắn của bot để trò chuyện, "
                     "không cần slash command. Dùng `/private` để Peto mở DM; trong "
@@ -219,7 +224,14 @@ class HelpDropdown(discord.ui.View):
                     "hiện tại của Discord sẽ bị từ chối. Mỗi người chỉ có một lượt "
                     "tải đang chạy; nút tải hết hạn sau 10 phút và file tạm được xóa "
                     "ngay sau khi gửi.\n\n"
-                    "-# Facebook và Instagram hiện không nằm trong phạm vi hỗ trợ."
+                    "**Social Embed tự động**\n"
+                    "Pixiv có card riêng gồm tác giả, mô tả, ảnh, thống kê và ngày đăng; "
+                    "Ugoira được ghép thành MP4 để phát ngay trong Discord. "
+                    "X/Twitter dùng FxTwitter; Instagram dùng vxInstagram. Sau khi preview "
+                    "mới được gửi thành công, bot sẽ ẩn preview mặc định nếu có quyền "
+                    "**Manage Messages**. Thêm `fxignore` hoặc `peto-noembed` vào tin để "
+                    "bỏ qua. Đây chỉ là preview, không tự tải media.\n\n"
+                    "-# Facebook và tải file Instagram hiện không nằm trong phạm vi hỗ trợ."
                 ),
             )
 

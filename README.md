@@ -23,6 +23,13 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - File nhỏ gửi qua Discord; file lớn có thể đi qua Download Gateway + Cloudflare Tunnel và tự hết hạn sau 2 giờ.
 - Tracker hiển thị giai đoạn, phần trăm, dung lượng, tốc độ và ETA trong lúc xử lý.
 
+### Social Embed
+
+- Pixiv được dựng thành card riêng gồm tiêu đề, tác giả, mô tả, ảnh, lượt thích/lưu/xem và ngày đăng; không dùng `phixiv`. Ugoira được tải từ Pixiv, ghép đúng thời gian frame bằng FFmpeg và phát inline dưới dạng MP4 H.264.
+- X/Twitter dùng FxTwitter API để dựng bài ảnh/text; bài có video dùng `fxtwitter.com`. Instagram dùng `vxinstagram.com` để Discord phát media tốt hơn.
+- Sau khi gửi preview mới thành công, bot ẩn preview mặc định của Discord. Cần quyền **Manage Messages** trong kênh.
+- Thêm `fxignore` hoặc `peto-noembed` vào tin nhắn để bỏ qua. Đây là preview, không tự tải media như `/download`.
+
 ### Trợ lý AI Peto
 
 - Mention/reply Peto trong server hoặc dùng `/private` để trò chuyện qua DM.
@@ -43,6 +50,11 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 
 - `/art`, `/wallpaper` và `/artinfo` cho nội dung SFW.
 - `/artecchi` và `/artnsfw` chỉ hoạt động trong kênh Age-Restricted/NSFW.
+
+### Tìm nguồn ảnh
+
+- `/saucy image:<ảnh>` hoặc **Apps → Tìm nguồn ảnh** tạo panel riêng tư với Google Lens, SauceNAO, IQDB, TinEye, Yandex và Bing.
+- Bot chỉ tạo liên kết tìm kiếm từ URL ảnh Discord, không cần API key và không tự đọc kết quả của các dịch vụ.
 
 ## Yêu cầu
 
@@ -112,6 +124,7 @@ XAI_MODEL=grok-4.6
 Các tùy chọn quan trọng đã được chú thích trong `.env.example`, gồm:
 
 - `XAI_API_KEY`, `XAI_BASE_URL`, `XAI_IMAGE_DETAIL`, `XAI_MAX_IMAGES`
+- `PIXIV_PHPSESSID`, `PIXIV_UGOIRA_*` để bật custom embed và điều chỉnh Ugoira Pixiv
 - `LIMBUS_WIKI_*`, `LIMBUS_OFFICIAL_X_HANDLES`, `LIMBUS_NEWS_ANSWER_CACHE_MINUTES`
 - `DOWNLOAD_PUBLIC_BASE_URL`, `DOWNLOAD_GATEWAY_*`
 - `LOG_LEVEL`, `MUSIC_LIBRARY_DB`, `STUDY_FONT_PATH`
@@ -133,7 +146,9 @@ Trong Discord Developer Portal:
 
 1. Bật **Message Content Intent**.
 2. Mời bot với scope `bot` và `applications.commands`.
-3. Cấp các quyền cần thiết: View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Connect, Speak và Use Application Commands.
+3. Cấp các quyền cần thiết: View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Connect, Speak và Use Application Commands. Cấp thêm `Manage Messages` nếu bật Social Embed để bot ẩn preview gốc bị trùng.
+
+Custom embed Pixiv còn cần `PIXIV_PHPSESSID` trong `.env`. Chỉ sao chép **giá trị** cookie `PHPSESSID` từ phiên Pixiv của chính bạn; cookie này có quyền truy cập tài khoản nên tuyệt đối không gửi vào Discord hoặc commit lên Git.
 
 ### 6. Cookie YouTube (khi cần)
 
@@ -160,7 +175,7 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 | Media | `/download` |
 | AI & riêng tư | `/private`, `/andanh`, `/resetmemory` |
 | Quản trị bộ nhớ | `/resetmemoryall`, `/resetmemoryglobal` |
-| Ảnh | `/art`, `/artecchi`, `/artnsfw`, `/wallpaper`, `/artinfo`, `/sticker`, `/emoji` |
+| Ảnh | `/art`, `/artecchi`, `/artnsfw`, `/wallpaper`, `/artinfo`, `/sticker`, `/emoji`, `/saucy` |
 | Kiểm tra | `/latency`, `/help` |
 
 ## Trí nhớ và quyền riêng tư
