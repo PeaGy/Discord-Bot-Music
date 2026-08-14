@@ -65,6 +65,13 @@ Bot Discord đa chức năng viết bằng Python, tập trung vào phát nhạc
 - Luồng tin Limbus còn đối chiếu Steam News API của app `1973530`; ngày đọc được
   từ bài X/thumbnail được dùng để nối đúng notice dù tiêu đề Steam chỉ ghi chung
   chung. Nhờ đó bot không chọn nhầm một Reflectrial cũ chỉ vì tiêu đề cũ khớp
+  từ khóa hơn.
+- Kết quả Vision của từng ảnh notice được lưu lâu dài trong hai bảng
+  `official_news_image_cache` và `official_news_answer_cache` thuộc
+  `limbus_knowledge.db`; cache không chứa ảnh gốc, chỉ chứa hash, URL và phần chữ
+  đã đọc. Ảnh chỉ được đọc lại khi hash thay đổi. Câu trả lời cùng chủ đề được
+  dùng lại trong 60 phút mặc định (đổi bằng `LIMBUS_NEWS_ANSWER_CACHE_MINUTES`),
+  nên người hỏi sau không phải chờ lại toàn bộ lượt X Search + Vision.
   nhiều từ khóa hơn.
 - Có kho kiến thức **Limbus Company Wiki** riêng theo mô hình RAG: tự đồng bộ khoảng 2.200 bài viết chính từ MediaWiki API vào SQLite FTS5, chỉ cập nhật trang có revision mới và vẫn dùng bản gần nhất khi wiki tạm lỗi.
 - Câu hỏi về Identity, E.G.O., skill/passive, status, enemy, lore, Mirror Dungeon hoặc team building được ưu tiên tra `limbuscompany.wiki.gg` trước Tavily. Bot dẫn link nguồn, phân biệt dữ kiện wiki với suy luận chiến thuật và không tự bịa khi nguồn chưa đủ.

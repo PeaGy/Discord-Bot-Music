@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 import unicodedata
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -51,6 +52,183 @@ USER_AGENT = os.getenv(
     "LIMBUS_WIKI_USER_AGENT",
     "PetoDiscordBot/1.0 (personal Discord knowledge assistant)",
 ).strip()
+
+OFFICIAL_NEWS_CACHE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS official_news_image_cache (
+    image_hash TEXT PRIMARY KEY,
+    image_url TEXT NOT NULL DEFAULT '',
+    notice_url TEXT NOT NULL DEFAULT '',
+    extracted_text TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_official_news_image_url
+    ON official_news_image_cache(image_url);
+CREATE TABLE IF NOT EXISTS official_news_answer_cache (
+    query_key TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER NOT NULL
+);
+"""
+
+
+def _news_cache_connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DB_PATH, timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA synchronous=NORMAL")
+    return connection
+
+
+def _init_official_news_cache_sync() -> None:
+    with closing(_news_cache_connect()) as db:
+        db.executescript(OFFICIAL_NEWS_CACHE_SCHEMA)
+
+
+async def init_official_news_cache() -> None:
+    await asyncio.to_thread(_init_official_news_cache_sync)
+
+
+def _get_news_image_cache_sync(image_hash: str) -> dict | None:
+    with closing(_news_cache_connect()) as db:
+        row = db.execute(
+            "SELECT extracted_text, image_url, notice_url, created_at "
+            "FROM official_news_image_cache WHERE image_hash = ?",
+            (str(image_hash),),
+        ).fetchone()
+        if not row:
+            return None
+        db.execute(
+            "UPDATE official_news_image_cache SET last_used_at = ? "
+            "WHERE image_hash = ?",
+            (int(time.time()), str(image_hash)),
+        )
+        db.commit()
+        return dict(row)
+
+
+async def get_news_image_cache(image_hash: str) -> dict | None:
+    return await asyncio.to_thread(_get_news_image_cache_sync, image_hash)
+
+
+def _put_news_image_cache_sync(
+    image_hash: str,
+    image_url: str,
+    notice_url: str,
+    extracted_text: str,
+    model: str,
+) -> None:
+    now = int(time.time())
+    with closing(_news_cache_connect()) as db:
+        db.execute(
+            """
+            INSERT INTO official_news_image_cache
+                (image_hash, image_url, notice_url, extracted_text, model,
+                 created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(image_hash) DO UPDATE SET
+                image_url = excluded.image_url,
+                notice_url = excluded.notice_url,
+                extracted_text = excluded.extracted_text,
+                model = excluded.model,
+                last_used_at = excluded.last_used_at
+            """,
+            (
+                str(image_hash), str(image_url or ""), str(notice_url or ""),
+                str(extracted_text), str(model or ""), now, now,
+            ),
+        )
+        db.commit()
+
+
+async def put_news_image_cache(
+    image_hash: str,
+    image_url: str,
+    notice_url: str,
+    extracted_text: str,
+    model: str,
+) -> None:
+    await asyncio.to_thread(
+        _put_news_image_cache_sync,
+        image_hash,
+        image_url,
+        notice_url,
+        extracted_text,
+        model,
+    )
+
+
+def _get_news_answer_cache_sync(
+    query_key: str,
+    max_age_seconds: int,
+) -> str | None:
+    now = int(time.time())
+    with closing(_news_cache_connect()) as db:
+        row = db.execute(
+            "SELECT answer, created_at FROM official_news_answer_cache "
+            "WHERE query_key = ?",
+            (str(query_key),),
+        ).fetchone()
+        if not row or now - int(row["created_at"]) > int(max_age_seconds):
+            return None
+        db.execute(
+            "UPDATE official_news_answer_cache SET last_used_at = ? "
+            "WHERE query_key = ?",
+            (now, str(query_key)),
+        )
+        db.commit()
+        return str(row["answer"])
+
+
+async def get_news_answer_cache(
+    query_key: str,
+    max_age_seconds: int,
+) -> str | None:
+    return await asyncio.to_thread(
+        _get_news_answer_cache_sync,
+        query_key,
+        max_age_seconds,
+    )
+
+
+def _put_news_answer_cache_sync(
+    query_key: str,
+    question: str,
+    answer: str,
+) -> None:
+    now = int(time.time())
+    with closing(_news_cache_connect()) as db:
+        db.execute(
+            """
+            INSERT INTO official_news_answer_cache
+                (query_key, question, answer, created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(query_key) DO UPDATE SET
+                question = excluded.question,
+                answer = excluded.answer,
+                created_at = excluded.created_at,
+                last_used_at = excluded.last_used_at
+            """,
+            (str(query_key), str(question), str(answer), now, now),
+        )
+        db.commit()
+
+
+async def put_news_answer_cache(
+    query_key: str,
+    question: str,
+    answer: str,
+) -> None:
+    await asyncio.to_thread(
+        _put_news_answer_cache_sync,
+        query_key,
+        question,
+        answer,
+    )
 
 RESISTANCE_MULTIPLIERS = {
     "fatal": "x2",
@@ -738,6 +916,7 @@ class LimbusWiki(commands.Cog):
                 );
                 """
             )
+            db.executescript(OFFICIAL_NEWS_CACHE_SCHEMA)
             current = db.execute(
                 "SELECT value FROM wiki_meta WHERE key='index_version'"
             ).fetchone()

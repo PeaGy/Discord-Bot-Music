@@ -3,6 +3,7 @@ import io
 import re
 import json
 import base64
+import hashlib
 import logging
 import asyncio
 import contextvars
@@ -11,6 +12,7 @@ import ipaddress
 import socket
 import urllib.parse
 import html
+import unicodedata
 from html.parser import HTMLParser
 
 import discord
@@ -20,6 +22,13 @@ from openai import AsyncOpenAI, APIError, APIStatusError, AuthenticationError, R
 from tavily import AsyncTavilyClient
 
 import user_memory
+from features.limbus_wiki import (
+    get_news_answer_cache,
+    get_news_image_cache,
+    init_official_news_cache,
+    put_news_answer_cache,
+    put_news_image_cache,
+)
 from xai_oauth import XaiOAuth, XaiOAuthError, XAI_API_BASE
 
 load_dotenv()
@@ -139,6 +148,13 @@ SUMMARY_INTERVAL = 20
 MEMORY_STORAGE_LIMIT = None
 MEMORY_SUMMARY_LIMIT = max(80, SUMMARY_INTERVAL * 4)
 MEMORY_RECALL_CONTEXT_CHARS = 14_000
+try:
+    _limbus_news_cache_minutes = int(
+        os.getenv("LIMBUS_NEWS_ANSWER_CACHE_MINUTES", "60")
+    )
+except (TypeError, ValueError):
+    _limbus_news_cache_minutes = 60
+LIMBUS_NEWS_ANSWER_CACHE_SECONDS = max(300, _limbus_news_cache_minutes * 60)
 
 # Vision: xAI nhận jpg/png (webp/gif sẽ convert sang PNG). Giới hạn để
 # request không quá nặng.
@@ -858,6 +874,7 @@ class GrokChat(commands.Cog):
         # Chặn hai tác vụ tóm tắt của cùng một user ghi đè lẫn nhau khi họ chat
         # nhanh ở nhiều server.
         self._memory_locks: dict[int, asyncio.Lock] = {}
+        self._official_news_cache_locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
     def _is_explicit_memory_request(user_text: str) -> bool:
@@ -896,6 +913,29 @@ class GrokChat(commands.Cog):
             "do you remember", "we agreed", "last time",
         )
         return any(phrase in text for phrase in phrases)
+
+    @staticmethod
+    def _official_news_cache_key(question: str) -> str:
+        """Gộp các cách hỏi tương đương thành cùng một khóa cache ngắn hạn."""
+        text = unicodedata.normalize("NFKD", str(question or "").casefold())
+        text = "".join(char for char in text if not unicodedata.combining(char))
+        text = text.replace("đ", "d")
+        stopwords = {
+            "peto", "pearto", "bot", "ban", "toi", "tui", "minh", "co",
+            "biet", "khong", "ve", "khi", "nao", "ngay", "bao", "gio",
+            "ra", "mat", "phat", "hanh", "release", "date", "the", "is",
+            "when", "will", "do", "you", "know", "ko", "k", "vay", "nhe",
+            "nha", "a",
+        }
+        terms = sorted(
+            {
+                token
+                for token in re.findall(r"[a-z0-9]+", text)
+                if len(token) > 1 and token not in stopwords
+            }
+        )
+        normalized = " ".join(terms) or " ".join(text.split())
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
     async def _prepare_client(self) -> None:
         """Gắn access token mới nhất vào OpenAI client (OAuth refresh nếu cần)."""
@@ -2222,6 +2262,15 @@ class GrokChat(commands.Cog):
         self, question: str, *, wiki_context: str = ""
     ) -> str:
         """Tra nguồn thời sự Limbus chính thức bằng X Search + Web Search của xAI."""
+        cache_key = self._official_news_cache_key(question)
+        cached_answer = await get_news_answer_cache(
+            cache_key,
+            LIMBUS_NEWS_ANSWER_CACHE_SECONDS,
+        )
+        if cached_answer:
+            logger.info("Limbus official news answer cache HIT: %s", cache_key[:12])
+            return cached_answer
+
         await self._prepare_client()
         official_handles = LIMBUS_OFFICIAL_X_HANDLES or ["LimbusCompany_B"]
         today = datetime.datetime.now(
@@ -2318,7 +2367,13 @@ class GrokChat(commands.Cog):
             for image_url in notice.get("images", []):
                 part = await self._download_public_image(image_url)
                 if part:
-                    notice_images.append(part)
+                    notice_images.append(
+                        {
+                            "part": part,
+                            "image_url": str(image_url),
+                            "notice_url": str(notice.get("url") or ""),
+                        }
+                    )
                 if len(steam_images) + len(notice_images) >= MAX_IMAGES_PER_MESSAGE:
                     break
             if notice_images:
@@ -2343,40 +2398,81 @@ class GrokChat(commands.Cog):
                 context, images = await self._read_public_page(steam_url)
                 if context:
                     steam_contexts.append(context)
-                steam_images.extend(images)
+                steam_images.extend(
+                    {
+                        "part": image,
+                        "image_url": "",
+                        "notice_url": steam_url,
+                    }
+                    for image in images
+                )
                 if len(steam_images) >= MAX_IMAGES_PER_MESSAGE:
                     break
         steam_images = steam_images[:MAX_IMAGES_PER_MESSAGE]
         if steam_images:
-            async def _read_notice_page(index: int, image: dict) -> str:
-                page_response = await self._create_response(
-                    instructions=(
-                        "Đọc chính xác một trang ảnh từ thông báo chính thức của "
-                        "Limbus Company. Không suy đoán và không thuật lại quá trình."
-                    ),
-                    input_data=[
-                        {
-                            "role": "user",
-                            "content": [
-                                image,
-                                {
-                                    "type": "input_text",
-                                    "text": (
-                                        f"Đây là trang {index + 1}/{len(steam_images)} của notice. "
-                                        f"Câu hỏi cần kiểm chứng: {question}\n"
-                                        "Hãy trích ngắn gọn mọi dữ kiện quan trọng nhìn thấy "
-                                        "trên trang này: ngày, tên content/nhân vật, điều kiện, "
-                                        "event và phần thưởng. Chỉ trả dữ kiện của ảnh."
-                                    ),
-                                },
-                            ],
-                        }
-                    ],
-                    tool_choice="none",
-                    max_output_tokens=700,
-                    use_tools=False,
+            async def _read_notice_page(index: int, image: dict) -> dict:
+                part = image["part"]
+                data_url = str(part.get("image_url") or "")
+                image_hash = hashlib.sha256(data_url.encode("utf-8")).hexdigest()
+                cached = await get_news_image_cache(image_hash)
+                if cached and str(cached.get("extracted_text") or "").strip():
+                    return {
+                        "text": str(cached["extracted_text"]),
+                        "cached": True,
+                    }
+
+                lock = self._official_news_cache_locks.setdefault(
+                    image_hash,
+                    asyncio.Lock(),
                 )
-                return self._last_response_message_text(page_response)
+                async with lock:
+                    # Hai thành viên hỏi cùng lúc chỉ để một request Vision chạy.
+                    cached = await get_news_image_cache(image_hash)
+                    if cached and str(cached.get("extracted_text") or "").strip():
+                        return {
+                            "text": str(cached["extracted_text"]),
+                            "cached": True,
+                        }
+                    page_response = await self._create_response(
+                        instructions=(
+                            "Đọc chính xác một trang ảnh từ thông báo chính thức của "
+                            "Limbus Company. Trích xuất dữ kiện độc lập với câu hỏi hiện "
+                            "tại để kết quả có thể tái sử dụng. Không suy đoán và không "
+                            "thuật lại quá trình."
+                        ),
+                        input_data=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    part,
+                                    {
+                                        "type": "input_text",
+                                        "text": (
+                                            f"Đây là trang {index + 1}/{len(steam_images)} "
+                                            "của một notice. Hãy trích đầy đủ nhưng gọn mọi "
+                                            "dữ kiện nhìn thấy: tiêu đề, ngày/giờ/múi giờ, tên "
+                                            "content và nhân vật, điều kiện mở, thời hạn, event, "
+                                            "phần thưởng và ghi chú quan trọng. Chỉ trả dữ kiện "
+                                            "của ảnh; không chỉ tập trung vào một câu hỏi cụ thể."
+                                        ),
+                                    },
+                                ],
+                            }
+                        ],
+                        tool_choice="none",
+                        max_output_tokens=1000,
+                        use_tools=False,
+                    )
+                    extracted = self._last_response_message_text(page_response)
+                    if extracted:
+                        await put_news_image_cache(
+                            image_hash,
+                            str(image.get("image_url") or ""),
+                            str(image.get("notice_url") or ""),
+                            extracted,
+                            MODEL_NAME,
+                        )
+                    return {"text": extracted, "cached": False}
 
             page_results = await asyncio.gather(
                 *(
@@ -2386,10 +2482,20 @@ class GrokChat(commands.Cog):
                 return_exceptions=True,
             )
             page_facts = [
-                f"## Trang {index + 1}\n{result}"
+                f"## Trang {index + 1}\n{result['text']}"
                 for index, result in enumerate(page_results)
-                if isinstance(result, str) and result.strip()
+                if isinstance(result, dict) and str(result.get("text") or "").strip()
             ]
+            cache_hits = sum(
+                1
+                for result in page_results
+                if isinstance(result, dict) and result.get("cached")
+            )
+            logger.info(
+                "Steam notice image cache: %d HIT, %d MISS",
+                cache_hits,
+                len(page_facts) - cache_hits,
+            )
             reviewed_answer = ""
             if page_facts:
                 sources = list(dict.fromkeys([*steam_urls, *citations]))
@@ -2454,6 +2560,8 @@ class GrokChat(commands.Cog):
             official_handles,
             len(citations),
         )
+        if not answer.startswith("⚠️") and not answer.startswith("❌"):
+            await put_news_answer_cache(cache_key, question, answer)
         return answer
 
     async def _resolve_tool_calls(
@@ -2731,6 +2839,7 @@ class GrokChat(commands.Cog):
     async def cog_load(self):
         # Tạo bảng SQLite nếu chưa có, chạy 1 lần lúc Cog được add vào bot
         await user_memory.init_db()
+        await init_official_news_cache()
         imported = await user_memory.backfill_explicit_memories(
             self._is_explicit_memory_request
         )
