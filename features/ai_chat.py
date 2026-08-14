@@ -413,7 +413,9 @@ Khi giải toán, xác suất, thống kê, vật lý hoặc đọc bài tập t
 
 - Discord không render LaTeX/MathJax. Tuyệt đối không xuất delimiter `$...$`,
   `$$...$$`, `\(...\)`, `\[...\]` hoặc lệnh thô như `\frac`, `\int`, `\sqrt`,
-  `\sum`, `\left`, `\right`.
+  `\sum`, `\left`, `\right`, `\sin`, `\cos`, `\tan`, `\cot`, `\quad` hay
+  `^\circ`. Không đặt công thức giữa hai dòng `[` và `]`; đó không phải cú pháp
+  toán học của Discord. Viết `sin α`, `cos α`, `90°`, `π/2` trực tiếp.
 - Dùng Markdown vừa phải: tiêu đề in đậm, các bước đánh số và kết luận riêng.
 - Dùng ký hiệu Unicode khi dễ đọc: ∫, √, Σ, π, ±, ×, ÷, ≤, ≥, ≠, →,
   cùng số mũ/chỉ số như x², x³, a₁, a₂. Nếu ký hiệu Unicode làm biểu thức khó
@@ -962,10 +964,15 @@ class GrokChat(commands.Cog):
         markers = (
             "đạo hàm", "tích phân", "xác suất", "phương trình", "hàm số",
             "cực trị", "số phức", "hình học", "toán", "chứng minh",
+            "lượng giác", "luong giac", "công thức toán", "cong thuc toan",
+            "đại số", "dai so", "giải tích", "giai tich", "ma trận", "ma tran",
             "derivative", "integral", "probability", "equation", "theorem",
+            "trigonometry", "trigonometric", "algebra", "calculus", "matrix",
             "\\frac", "\\int", "sqrt(",
         )
         return any(marker in text for marker in markers) or bool(
+            re.search(r"\b(?:sin|cos|tan|cot|sec|csc)\b", text)
+        ) or bool(
             re.search(r"(?:\d|[a-z])\s*(?:\^|=|≤|≥|[+*/])\s*(?:\d|[a-z])", text)
         )
 
@@ -986,6 +993,11 @@ class GrokChat(commands.Cog):
         )
         if study_request or any(marker in text for marker in high_markers):
             return "high"
+
+        # Câu tra cứu học thuật như "bảng công thức lượng giác" không cần mức
+        # high của một bài giải nhiều bước, nhưng cũng không được rơi xuống low.
+        if cls._looks_like_math_content(text):
+            return "medium"
 
         technical_markers = (
             "traceback", "exception", "debug", "lỗi code", "source code",
@@ -3239,6 +3251,7 @@ class GrokChat(commands.Cog):
             study_request=context_study_request,
             has_external_context=bool(link_context),
         )
+        context_math_content = self._looks_like_math_content(context_user_text)
         instructions = (
             f"{base_prompt}\n\nNgười đang dùng context menu là "
             f"{interaction.user.display_name}. Hãy làm đúng yêu cầu của họ với "
@@ -3277,7 +3290,7 @@ class GrokChat(commands.Cog):
             response = await self._create_response(
                 instructions=instructions,
                 input_data=input_data,
-                max_output_tokens=1000,
+                max_output_tokens=2000 if context_math_content else 1000,
                 use_tools=False,
                 reasoning_effort=context_reasoning_effort,
             )
@@ -3879,19 +3892,25 @@ class GrokChat(commands.Cog):
             study_request=study_request,
             has_external_context=bool(link_context),
         )
+        math_content = self._looks_like_math_content(user_text)
         output_token_limit = (
             1800
             if study_request
+            else 2000
+            if math_content
             else 1000
+        )
+        disable_tools_for_academic = study_request or (
+            math_content and not link_context
         )
 
         try:
             response = await self._create_response(
                 instructions=system_prompt,
                 input_data=input_messages,
-                tool_choice="none" if study_request else "auto",
+                tool_choice="none" if disable_tools_for_academic else "auto",
                 max_output_tokens=output_token_limit,
-                use_tools=not study_request,
+                use_tools=not disable_tools_for_academic,
                 reasoning_effort=reasoning_effort,
             )
         except XaiOAuthError as e:
