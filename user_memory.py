@@ -665,6 +665,52 @@ async def get_explicit_memories(user_id: int, limit: int = 12) -> list[str]:
         return [str(row[0]) for row in await cursor.fetchall() if row[0]]
 
 
+async def get_relevant_explicit_memories(
+    user_id: int,
+    query: str,
+    *,
+    limit: int = 4,
+    recent_fallback: int = 2,
+) -> list[str]:
+    """Chọn ký ức ghim liên quan, kèm vài mục mới nhất để giữ tính liên tục.
+
+    Toàn bộ dữ liệu vẫn nằm trong SQLite; hàm chỉ giảm phần phải gửi lên LLM ở
+    một lượt chat bình thường. Câu hỏi nhớ lại vẫn dùng ``search_user_history``.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT id, content FROM explicit_user_memory
+            WHERE user_id = ? ORDER BY id DESC LIMIT 100
+            """,
+            (int(user_id),),
+        )
+        rows = await cursor.fetchall()
+    if not rows:
+        return []
+
+    terms = _memory_search_terms(query)
+    scored: list[tuple[int, int, str]] = []
+    for row_id, content in rows:
+        text = str(content or "")
+        folded = text.casefold()
+        score = sum(folded.count(term) for term in terms)
+        if score:
+            scored.append((score, int(row_id), text))
+
+    selected: dict[int, str] = {}
+    for _, row_id, content in sorted(
+        scored, key=lambda item: (item[0], item[1]), reverse=True
+    )[:max(0, int(limit))]:
+        selected[row_id] = content
+    for row_id, content in rows[:max(0, int(recent_fallback))]:
+        selected.setdefault(int(row_id), str(content))
+
+    # Cũ → mới để lời chốt/sửa gần nhất đứng sau và được model ưu tiên.
+    chosen = sorted(selected.items(), key=lambda item: item[0])
+    return [content for _, content in chosen[-max(1, int(limit)):]]
+
+
 async def prune_invalid_explicit_memories(predicate) -> int:
     """Dọn các câu hỏi nhớ lại từng bị bản cũ nhận nhầm thành dữ kiện mới."""
     async with aiosqlite.connect(DB_PATH) as db:
