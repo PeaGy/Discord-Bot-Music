@@ -127,6 +127,24 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_explicit_memory_user "
             "ON explicit_user_memory(user_id, id)"
         )
+        # Mỗi lần tóm tắt đều giữ lại một phiên bản bất biến. Bản mới nhất vẫn
+        # nằm trong scoped_user_summary để đọc nhanh, còn các bản cũ giúp phục
+        # hồi một chi tiết từng bị model tóm tắt sau đó lược bỏ.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_summary_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, summary)
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_summary_versions_user "
+            "ON memory_summary_versions(user_id, id)"
+        )
 
         # Nâng cấp từ cơ chế tóm tắt tách theo DM/server sang trí nhớ cá nhân
         # dùng chung. Chỉ gom một lần rồi xóa các bản scope cũ để lần khởi động
@@ -190,6 +208,15 @@ async def init_db() -> None:
             )
         await db.execute(
             "DELETE FROM scoped_message_count WHERE scope != ?",
+            (GLOBAL_MEMORY_SCOPE,),
+        )
+        # Giữ lại bản tóm tắt đang có trước khi cơ chế versioning được cài.
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO memory_summary_versions (user_id, summary)
+            SELECT user_id, summary FROM scoped_user_summary
+            WHERE scope = ? AND TRIM(summary) != ''
+            """,
             (GLOBAL_MEMORY_SCOPE,),
         )
         await db.commit()
@@ -326,6 +353,9 @@ async def clear_user(user_id: int) -> None:
         await db.execute(
             "DELETE FROM explicit_user_memory WHERE user_id = ?", (user_id,)
         )
+        await db.execute(
+            "DELETE FROM memory_summary_versions WHERE user_id = ?", (user_id,)
+        )
         await db.commit()
 
 
@@ -340,6 +370,7 @@ async def clear_all() -> None:
         await db.execute("DELETE FROM scoped_user_summary")
         await db.execute("DELETE FROM scoped_message_count")
         await db.execute("DELETE FROM explicit_user_memory")
+        await db.execute("DELETE FROM memory_summary_versions")
         await db.commit()
 
 
@@ -450,6 +481,21 @@ async def search_user_history(
     dịch vụ embedding riêng, nên độ trễ chủ yếu là một truy vấn SQLite nhỏ.
     """
     terms = _memory_search_terms(query)
+    query_tokens = re.findall(
+        r"[^\W_]+", str(query or "").casefold(), re.UNICODE
+    )
+    phrases = []
+    for size in (3, 2):
+        for index in range(len(query_tokens) - size + 1):
+            phrase = " ".join(query_tokens[index:index + size])
+            meaningful = [
+                token for token in query_tokens[index:index + size]
+                if token not in _MEMORY_SEARCH_STOPWORDS
+            ]
+            if len(meaningful) >= 2 and phrase not in phrases:
+                phrases.append(phrase)
+    phrases = phrases[:8]
+
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         if terms:
@@ -463,6 +509,28 @@ async def search_user_history(
                 """,
                 params,
             )
+            explicit_clauses = " OR ".join(
+                "LOWER(content) LIKE ?" for _ in terms
+            )
+            explicit_cursor = await db.execute(
+                f"""
+                SELECT id, content FROM explicit_user_memory
+                WHERE user_id = ? AND ({explicit_clauses})
+                ORDER BY id DESC LIMIT 80
+                """,
+                [int(user_id), *[f"%{term}%" for term in terms]],
+            )
+            summary_clauses = " OR ".join(
+                "LOWER(summary) LIKE ?" for _ in terms
+            )
+            summary_cursor = await db.execute(
+                f"""
+                SELECT id, summary FROM memory_summary_versions
+                WHERE user_id = ? AND ({summary_clauses})
+                ORDER BY id DESC LIMIT 80
+                """,
+                [int(user_id), *[f"%{term}%" for term in terms]],
+            )
         else:
             cursor = await db.execute(
                 """
@@ -471,27 +539,98 @@ async def search_user_history(
                 """,
                 (int(user_id), max(int(limit) * 3, 30)),
             )
+            explicit_cursor = await db.execute(
+                """
+                SELECT id, content FROM explicit_user_memory
+                WHERE user_id = ? ORDER BY id DESC LIMIT 20
+                """,
+                (int(user_id),),
+            )
+            summary_cursor = await db.execute(
+                """
+                SELECT id, summary FROM memory_summary_versions
+                WHERE user_id = ? ORDER BY id DESC LIMIT 20
+                """,
+                (int(user_id),),
+            )
         rows = await cursor.fetchall()
+        explicit_rows = await explicit_cursor.fetchall()
+        summary_rows = await summary_cursor.fetchall()
+
+    negative_memory_phrases = (
+        "không nhớ", "khong nho", "không còn nhớ", "khong con nho",
+        "không nắm được", "khong nam duoc", "quên mất", "quen mat",
+        "không có trong trí nhớ", "khong co trong tri nho",
+        "i don't remember", "i do not remember",
+    )
+
+    def score_item(content: str, *, source: str, role: str, item_id: int) -> tuple:
+        folded = content.casefold()
+        score = sum(folded.count(term) * 4 for term in terms)
+        score += sum(18 for phrase in phrases if phrase in folded)
+        if source == "explicit":
+            score += 100
+        elif source == "summary_version":
+            score += 55
+        if role == "assistant" and any(
+            phrase in folded for phrase in negative_memory_phrases
+        ):
+            score -= 120
+        return score, item_id
 
     scored: list[tuple[int, int, dict]] = []
     for row in rows:
         content = str(row["content"] or "")
-        folded = content.casefold()
-        score = sum(folded.count(term) for term in terms)
+        item_id = int(row["id"])
         item = {
-            "id": int(row["id"]),
+            "id": item_id,
             "role": row["role"],
             "content": content,
             "scope": row["scope"],
+            "source": "chat_history",
         }
-        scored.append((score, int(row["id"]), item))
+        score, recency = score_item(
+            content, source="chat_history", role=str(row["role"]), item_id=item_id
+        )
+        scored.append((score, recency, item))
+
+    for row in summary_rows:
+        content = str(row["summary"] or "")
+        item_id = int(row["id"])
+        item = {
+            "id": item_id,
+            "role": "memory_summary",
+            "content": content,
+            "scope": GLOBAL_MEMORY_SCOPE,
+            "source": "summary_version",
+        }
+        score, recency = score_item(
+            content, source="summary_version", role="memory_summary", item_id=item_id
+        )
+        scored.append((score, recency, item))
+
+    for row in explicit_rows:
+        content = str(row["content"] or "")
+        item_id = int(row["id"])
+        item = {
+            "id": item_id,
+            "role": "pinned_memory",
+            "content": content,
+            "scope": GLOBAL_MEMORY_SCOPE,
+            "source": "explicit",
+        }
+        score, recency = score_item(
+            content, source="explicit", role="pinned_memory", item_id=item_id
+        )
+        scored.append((score, recency, item))
 
     # Chọn theo độ liên quan + độ mới, sau đó trả theo thời gian để model hiểu
     # diễn biến và ưu tiên bản sửa/chốt mới nhất.
     chosen = sorted(scored, key=lambda entry: (entry[0], entry[1]), reverse=True)[
         : max(1, int(limit))
     ]
-    return [entry[2] for entry in sorted(chosen, key=lambda entry: entry[1])]
+    # Giữ thứ tự ưu tiên để dữ kiện đã ghim đứng trước lời phủ nhận gần đây.
+    return [entry[2] for entry in chosen]
 
 
 async def add_explicit_memory(
@@ -499,7 +638,7 @@ async def add_explicit_memory(
     content: str,
 ) -> None:
     """Lưu nguyên ý một điều người dùng chủ động yêu cầu nhớ, theo user_id."""
-    clean = " ".join(str(content or "").split()).strip()[:1200]
+    clean = str(content or "").strip()[:6000]
     if not clean:
         return
     async with aiosqlite.connect(DB_PATH) as db:
@@ -524,6 +663,25 @@ async def get_explicit_memories(user_id: int, limit: int = 12) -> list[str]:
             (int(user_id), int(limit)),
         )
         return [str(row[0]) for row in await cursor.fetchall() if row[0]]
+
+
+async def prune_invalid_explicit_memories(predicate) -> int:
+    """Dọn các câu hỏi nhớ lại từng bị bản cũ nhận nhầm thành dữ kiện mới."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT id, content FROM explicit_user_memory")
+        invalid_ids = [
+            (int(row_id),)
+            for row_id, content in await cursor.fetchall()
+            if content and not predicate(str(content))
+        ]
+        if not invalid_ids:
+            return 0
+        before = db.total_changes
+        await db.executemany(
+            "DELETE FROM explicit_user_memory WHERE id = ?", invalid_ids
+        )
+        await db.commit()
+        return db.total_changes - before
 
 
 async def backfill_explicit_memories(predicate, scan_limit: int = 5000) -> int:
@@ -589,8 +747,11 @@ async def get_summary(user_id: int, scope: str) -> str | None:
 
 
 async def set_summary(user_id: int, scope: str, summary: str) -> None:
-    """Ghi đè trí nhớ dài hạn dùng chung (scope giữ để tương thích API cũ)."""
+    """Cập nhật bản đọc nhanh và giữ một phiên bản bất biến để phục hồi."""
     scope = GLOBAL_MEMORY_SCOPE
+    summary = str(summary or "").strip()[:12000]
+    if not summary:
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -599,6 +760,11 @@ async def set_summary(user_id: int, scope: str, summary: str) -> None:
             ON CONFLICT(user_id, scope) DO UPDATE SET summary = excluded.summary
             """,
             (user_id, scope, summary),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO memory_summary_versions (user_id, summary) "
+            "VALUES (?, ?)",
+            (int(user_id), summary),
         )
         await db.commit()
 

@@ -166,7 +166,7 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 ## Trí nhớ và quyền riêng tư
 
 - Trí nhớ cá nhân gắn với Discord `user_id` và theo người dùng giữa DM/các server.
-- Câu “hãy nhớ…”, “ghi nhớ…” hoặc “chốt từ giờ…” được lưu ưu tiên.
+- Câu “hãy nhớ…”, “ghi nhớ…” hoặc “chốt từ giờ…” ghim cả ngữ cảnh liên quan; các bản tóm tắt cũ cũng được giữ để tránh mất chi tiết khi đổi model.
 - Lịch sử gốc trong `bot_memory.db` không tự bị cắt; chat thường chỉ gửi một cửa sổ gần cho Grok để giữ tốc độ.
 - Khi hỏi “Peto còn nhớ…?”, bot mới tìm sâu trong kho của đúng người đó bằng SQLite cục bộ.
 - `/andanh` chỉ giữ ngữ cảnh tạm trong RAM và không đọc/ghi trí nhớ dài hạn.
