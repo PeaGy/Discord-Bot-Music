@@ -35,6 +35,7 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 
 - Mention/reply Peto trong server hoặc dùng `/private` để trò chuyện qua DM.
 - Grok qua SuperGrok OAuth hoặc `XAI_API_KEY`; hỗ trợ vision, tạo/sửa ảnh, đọc link và Tavily web search.
+- Có thể xem video Discord MP4/MOV/WebM/MKV ngắn tối đa 2 phút khi được hỏi: FFmpeg lấy 8 khung hình theo thời gian, xAI STT phiên âm lời nói rồi Grok kết hợp cả hai. Bot không tự đọc mọi clip trong kênh.
 - Study Mode tự nhận diện bài tập, hỗ trợ Gợi ý, Giải chi tiết, Kiểm tra đáp án, Chép đề và Xuất PNG.
 - Câu trả lời quá dài được chia hợp lý hoặc gửi bằng file UTF-8 để đọc trên điện thoại.
 - Tạo sticker/emoji từ ảnh đính kèm hoặc ảnh được reply mà không cần gọi AI tạo ảnh.
