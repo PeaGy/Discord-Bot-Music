@@ -6,18 +6,18 @@ import asyncio
 import logging
 import music_library
 from cache_manager import preload_audio
+from ytdlp_support import youtube_ydl_options
 
 
 logger = logging.getLogger(__name__)
 
 # Cấu hình yt-dlp tối ưu cho việc tìm kiếm
-YDL_SEARCH_OPTIONS = {
+YDL_SEARCH_OPTIONS = youtube_ydl_options({
     "format": "bestaudio/best",
     "quiet": True,
     "noplaylist": True,
-    "extract_flat": True, 
-    "cookies": "cookies.txt", 
-}
+    "extract_flat": True,
+})
 
 # Hàm phụ trợ để chuyển đổi giây sang định dạng MM:SS giống lệnh play của bạn
 def format_duration(seconds):

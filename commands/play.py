@@ -11,6 +11,7 @@ from cache_manager import preload_audio
 from music.player import play_next, start_idle_timer
 from music.spotify import get_spotify_info, is_spotify_url
 from music.state import get_guild_state
+from ytdlp_support import youtube_ydl_options
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,9 @@ def format_duration(seconds):
 
 
 def get_song_info(query: str):
-    options = {"format": "bestaudio/best", "quiet": True, "noplaylist": True,
-               "extractor_args": {"youtube": ["player_client=ios,android,web", "player_skip=webpage"]}}
+    options = youtube_ydl_options(
+        {"format": "bestaudio/best", "quiet": True, "noplaylist": True}
+    )
     with yt_dlp.YoutubeDL(options) as ydl:
         if is_soundcloud_url(query) or is_youtube_url(query):
             info = ydl.extract_info(query, download=False)

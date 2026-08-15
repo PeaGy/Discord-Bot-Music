@@ -16,6 +16,7 @@ from music.controls import (
 )
 from music.state import get_guild_state
 from cache_manager import get_audio_source, preload_audio
+from ytdlp_support import youtube_ydl_options
 
 
 logger = logging.getLogger(__name__)
@@ -23,14 +24,12 @@ logger = logging.getLogger(__name__)
 # ==============================
 # YTDLP & FFMPEG OPTIONS
 # ==============================
-YDL_OPTIONS = {
+YDL_OPTIONS = youtube_ydl_options({
     "format": "bestaudio/best",
     "quiet": True,
     "noplaylist": True,
     "default_search": "ytsearch",
-    "cookies": "cookies.txt",  #cookies.txt file path
-    "extractor_args": {"youtube": ["player_client=ios,android,web", "player_skip=webpage"]},
-}
+})
 
 FFMPEG_OPTIONS = {
     "before_options": (

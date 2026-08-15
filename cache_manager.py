@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 import yt_dlp
 import discord
+from ytdlp_support import youtube_ydl_options
 
 
 logger = logging.getLogger(__name__)
@@ -104,13 +105,13 @@ def download_raw_sync(url, raw_outtmpl):
     FFmpegExtractAudio để ép ngay về MP3 128k lúc tải -> bị encode lossy chồng
     lossy 2 lần. Giờ chỉ transcode ĐÚNG MỘT LẦN ở normalize_and_encode_sync().
     """
-    ydl_opts = {
+    ydl_opts = youtube_ydl_options({
         "format": "bestaudio/best",
         "outtmpl": raw_outtmpl,
         "quiet": True,
         "noplaylist": True,
         "nocheckcertificate": True,
-    }
+    })
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         if "entries" in info:

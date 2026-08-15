@@ -22,6 +22,7 @@ import discord
 import yt_dlp
 from discord import app_commands
 from discord.ext import commands
+from ytdlp_support import youtube_ydl_options
 
 
 logger = logging.getLogger(__name__)
@@ -612,8 +613,10 @@ def _common_ydl_options(platform: str | None = None) -> dict:
     }
     # Không dùng chung cookie jar với TikTok/X. TikTok có thể ghi challenge cookie
     # tạm vào file, làm các lần trích xuất kế tiếp kẹt ở bước rehydration.
-    if platform == "youtube" and os.path.isfile("cookies.txt"):
-        options["cookiefile"] = "cookies.txt"
+    if platform == "youtube":
+        if os.path.isfile("cookies.txt"):
+            options["cookiefile"] = "cookies.txt"
+        return youtube_ydl_options(options)
     return options
 
 

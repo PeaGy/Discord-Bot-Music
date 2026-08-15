@@ -10,6 +10,7 @@ from discord.ext import commands
 import music_library
 from music.player import play_next
 from music.state import get_guild_state
+from ytdlp_support import youtube_ydl_options
 
 
 logger = logging.getLogger(__name__)
@@ -389,7 +390,9 @@ class MusicLibrary(commands.Cog):
             return await interaction.response.send_message("❌ URL này chưa được hỗ trợ.", ephemeral=True)
         await interaction.response.defer(ephemeral=True, thinking=True)
         def extract():
-            options = {"quiet": True, "extract_flat": "in_playlist", "playlistend": music_library.MAX_PLAYLIST_TRACKS}
+            options = youtube_ydl_options(
+                {"quiet": True, "extract_flat": "in_playlist", "playlistend": music_library.MAX_PLAYLIST_TRACKS}
+            )
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=False)
                 return [{"title": x.get("title") or "Unknown", "author": x.get("uploader") or x.get("channel") or "Unknown",
