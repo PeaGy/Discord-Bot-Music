@@ -18,7 +18,8 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 
 - `/download` hỗ trợ YouTube, TikTok và X/Twitter bằng panel riêng tư.
 - YouTube: MP3 chất lượng cao hoặc MP4 theo các mức chất lượng thật sự có; ưu tiên audio original thay vì track lồng tiếng.
-- TikTok: video MP4 không watermark hoặc toàn bộ ảnh của photo post; X: MP4.
+- TikTok: video MP4 không watermark hoặc toàn bộ ảnh của photo post.
+- X/Twitter: video MP4, tối đa 4 ảnh gốc của bài đăng, hoặc ảnh động dưới dạng GIF thật và MP4 nhẹ hơn.
 - Video công khai dưới 60 phút, không hỗ trợ playlist/livestream/Facebook/Instagram.
 - File nhỏ gửi qua Discord; file lớn có thể đi qua Download Gateway + Cloudflare Tunnel và tự hết hạn sau 2 giờ.
 - Tracker hiển thị giai đoạn, phần trăm, dung lượng, tốc độ và ETA trong lúc xử lý.

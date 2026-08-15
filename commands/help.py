@@ -208,7 +208,8 @@ class HelpDropdown(discord.ui.View):
                     "video nhiều bản lồng tiếng sẽ ưu tiên audio gốc/default\n"
                     "🎬 **TikTok video** — Tải MP4 không watermark\n"
                     "🖼️ **TikTok photo** — Tải toàn bộ ảnh gốc theo từng file\n"
-                    "🎬 **X / Twitter** — Tải MP4\n\n"
+                    "🐦 **X / Twitter** — Tải video MP4, tối đa 4 ảnh gốc; ảnh động có cả "
+                    "GIF thật và MP4 nhẹ hơn\n\n"
                     "TikTok dùng `yt-dlp` làm nguồn chính và tự chuyển sang TikWM "
                     "khi gặp challenge/rehydration. Link chỉ được gửi tới dịch vụ "
                     "fallback khi nguồn chính thất bại. File nằm trong giới hạn Discord "
@@ -256,7 +257,7 @@ class Help(commands.Cog):
                 "📢 **Giới thiệu** — Tổng quan tính năng và công nghệ\n"
                 "🎵 **Lệnh âm nhạc** — Phát nhạc, hàng đợi và voice\n"
                 "🎨 **Art & AI** — Danbooru, Peto và bộ nhớ hội thoại\n"
-                "📥 **Tải media** — TikTok video/ảnh, YouTube MP3 và X MP4\n\n"
+                "📥 **Tải media** — TikTok video/ảnh, YouTube MP3/MP4 và X video/ảnh/GIF\n\n"
                 "Chọn một danh mục trong menu bên dưới để xem chi tiết."
             ),
         )

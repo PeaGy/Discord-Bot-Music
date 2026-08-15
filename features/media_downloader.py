@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -14,7 +15,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 import discord
@@ -34,7 +35,9 @@ UPLOAD_SAFETY_MARGIN = 128 * 1024
 MAX_PARALLEL_DOWNLOADS = 2
 MAX_PARALLEL_PROBES = 3
 MAX_TIKTOK_IMAGES = 35
+MAX_X_IMAGES = 4
 MAX_PHOTO_TOTAL_BYTES = 80 * 1024 * 1024
+FXTWITTER_RESPONSE_LIMIT = 4 * 1024 * 1024
 MAX_GATEWAY_FILE_BYTES = max(
     10,
     int(os.getenv("DOWNLOAD_MAX_FILE_MIB", "512")),
@@ -221,6 +224,169 @@ def _tiktok_photo_id(url: str) -> str | None:
         return None
     match = re.search(r"/photo/(\d+)(?:[/?#]|$)", urlparse(url).path + "/")
     return match.group(1) if match else None
+
+
+def _x_status_parts(url: str) -> tuple[str, str] | None:
+    if _platform_from_url(url) != "x":
+        return None
+    match = re.search(
+        r"^/([^/]+)/status/(\d+)(?:/(?:photo|video)/\d+)?/?$",
+        urlparse(url).path,
+        re.IGNORECASE,
+    )
+    return (match.group(1), match.group(2)) if match else None
+
+
+def _trusted_x_media_url(raw_url: object) -> str | None:
+    value = str(raw_url or "").strip()
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if parsed.scheme != "https" or not host:
+        return None
+    if host == "twimg.com" or host.endswith(".twimg.com"):
+        return value
+    return None
+
+
+def _x_original_photo_url(url: str) -> str:
+    trusted = _trusted_x_media_url(url)
+    if not trusted:
+        return url
+    parsed = urlparse(trusted)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["name"] = "orig"
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _fxtwitter_status_sync(url: str) -> dict | None:
+    parts = _x_status_parts(url)
+    if not parts:
+        return None
+    username, status_id = parts
+    endpoints = (
+        f"https://api.fxtwitter.com/2/status/{status_id}",
+        f"https://api.fxtwitter.com/{username}/status/{status_id}",
+    )
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "PetoDiscordBot/1.0 (personal media downloader)",
+    }
+    for endpoint in endpoints:
+        try:
+            with urlopen(Request(endpoint, headers=headers), timeout=20) as response:
+                raw = response.read(FXTWITTER_RESPONSE_LIMIT + 1)
+            if len(raw) > FXTWITTER_RESPONSE_LIMIT:
+                logger.info("FxTwitter trả metadata quá lớn cho status=%s", status_id)
+                continue
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                continue
+            status = payload.get("status") or payload.get("tweet")
+            if isinstance(status, dict):
+                return status
+        except (HTTPError, URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError):
+            logger.debug("Không đọc được FxTwitter endpoint %s", endpoint, exc_info=True)
+    return None
+
+
+def _best_x_animation_url(media: dict) -> str | None:
+    candidates: list[tuple[tuple[int, int, int], str]] = []
+    for media_format in media.get("formats") or []:
+        if not isinstance(media_format, dict):
+            continue
+        url = _trusted_x_media_url(media_format.get("url"))
+        container = str(media_format.get("container") or "").casefold()
+        if not url or (container and container != "mp4"):
+            continue
+        try:
+            size = int(media_format.get("size") or 0)
+            height = int(media_format.get("height") or 0)
+            bitrate = int(media_format.get("bitrate") or 0)
+        except (TypeError, ValueError):
+            size = height = bitrate = 0
+        candidates.append(((height, bitrate, size), url))
+    if candidates:
+        return max(candidates, key=lambda entry: entry[0])[1]
+    for key in ("transcode_url", "url"):
+        trusted = _trusted_x_media_url(media.get(key))
+        if trusted:
+            return trusted
+    return None
+
+
+def _probe_x_special_media_sync(url: str) -> MediaItem | None:
+    """Return X photos/GIFs via FxTwitter; normal videos stay on yt-dlp."""
+    status = _fxtwitter_status_sync(url)
+    if not status:
+        return None
+    media = status.get("media") if isinstance(status.get("media"), dict) else {}
+    photos = [entry for entry in media.get("photos") or [] if isinstance(entry, dict)]
+    videos = [entry for entry in media.get("videos") or [] if isinstance(entry, dict)]
+    animation = next(
+        (
+            entry
+            for entry in (*videos, *photos)
+            if str(entry.get("type") or "").casefold() in {"gif", "animated_gif"}
+        ),
+        None,
+    )
+    author = status.get("author") if isinstance(status.get("author"), dict) else {}
+    uploader = str(
+        author.get("name") or author.get("screen_name") or "X / Twitter"
+    )[:100]
+    text = str(status.get("text") or "").strip()
+    title = (text or f"Nội dung của {uploader}")[:250]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Peto Discord Bot media downloader)",
+        "Referer": url,
+    }
+
+    if animation is not None:
+        direct_url = _best_x_animation_url(animation)
+        if not direct_url:
+            return None
+        try:
+            duration = max(0, int(round(float(animation.get("duration") or 0))))
+        except (TypeError, ValueError):
+            duration = 0
+        thumbnail = _trusted_x_media_url(animation.get("thumbnail_url"))
+        return MediaItem(
+            platform="x",
+            url=str(status.get("url") or url),
+            title=title,
+            uploader=uploader,
+            duration=duration,
+            thumbnail=thumbnail,
+            direct_url=direct_url,
+            direct_headers=headers,
+            media_kind="gif",
+            output_format="gif",
+        )
+
+    image_sources: list[tuple[str, ...]] = []
+    for photo in photos[:MAX_X_IMAGES]:
+        if str(photo.get("type") or "photo").casefold() != "photo":
+            continue
+        source = _trusted_x_media_url(photo.get("url"))
+        if not source:
+            continue
+        image_sources.append(tuple(dict.fromkeys((_x_original_photo_url(source), source))))
+    if not image_sources:
+        return None
+    return MediaItem(
+        platform="x",
+        url=str(status.get("url") or url),
+        title=title,
+        uploader=uploader,
+        duration=0,
+        thumbnail=image_sources[0][0],
+        direct_headers=headers,
+        media_kind="photo",
+        image_sources=tuple(image_sources),
+    )
 
 
 def _trusted_tiktok_media_url(raw_url: object) -> str | None:
@@ -1076,21 +1242,24 @@ def _download_direct_mp4_sync(
     return destination, _safe_filename(item.title, "mp4")
 
 
-def _download_tiktok_images_sync(
+def _download_images_sync(
     item: MediaItem,
     upload_limit: int,
     directory: str,
     progress: MediaDownloadProgress | None = None,
 ) -> list[tuple[str, str]]:
     if not item.image_sources:
-        raise MediaDownloadError("Album TikTok này không có danh sách ảnh hợp lệ.")
+        raise MediaDownloadError("Bài đăng này không có danh sách ảnh hợp lệ.")
 
     extension_by_type = {
         "image/jpeg": "jpg",
         "image/png": "png",
         "image/webp": "webp",
         "image/avif": "avif",
+        "image/gif": "gif",
     }
+    platform_label = PLATFORM_LABELS.get(item.platform, "nền tảng")
+    file_prefix = "x" if item.platform == "x" else "tiktok"
     downloaded_files: list[tuple[str, str]] = []
     total_bytes = 0
     if progress:
@@ -1105,9 +1274,14 @@ def _download_tiktok_images_sync(
                 with urlopen(request, timeout=30) as response:
                     content_type = response.headers.get_content_type().casefold()
                     if not content_type.startswith("image/"):
-                        raise MediaDownloadError("TikTok CDN không trả về dữ liệu ảnh hợp lệ.")
+                        raise MediaDownloadError(
+                            f"CDN {platform_label} không trả về dữ liệu ảnh hợp lệ."
+                        )
                     extension = extension_by_type.get(content_type, "jpg")
-                    destination = os.path.join(directory, f"tiktok_{index:02d}.{extension}")
+                    destination = os.path.join(
+                        directory,
+                        f"{file_prefix}_{index:02d}.{extension}",
+                    )
 
                     try:
                         content_length = int(response.headers.get("Content-Length") or 0)
@@ -1135,7 +1309,9 @@ def _download_tiktok_images_sync(
                 if image_bytes <= 0:
                     raise MediaDownloadError(f"Ảnh số {index} bị rỗng.")
                 total_bytes += image_bytes
-                downloaded_files.append((destination, f"tiktok_{index:02d}.{extension}"))
+                downloaded_files.append(
+                    (destination, f"{file_prefix}_{index:02d}.{extension}")
+                )
                 if progress:
                     progress.set_stage(
                         "images",
@@ -1152,10 +1328,162 @@ def _download_tiktok_images_sync(
 
         if not completed:
             raise MediaDownloadError(
-                f"TikTok CDN từ chối tải ảnh số {index}; hãy chạy lại `/download`."
+                f"CDN {platform_label} từ chối tải ảnh số {index}; "
+                "hãy chạy lại `/download`."
             ) from last_error
 
     return downloaded_files
+
+
+def _media_ffmpeg_executable() -> str:
+    configured = os.getenv("FFMPEG_BINARY", "").strip()
+    if configured:
+        return configured
+    detected = shutil.which("ffmpeg")
+    if detected:
+        return detected
+    if os.name == "nt":
+        local_app_data = os.getenv("LOCALAPPDATA", "").strip()
+        if local_app_data:
+            package_root = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
+            candidates = sorted(
+                package_root.glob("Gyan.FFmpeg*/ffmpeg-*/bin/ffmpeg.exe"),
+                reverse=True,
+            )
+            if candidates:
+                return str(candidates[0])
+    return "ffmpeg"
+
+
+def _run_media_ffmpeg(command: list[str]) -> None:
+    try:
+        result = subprocess.run(
+            [_media_ffmpeg_executable(), *command],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except FileNotFoundError as error:
+        raise MediaDownloadError("Không tìm thấy FFmpeg để chuyển ảnh động.") from error
+    except subprocess.TimeoutExpired as error:
+        raise MediaDownloadError("FFmpeg chuyển ảnh động quá thời gian cho phép.") from error
+    if result.returncode != 0:
+        logger.debug("FFmpeg ảnh động thất bại: %s", (result.stderr or "")[-1000:])
+        raise MediaDownloadError("FFmpeg không chuyển được ảnh động này.")
+
+
+def _convert_x_animation_sync(
+    source_path: str,
+    source_extension: str,
+    output_format: str,
+    output_limit: int,
+    directory: str,
+    progress: MediaDownloadProgress | None,
+) -> str:
+    if output_format == source_extension:
+        return source_path
+    if progress:
+        progress.set_stage(
+            "processing",
+            "Đang chuyển MP4 thành GIF" if output_format == "gif" else "Đang tạo MP4 nhẹ hơn",
+        )
+
+    output_path = os.path.join(directory, f"x_animation.{output_format}")
+    if output_format == "mp4":
+        _run_media_ffmpeg([
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-i", source_path,
+            "-an", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+            "-movflags", "+faststart", output_path,
+        ])
+        if os.path.isfile(output_path) and 0 < os.path.getsize(output_path) <= output_limit:
+            return output_path
+        raise MediaDownloadError("MP4 ảnh động vượt giới hạn tải ngoài hiện tại.")
+
+    # X lưu GIF dưới dạng MP4. Dùng palette hai bước trong một filter graph để
+    # tạo GIF thật; tự hạ fps/kích thước nếu file đầu tiên còn quá lớn.
+    for fps, max_width in ((15, 960), (12, 720), (10, 480)):
+        filter_graph = (
+            f"fps={fps},scale='min({max_width},iw)':-2:flags=lanczos,"
+            "split[s0][s1];[s0]palettegen=max_colors=256[p];"
+            "[s1][p]paletteuse=dither=sierra2_4a"
+        )
+        _run_media_ffmpeg([
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-i", source_path,
+            "-filter_complex", filter_graph,
+            "-loop", "0", output_path,
+        ])
+        if os.path.isfile(output_path) and 0 < os.path.getsize(output_path) <= output_limit:
+            return output_path
+    raise MediaDownloadError(
+        "GIF sau khi chuyển đổi vẫn vượt giới hạn tải ngoài; hãy chọn MP4 nhẹ hơn."
+    )
+
+
+def _download_x_animation_sync(
+    item: MediaItem,
+    output_limit: int,
+    directory: str,
+    progress: MediaDownloadProgress | None = None,
+) -> tuple[str, str]:
+    if not item.direct_url or not _trusted_x_media_url(item.direct_url):
+        raise MediaDownloadError("Link ảnh động X không còn hợp lệ.")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Peto Discord Bot media downloader)",
+        "Referer": item.url,
+        **(item.direct_headers or {}),
+    }
+    request = Request(item.direct_url, headers=headers)
+    if progress:
+        progress.set_stage("media", "Đang tải ảnh động từ X")
+    try:
+        with urlopen(request, timeout=60) as response:
+            content_type = response.headers.get_content_type().casefold()
+            source_extension = "gif" if content_type == "image/gif" else "mp4"
+            source_path = os.path.join(directory, f"x_source.{source_extension}")
+            try:
+                content_length = int(response.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                content_length = 0
+            if content_length and content_length > output_limit:
+                raise MediaDownloadError("Ảnh động X vượt giới hạn tải ngoài hiện tại.")
+
+            downloaded = 0
+            with open(source_path, "wb") as output:
+                while chunk := response.read(256 * 1024):
+                    downloaded += len(chunk)
+                    if downloaded > output_limit:
+                        raise MediaDownloadError("Ảnh động X vượt giới hạn tải ngoài hiện tại.")
+                    output.write(chunk)
+                    if progress:
+                        progress.update_download({
+                            "status": "downloading",
+                            "downloaded_bytes": downloaded,
+                            "total_bytes": content_length,
+                            "info_dict": {"vcodec": "unknown", "acodec": "none"},
+                        })
+    except MediaDownloadError:
+        raise
+    except (HTTPError, URLError, TimeoutError, OSError) as error:
+        raise MediaDownloadError(
+            "CDN X từ chối tải ảnh động; hãy chạy lại `/download` để làm mới link."
+        ) from error
+
+    if not os.path.isfile(source_path) or os.path.getsize(source_path) <= 0:
+        raise MediaDownloadError("X trả về file ảnh động rỗng.")
+    output_format = "mp4" if item.output_format == "mp4" else "gif"
+    output_path = _convert_x_animation_sync(
+        source_path,
+        source_extension,
+        output_format,
+        output_limit,
+        directory,
+        progress,
+    )
+    return output_path, _safe_filename(item.title, output_format)
 
 
 def _download_media_sync(
@@ -1166,6 +1494,8 @@ def _download_media_sync(
 ) -> tuple[str, str]:
     if item.platform == "tiktok" and item.direct_url:
         return _download_direct_mp4_sync(item, upload_limit, directory, progress)
+    if item.platform == "x" and item.media_kind == "gif":
+        return _download_x_animation_sync(item, upload_limit, directory, progress)
 
     options = _common_ydl_options(item.platform)
     options.update({
@@ -1234,7 +1564,17 @@ def _build_media_embed(item: MediaItem) -> discord.Embed:
     if item.media_kind == "photo":
         output = f"{len(item.image_sources)} ảnh gốc"
         detail_name = "🖼️ Nội dung"
-        detail_value = "TikTok photo post"
+        detail_value = (
+            "Bài đăng ảnh X / Twitter"
+            if item.platform == "x"
+            else "Bài đăng ảnh TikTok"
+        )
+    elif item.media_kind == "gif":
+        output = "GIF thật • MP4 nhẹ hơn"
+        detail_name = "🎞️ Nội dung"
+        detail_value = "Ảnh động từ X / Twitter"
+        if item.duration:
+            detail_value += f" • {_format_duration(item.duration)}"
     else:
         if item.platform == "youtube" and item.youtube_video_variants:
             qualities = ", ".join(
@@ -1273,6 +1613,12 @@ class MediaDownloadButton(discord.ui.Button):
         if item.media_kind == "photo":
             default_label = "Tải ảnh"
             emoji = "🖼️"
+        elif item.media_kind == "gif" and item.output_format == "gif":
+            default_label = "Tải GIF"
+            emoji = "🎞️"
+        elif item.media_kind == "gif":
+            default_label = "MP4 nhẹ hơn"
+            emoji = "🎬"
         elif item.platform == "youtube" and item.output_format != "mp4":
             default_label = "MP3 chất lượng cao"
             emoji = "🎵"
@@ -1315,6 +1661,14 @@ class MediaDownloadView(discord.ui.View):
                         style=discord.ButtonStyle.primary,
                     )
                 )
+        elif item.platform == "x" and item.media_kind == "gif":
+            self.add_item(MediaDownloadButton(replace(item, output_format="gif")))
+            self.add_item(
+                MediaDownloadButton(
+                    replace(item, output_format="mp4"),
+                    style=discord.ButtonStyle.primary,
+                )
+            )
         else:
             self.add_item(MediaDownloadButton(item))
 
@@ -1401,7 +1755,11 @@ class MediaDownloadView(discord.ui.View):
                     else upload_limit
                 )
                 item = selected_item or self.item
-                if item.media_kind == "photo" and not item.image_sources:
+                if (
+                    item.platform == "tiktok"
+                    and item.media_kind == "photo"
+                    and not item.image_sources
+                ):
                     progress.set_stage("preparing", "Đang đọc album TikTok")
                     item = await asyncio.to_thread(_probe_tiktok_photo_sync, item.url)
                     self.item = item
@@ -1422,12 +1780,13 @@ class MediaDownloadView(discord.ui.View):
 
                 if item.media_kind == "photo":
                     downloaded_files = await asyncio.to_thread(
-                        _download_tiktok_images_sync,
+                        _download_images_sync,
                         item,
                         upload_limit,
                         temp_dir,
                         progress,
                     )
+                    platform_label = PLATFORM_LABELS.get(item.platform, "Media")
                     batches: list[list[tuple[str, str]]] = []
                     current_batch: list[tuple[str, str]] = []
                     current_size = 0
@@ -1459,7 +1818,7 @@ class MediaDownloadView(discord.ui.View):
                                 await stop_progress_tracker()
                                 await interaction.edit_original_response(
                                     content=(
-                                        f"✅ Ảnh TikTok đã sẵn sàng "
+                                        f"✅ Ảnh {platform_label} đã sẵn sàng "
                                         f"({batch_index}/{len(batches)}):"
                                     ),
                                     attachments=uploads,
@@ -1467,7 +1826,7 @@ class MediaDownloadView(discord.ui.View):
                             else:
                                 await interaction.followup.send(
                                     (
-                                        f"✅ Ảnh TikTok của bạn đã sẵn sàng "
+                                        f"✅ Ảnh {platform_label} của bạn đã sẵn sàng "
                                         f"({batch_index}/{len(batches)}):"
                                     ),
                                     files=uploads,
@@ -1570,8 +1929,8 @@ class MediaDownloader(commands.Cog):
         description="Tải media từ YouTube, TikTok hoặc X",
     )
     @app_commands.describe(
-        link="Link YouTube, TikTok video/photo hoặc X/Twitter",
-        format="Định dạng đầu ra; auto = YouTube MP3, TikTok/X MP4",
+        link="Link YouTube, TikTok video/photo hoặc X video/ảnh/GIF",
+        format="Định dạng; auto sẽ tự nhận diện nội dung phù hợp",
     )
     async def download_command(
         self,
@@ -1588,7 +1947,8 @@ class MediaDownloader(commands.Cog):
             )
         if platform != "youtube" and format == "mp3":
             return await interaction.response.send_message(
-                "❌ Tùy chọn MP3 hiện chỉ áp dụng cho YouTube. TikTok và X tải MP4.",
+                "❌ Tùy chọn MP3 hiện chỉ áp dụng cho YouTube. "
+                "TikTok/X sẽ tải video, ảnh hoặc GIF theo nội dung link.",
                 ephemeral=True,
             )
         requested_format = (
@@ -1612,6 +1972,16 @@ class MediaDownloader(commands.Cog):
                 )
                 if is_tiktok_photo:
                     item = await asyncio.to_thread(_probe_tiktok_photo_sync, url)
+                elif platform == "x":
+                    item = await asyncio.to_thread(_probe_x_special_media_sync, url)
+                    if item is None:
+                        item = await asyncio.to_thread(
+                            _probe_media_sync,
+                            platform,
+                            url,
+                            probe_limit,
+                            requested_format,
+                        )
                 else:
                     item = await asyncio.to_thread(
                         _probe_media_sync,
