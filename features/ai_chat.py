@@ -712,6 +712,27 @@ SPECIAL_USERS = {
     ),
 }
 
+# Nhận diện an toàn khi người đặc biệt chỉ XUẤT HIỆN trong reply chain chứ
+# không phải người đang gửi request hiện tại. Chỉ chứa lore quan hệ cố định,
+# không bao giờ lấy summary hoặc lịch sử riêng của người đó.
+SPECIAL_USER_REFERENCE_NOTES = {
+    890582899810791424: (
+        "User này chính là Ducky (Duck), bạn thân nhất của Peto. Khi nhắc đến "
+        "họ có thể gọi tự nhiên là Ducky hoặc Duck."
+    ),
+    947455560498946078: (
+        "User này chính là Val, người nhỏ tuổi hơn mà Peto thường gọi đùa là "
+        "'kid'. Display name hiện tại có thể là Johnlarp hoặc tên khác, nhưng "
+        "trong quan hệ với Peto vẫn là Val/kid. Khi người khác nhắc 'nó', 'hắn' "
+        "hoặc nói tiếp về user này, ưu tiên gọi tự nhiên là 'kid' hoặc 'Val', "
+        "không dùng display name thô trừ khi thật sự cần phân biệt."
+    ),
+    447975972147298305: (
+        "User này chính là Peargy, người đã tạo ra Peto và được Peto xem như "
+        "một người bạn thân thiết."
+    ),
+}
+
 LIMBUS_WIKI_PROMPT = """
 ## Kiến thức Limbus Company
 - Với mọi câu hỏi về Limbus Company (Identity, E.G.O., skill/passive, status,
@@ -1637,6 +1658,28 @@ class GrokChat(commands.Cog):
         messages_by_id = {int(item.id): item for item in messages}
         lines = [heading]
         used = len(heading)
+        participant_ids = {
+            int(item.author.id)
+            for item in messages
+            if not getattr(item.author, "bot", False)
+        }
+        participant_ids.update(
+            int(origin["requester_user_id"])
+            for origin in provenance.values()
+            if origin.get("requester_user_id") is not None
+        )
+        special_notes = [
+            f"- user_id={participant_id}: {SPECIAL_USER_REFERENCE_NOTES[participant_id]}"
+            for participant_id in sorted(participant_ids)
+            if participant_id in SPECIAL_USER_REFERENCE_NOTES
+        ]
+        if special_notes:
+            identity_block = (
+                "Nhận diện người trong đoạn reply (lore quan hệ cố định, không "
+                "phải trí nhớ riêng):\n" + "\n".join(special_notes)
+            )
+            lines.append(identity_block)
+            used += len(identity_block)
         has_attributed_bot_reply = False
         for item in messages:
             content = str(item.clean_content or "").strip()

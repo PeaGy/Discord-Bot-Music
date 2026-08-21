@@ -108,6 +108,47 @@ class ReplyContextAttributionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("được tạo để trả lời Dolphin (user_id=40)", context)
 
+    async def test_special_user_in_reply_uses_canonical_relationship(self):
+        val_id = 947455560498946078
+        val = self._author(val_id, "Johnlarp")
+        peto = self._author(99, "Peto", bot=True)
+        source = SimpleNamespace(
+            id=810,
+            author=val,
+            clean_content="giúp tôi bay",
+            attachments=[],
+            reference=None,
+        )
+        bot_reply = SimpleNamespace(
+            id=910,
+            author=peto,
+            clean_content="Gì kid, Peto không phải quạt trần.",
+            attachments=[],
+            reference=SimpleNamespace(message_id=810),
+        )
+        chat = GrokChat.__new__(GrokChat)
+        chat.bot = SimpleNamespace(user=peto)
+
+        provenance = {
+            910: {
+                "requester_user_id": val_id,
+                "requester_display_name": "Johnlarp",
+                "source_message_id": 810,
+            }
+        }
+        with patch.object(
+            user_memory,
+            "get_bot_response_provenance",
+            AsyncMock(return_value=provenance),
+        ):
+            context = await chat._format_message_context(
+                [source, bot_reply], heading="Reply chain"
+            )
+
+        self.assertIn("User này chính là Val", context)
+        self.assertIn("Val/kid", context)
+        self.assertIn(f"user_id={val_id}", context)
+
 
 if __name__ == "__main__":
     unittest.main()
