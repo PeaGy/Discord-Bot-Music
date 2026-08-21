@@ -944,6 +944,21 @@ XAI_TOOLS = [
     }
     for item in TOOLS
 ]
+_IMAGE_TOOL_NAMES = {"get_danbooru_image", "generate_image", "edit_image"}
+
+
+def _positive_env_float(name: str, default: float) -> float:
+    try:
+        return max(1.0, float(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+XAI_RESPONSE_TIMEOUTS = {
+    "low": _positive_env_float("XAI_TIMEOUT_LOW_SECONDS", 45.0),
+    "medium": _positive_env_float("XAI_TIMEOUT_MEDIUM_SECONDS", 180.0),
+    "high": _positive_env_float("XAI_TIMEOUT_HIGH_SECONDS", 240.0),
+}
 
 
 class _ToolCall:
@@ -3491,10 +3506,11 @@ class GrokChat(commands.Cog):
         max_output_tokens: int = 1000,
         previous_response_id: str | None = None,
         use_tools: bool = True,
+        allow_image_tools: bool = True,
         retry_auth: bool = True,
         reasoning_effort: str = "low",
     ):
-        """Gọi xAI Responses API; tự refresh OAuth 1 lần nếu 401."""
+        """Gọi xAI Responses API với timeout theo effort và refresh OAuth."""
         await self._prepare_client()
         kwargs: dict = {
             "model": MODEL_NAME,
@@ -3509,38 +3525,71 @@ class GrokChat(commands.Cog):
         if instructions is not None:
             kwargs["instructions"] = instructions
         if use_tools:
-            kwargs["tools"] = XAI_TOOLS
+            kwargs["tools"] = (
+                XAI_TOOLS
+                if allow_image_tools
+                else [
+                    tool for tool in XAI_TOOLS
+                    if tool.get("name") not in _IMAGE_TOOL_NAMES
+                ]
+            )
             kwargs["tool_choice"] = tool_choice
         if previous_response_id:
             kwargs["previous_response_id"] = previous_response_id
 
+        effort = str(kwargs["reasoning"]["effort"])
+        timeout_seconds = XAI_RESPONSE_TIMEOUTS.get(
+            effort, XAI_RESPONSE_TIMEOUTS["low"]
+        )
+
         async def send_once():
             started = time.perf_counter()
-            response = await self.client.responses.create(**kwargs)
+            response = await asyncio.wait_for(
+                self.client.responses.create(**kwargs),
+                timeout=timeout_seconds,
+            )
             self._log_xai_usage(
                 response,
                 elapsed=time.perf_counter() - started,
                 instructions_chars=len(instructions or ""),
-                reasoning_effort=str(kwargs["reasoning"]["effort"]),
+                reasoning_effort=effort,
             )
             return response
 
+        async def send_with_timeout_retry():
+            try:
+                return await send_once()
+            except asyncio.TimeoutError:
+                # Casual chat gets one fresh attempt but remains bounded to
+                # about 90 seconds total. Research/study already has a larger
+                # deadline, so retrying those would recreate multi-minute waits.
+                if effort != "low":
+                    logger.warning(
+                        "xAI timeout effort=%s sau %.0fs", effort, timeout_seconds
+                    )
+                    raise
+                logger.warning(
+                    "xAI timeout effort=low sau %.0fs — thử lại 1 lần",
+                    timeout_seconds,
+                )
+                return await send_once()
+
         try:
-            return await send_once()
+            return await send_with_timeout_retry()
         except AuthenticationError:
             if not retry_auth:
                 raise
             logger.warning("xAI 401 — thử refresh OAuth rồi gọi lại 1 lần")
             await self.oauth.get_access_token(force_refresh=True)
             await self._prepare_client()
-            return await send_once()
+            return await send_with_timeout_retry()
         except APIStatusError as e:
             # Một số phiên bản SDK ném APIStatusError cho 401
             if retry_auth and getattr(e, "status_code", None) == 401:
                 logger.warning("xAI HTTP 401 — thử refresh OAuth rồi gọi lại 1 lần")
                 await self.oauth.get_access_token(force_refresh=True)
                 await self._prepare_client()
-                return await send_once()
+                return await send_with_timeout_retry()
             raise
 
     async def cog_load(self):
@@ -4309,6 +4358,11 @@ class GrokChat(commands.Cog):
         disable_tools_for_academic = study_request or (
             math_content and not link_context
         )
+        allow_image_tools = bool(
+            self._user_wants_generate_image(user_text)
+            or self._user_wants_image(user_text)
+            or self._should_edit_with_source(user_text, has_source_image)
+        )
 
         try:
             response = await self._create_response(
@@ -4317,6 +4371,7 @@ class GrokChat(commands.Cog):
                 tool_choice="none" if disable_tools_for_academic else "auto",
                 max_output_tokens=output_token_limit,
                 use_tools=not disable_tools_for_academic,
+                allow_image_tools=allow_image_tools,
                 reasoning_effort=reasoning_effort,
             )
         except XaiOAuthError as e:
@@ -4339,6 +4394,14 @@ class GrokChat(commands.Cog):
             return (
                 "❌ Token SuperGrok hết hạn hoặc bị thu hồi. "
                 "Chạy lại `python -m xai_oauth login` nha.",
+                None,
+                None,
+            )
+        except asyncio.TimeoutError:
+            logger.exception("xAI response timeout")
+            return (
+                "❌ Grok đang phản hồi quá lâu nên Peto đã dừng request. "
+                "Cậu thử gửi lại giúp Peto nhé.",
                 None,
                 None,
             )

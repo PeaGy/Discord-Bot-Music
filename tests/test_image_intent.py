@@ -1,6 +1,8 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
-from features.ai_chat import GrokChat
+from features.ai_chat import GrokChat, XAI_RESPONSE_TIMEOUTS
 
 
 class ImageEditIntentTests(unittest.TestCase):
@@ -34,6 +36,53 @@ class ImageEditIntentTests(unittest.TestCase):
         for text in samples:
             with self.subTest(text=text):
                 self.assertFalse(GrokChat._user_wants_edit_image(text))
+
+
+class ResponseGuardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_casual_request_does_not_expose_image_tools(self):
+        captured = {}
+
+        async def create(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(usage=None)
+
+        chat = GrokChat.__new__(GrokChat)
+        chat.client = SimpleNamespace(responses=SimpleNamespace(create=create))
+        chat._prepare_client = AsyncMock()
+
+        await chat._create_response(
+            instructions="chat",
+            input_data="hello",
+            allow_image_tools=False,
+            reasoning_effort="low",
+        )
+
+        names = {tool.get("name") for tool in captured["tools"]}
+        self.assertNotIn("generate_image", names)
+        self.assertNotIn("edit_image", names)
+        self.assertNotIn("get_danbooru_image", names)
+
+    async def test_low_effort_timeout_retries_only_once(self):
+        calls = 0
+
+        async def create(**kwargs):
+            nonlocal calls
+            calls += 1
+            await __import__("asyncio").sleep(1)
+
+        chat = GrokChat.__new__(GrokChat)
+        chat.client = SimpleNamespace(responses=SimpleNamespace(create=create))
+        chat._prepare_client = AsyncMock()
+
+        with patch.dict(XAI_RESPONSE_TIMEOUTS, {"low": 0.01}):
+            with self.assertRaises(TimeoutError):
+                await chat._create_response(
+                    instructions="chat",
+                    input_data="hello",
+                    use_tools=False,
+                    reasoning_effort="low",
+                )
+        self.assertEqual(calls, 2)
 
 
 if __name__ == "__main__":
