@@ -2438,17 +2438,58 @@ class GrokChat(commands.Cog):
 
     @staticmethod
     def _user_wants_edit_image(user_text: str) -> bool:
-        """User muốn chỉnh/sửa/thêm lên ảnh có sẵn (cần kèm source image)."""
-        t = user_text.lower()
+        """Chỉ nhận edit khi tin hiện tại yêu cầu thay đổi *hình ảnh* rõ ràng.
+
+        Các động từ chung như "chỉnh", "thêm", "đổi" xuất hiện rất nhiều
+        trong yêu cầu sửa câu chữ (ví dụ "giải thích chỉnh chu hơn"). Ảnh đính
+        kèm không đủ để biến những câu đó thành lệnh edit ảnh.
+        """
+        t = re.sub(r"<@!?\d+>", " ", str(user_text or "").casefold())
+        t = re.sub(r"\s+", " ", t).strip()
+        if not t:
+            return False
+
+        if re.search(
+            r"\b(?:đừng|dung|không|khong|ko|chẳng|chang|chưa|chua)\b.{0,24}"
+            r"\b(?:sửa|sua|chỉnh|chinh|edit|modify|retouch|thêm|them|"
+            r"đổi|doi|xoá|xóa|xoa|remove|add)\b",
+            t,
+        ):
+            return False
+
+        visual = (
+            r"ảnh|anh|hình|hinh|tranh|photo|image|picture|pic|artwork|"
+            r"illustration|avatar|poster|wallpaper"
+        )
+        action = (
+            r"sửa|sua|chỉnh|chinh|edit|modify|retouch|thêm|them|đổi|doi|"
+            r"thay|xoá|xóa|xoa|remove|add|ghép|ghep|crop|cắt|cat"
+        )
+
+        # Phải có cả thao tác và danh từ hình ảnh ở gần nhau.
+        if re.search(rf"\b(?:{action})\b.{{0,48}}\b(?:{visual})\b", t):
+            return True
+        if re.search(rf"\b(?:{visual})\b.{{0,32}}\b(?:{action})\b", t):
+            return True
+
+        # Các thao tác thị giác đủ đặc thù để không nhầm với sửa nội dung chữ.
+        if re.search(
+            r"\b(?:xóa|xoá|xoa|remove)\s+(?:phông|phong|nền|nen|background)\b|"
+            r"\b(?:làm|lam)\s+(?:nét|net|rõ|ro)\b|"
+            r"\b(?:tăng|tang|upscale)\s+(?:độ\s+phân\s+giải|do\s+phan\s+giai|resolution)\b|"
+            r"\b(?:đổi|doi|thay)\s+(?:màu\s+tóc|mau\s+toc|background|nền|nen)\b",
+            t,
+        ):
+            return True
+
+        # Cho phép cách nói ngắn khi động từ edit đứng ngay đầu yêu cầu:
+        # "chỉnh cái này", "edit this", nhưng không bắt "cho nó chỉnh chu".
         return bool(
             re.search(
-                r"(sửa|sua|chỉnh|chinh|edit|modify|retouch|"
-                r"thêm|them\b|đổi|doi\b|thay\b|xoá|xoa\b|remove|add\b|"
-                r"dựa\s*trên|dua\s*tren|trên\s*ảnh|tren\s*anh|"
-                r"ảnh\s*này|anh\s*nay|cái\s*này|cai\s*nay|"
-                r"biến\s|bien\s|make\s+it|turn\s+this|based\s+on|"
-                r"thêm\s+vào|them\s+vao|vẽ\s+thêm|ve\s+them|"
-                r"tạo\s+thêm|tao\s+them|đổi\s+thành|doi\s+thanh)",
+                r"^(?:(?:này|hey|ok|ê)\s+)?(?:(?:peto|bạn|ban)\s+)?"
+                r"(?:(?:hãy|hay|làm\s*ơn|lam\s*on|giúp|giup|có\s*thể|co\s*the)\s+)?"
+                r"(?:sửa|sua|chỉnh|chinh|edit|modify|retouch)\b\s+"
+                r"(?:cái\s+này|cai\s+nay|this|nó|no)\b",
                 t,
             )
         )

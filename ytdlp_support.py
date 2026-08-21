@@ -8,6 +8,7 @@ def youtube_ydl_options(base: dict | None = None) -> dict:
 
     proxy = os.getenv("YTDLP_PROXY", "").strip()
     runtime = os.getenv("YTDLP_JS_RUNTIME", "").strip().lower()
+    bgutil_url = os.getenv("YTDLP_BGUTIL_URL", "").strip()
     components = {
         item.strip()
         for item in os.getenv("YTDLP_REMOTE_COMPONENTS", "").split(",")
@@ -15,7 +16,7 @@ def youtube_ydl_options(base: dict | None = None) -> dict:
     }
 
     # Preserve the old home-PC route unless this deployment explicitly opts in.
-    if not proxy and not runtime and not components:
+    if not proxy and not runtime and not components and not bgutil_url:
         return options
 
     # On the VPS, let current yt-dlp choose a working YouTube client instead of
@@ -29,6 +30,13 @@ def youtube_ydl_options(base: dict | None = None) -> dict:
         options["js_runtimes"] = {runtime: {}}
     if components:
         options["remote_components"] = components
+    if bgutil_url:
+        # The native provider may listen on IPv6 only on some Linux hosts.
+        # Point yt-dlp's HTTP provider at the reachable loopback address while
+        # leaving the on-demand Node script available as its fallback.
+        options["extractor_args"] = {
+            "youtubepot-bgutilhttp": {"base_url": [bgutil_url]},
+        }
 
     cookie_path = os.getenv("YTDLP_COOKIE_FILE", "cookies.txt").strip()
     if cookie_path and Path(cookie_path).is_file():
