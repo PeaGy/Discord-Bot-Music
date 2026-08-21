@@ -2458,7 +2458,10 @@ class GrokChat(commands.Cog):
             return False
 
         visual = (
-            r"ảnh|anh|hình|hinh|tranh|photo|image|picture|pic|artwork|"
+            # Không dùng `anh` đơn lẻ: sau casefold, "tiếng Anh" cũng thành
+            # "tiếng anh" và từng bị hiểu nhầm là yêu cầu chỉnh ảnh.
+            r"ảnh|anh\s+(?:này|nay|đó|do)|(?:tấm|tam|bức|buc)\s+anh|"
+            r"hình|hinh|tranh|photo|image|picture|pic|artwork|"
             r"illustration|avatar|poster|wallpaper"
         )
         action = (

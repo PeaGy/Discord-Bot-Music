@@ -15,6 +15,7 @@ class ImageEditIntentTests(unittest.TestCase):
     def test_explicit_image_edits_are_detected(self):
         samples = (
             "Peto chỉnh ảnh này sáng hơn giúp tôi",
+            "peto chinh anh nay sang hon",
             "thêm chữ Peto vào ảnh",
             "xóa nền trắng",
             "edit this",
