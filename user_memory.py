@@ -127,6 +127,31 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_explicit_memory_user "
             "ON explicit_user_memory(user_id, id)"
         )
+        # Ghi rõ mỗi Discord message do Peto gửi được tạo để trả lời ai.
+        # Đây là metadata hội thoại, không phải trí nhớ cá nhân; nó giúp một
+        # người thứ ba reply câu của Peto mà model không nhận nhầm phong cách
+        # của người đã hỏi ban đầu là do người hiện tại "dạy".
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_response_provenance (
+                message_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL,
+                guild_id INTEGER,
+                requester_user_id INTEGER NOT NULL,
+                requester_display_name TEXT NOT NULL DEFAULT '',
+                source_message_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bot_provenance_channel "
+            "ON bot_response_provenance(channel_id, message_id)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bot_provenance_requester "
+            "ON bot_response_provenance(requester_user_id, message_id)"
+        )
         # Mỗi lần tóm tắt đều giữ lại một phiên bản bất biến. Bản mới nhất vẫn
         # nằm trong scoped_user_summary để đọc nhanh, còn các bản cũ giúp phục
         # hồi một chi tiết từng bị model tóm tắt sau đó lược bỏ.
@@ -265,6 +290,75 @@ async def add_message(
         await db.commit()
 
 
+async def record_bot_response_provenance(
+    message_id: int,
+    channel_id: int,
+    guild_id: int | None,
+    requester_user_id: int,
+    requester_display_name: str,
+    source_message_id: int | None,
+) -> None:
+    """Lưu người đã kích hoạt một câu trả lời Discord cụ thể của Peto."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO bot_response_provenance (
+                message_id, channel_id, guild_id, requester_user_id,
+                requester_display_name, source_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                guild_id = excluded.guild_id,
+                requester_user_id = excluded.requester_user_id,
+                requester_display_name = excluded.requester_display_name,
+                source_message_id = excluded.source_message_id
+            """,
+            (
+                int(message_id),
+                int(channel_id),
+                int(guild_id) if guild_id is not None else None,
+                int(requester_user_id),
+                str(requester_display_name or "")[:200],
+                int(source_message_id) if source_message_id is not None else None,
+            ),
+        )
+        await db.commit()
+
+
+async def get_bot_response_provenance(
+    message_ids: list[int],
+) -> dict[int, dict]:
+    """Trả metadata nguồn gốc cho một nhóm message của Peto."""
+    ids = list(dict.fromkeys(int(value) for value in message_ids if value))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"""
+            SELECT message_id, requester_user_id, requester_display_name,
+                   source_message_id
+            FROM bot_response_provenance
+            WHERE message_id IN ({placeholders})
+            """,
+            ids,
+        )
+        rows = await cursor.fetchall()
+    return {
+        int(row["message_id"]): {
+            "requester_user_id": int(row["requester_user_id"]),
+            "requester_display_name": str(row["requester_display_name"] or ""),
+            "source_message_id": (
+                int(row["source_message_id"])
+                if row["source_message_id"] is not None
+                else None
+            ),
+        }
+        for row in rows
+    }
+
+
 async def get_history(
     channel_id: int,
     user_id: int,
@@ -356,6 +450,10 @@ async def clear_user(user_id: int) -> None:
         await db.execute(
             "DELETE FROM memory_summary_versions WHERE user_id = ?", (user_id,)
         )
+        await db.execute(
+            "DELETE FROM bot_response_provenance WHERE requester_user_id = ?",
+            (user_id,),
+        )
         await db.commit()
 
 
@@ -371,6 +469,7 @@ async def clear_all() -> None:
         await db.execute("DELETE FROM scoped_message_count")
         await db.execute("DELETE FROM explicit_user_memory")
         await db.execute("DELETE FROM memory_summary_versions")
+        await db.execute("DELETE FROM bot_response_provenance")
         await db.commit()
 
 
@@ -391,6 +490,10 @@ async def clear_guild(guild_id: int, channel_ids: list[int]) -> None:
                 f"DELETE FROM chat_history WHERE channel_id IN ({placeholders})",
                 channel_ids,
             )
+        await db.execute(
+            "DELETE FROM bot_response_provenance WHERE guild_id = ?",
+            (int(guild_id),),
+        )
         await db.commit()
 
 

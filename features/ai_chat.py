@@ -1618,10 +1618,26 @@ class GrokChat(commands.Cog):
         chain.reverse()
         return chain
 
-    @staticmethod
-    def _format_message_context(messages: list[discord.Message], *, heading: str) -> str:
+    async def _format_message_context(
+        self,
+        messages: list[discord.Message],
+        *,
+        heading: str,
+    ) -> str:
+        bot_message_ids = [
+            int(item.id)
+            for item in messages
+            if getattr(item.author, "bot", False)
+            and self.bot.user is not None
+            and item.author.id == self.bot.user.id
+        ]
+        provenance = await user_memory.get_bot_response_provenance(
+            bot_message_ids
+        )
+        messages_by_id = {int(item.id): item for item in messages}
         lines = [heading]
         used = len(heading)
+        has_attributed_bot_reply = False
         for item in messages:
             content = str(item.clean_content or "").strip()
             if not content and item.attachments:
@@ -1629,12 +1645,54 @@ class GrokChat(commands.Cog):
             if not content:
                 continue
             content = content[:900].replace("\x00", "")
-            line = f"- {item.author.display_name}: {content}"
+            author_label = (
+                f"{item.author.display_name} (user_id={item.author.id})"
+            )
+            is_own_bot_message = bool(
+                getattr(item.author, "bot", False)
+                and self.bot.user is not None
+                and item.author.id == self.bot.user.id
+            )
+            if is_own_bot_message:
+                origin = provenance.get(int(item.id))
+                if origin is None:
+                    # Tin cũ trước khi có bảng provenance vẫn thường reply trực
+                    # tiếp message của người đã gọi Peto; suy ra cục bộ từ chain.
+                    reference = getattr(item, "reference", None)
+                    source_id = getattr(reference, "message_id", None)
+                    source = messages_by_id.get(int(source_id)) if source_id else None
+                    if source is not None and not getattr(source.author, "bot", False):
+                        origin = {
+                            "requester_user_id": int(source.author.id),
+                            "requester_display_name": source.author.display_name,
+                            "source_message_id": int(source.id),
+                        }
+                if origin:
+                    requester_name = (
+                        origin.get("requester_display_name") or "người dùng"
+                    )
+                    requester_id = origin.get("requester_user_id")
+                    author_label += (
+                        f" [câu này được tạo để trả lời {requester_name} "
+                        f"(user_id={requester_id}); phong cách trong câu thuộc "
+                        "lượt tương tác với người đó]"
+                    )
+                    has_attributed_bot_reply = True
+            line = f"- {author_label}: {content}"
             if used + len(line) > MAX_CONTEXT_CHARS:
                 break
             lines.append(line)
             used += len(line)
-        return "\n".join(lines) if len(lines) > 1 else ""
+        if len(lines) <= 1:
+            return ""
+        if has_attributed_bot_reply:
+            lines.insert(
+                1,
+                "Quy tắc nguồn gốc: không quy cách nói/sở thích trong câu của "
+                "Peto cho người đang hỏi hiện tại nếu metadata ghi câu đó được "
+                "tạo để trả lời một user_id khác.",
+            )
+        return "\n".join(lines)
 
     @staticmethod
     def _wants_channel_context(text: str) -> bool:
@@ -3638,7 +3696,7 @@ class GrokChat(commands.Cog):
             else await user_memory.get_history(channel_id, user_id, scope, MAX_HISTORY)
         )
         chain = await self._collect_reply_chain(target) if target.reference else []
-        selected_context = self._format_message_context(
+        selected_context = await self._format_message_context(
             [*chain, target],
             heading="## Tin nhắn được người dùng chọn (cũ → mới)",
         )
@@ -3983,7 +4041,7 @@ class GrokChat(commands.Cog):
                 mention_author=False,
             )
 
-        reply_context = self._format_message_context(
+        reply_context = await self._format_message_context(
             reply_chain,
             heading="## Chuỗi tin nhắn đang được reply (cũ → mới)",
         )
@@ -4139,6 +4197,23 @@ class GrokChat(commands.Cog):
                     sent_message = await message.reply(**send_kwargs)
                 else:
                     sent_message = await message.channel.send(**send_kwargs)
+                if sent_message is not None:
+                    try:
+                        await user_memory.record_bot_response_provenance(
+                            message_id=sent_message.id,
+                            channel_id=message.channel.id,
+                            guild_id=message.guild.id if message.guild else None,
+                            requester_user_id=message.author.id,
+                            requester_display_name=message.author.display_name,
+                            source_message_id=message.id,
+                        )
+                    except Exception:
+                        # Metadata attribution must never prevent a valid Discord
+                        # answer from being delivered.
+                        logger.exception(
+                            "Không lưu được provenance cho bot message_id=%s",
+                            sent_message.id,
+                        )
             if study_view:
                 study_view.message = sent_message
 
