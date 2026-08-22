@@ -28,6 +28,11 @@ class Privacy(commands.Cog):
         description="🔒 Mở cuộc trò chuyện riêng với Peto qua DM",
     )
     async def private(self, interaction: discord.Interaction):
+        if await user_memory.is_ai_blacklisted(interaction.user.id):
+            return await interaction.response.send_message(
+                user_memory.AI_BLACKLIST_DENIAL_MESSAGE,
+                ephemeral=interaction.guild is not None,
+            )
         if interaction.guild is None:
             return await interaction.response.send_message(PRIVATE_GREETING)
 

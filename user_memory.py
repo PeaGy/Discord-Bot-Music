@@ -9,6 +9,7 @@ DB_PATH = "bot_memory.db"
 LEGACY_SCOPE = "legacy"
 DM_SCOPE = "dm"
 GLOBAL_MEMORY_SCOPE = "user:global"
+AI_BLACKLIST_DENIAL_MESSAGE = "Bạn không có quyền để chat với tôi."
 
 # Chế độ Ẩn danh chỉ giữ ngữ cảnh trong RAM, không ghi nội dung xuống SQLite.
 _anonymous_history: dict[tuple[str, int], deque[dict]] = {}
@@ -152,6 +153,17 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_bot_provenance_requester "
             "ON bot_response_provenance(requester_user_id, message_id)"
         )
+        # Danh sách chặn trò chuyện AI là dữ liệu quản trị, độc lập với trí nhớ.
+        # Vì vậy /resetmemory và /resetmemoryglobal không được xóa bảng này.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_chat_blacklist (
+                user_id INTEGER PRIMARY KEY,
+                added_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         # Mỗi lần tóm tắt đều giữ lại một phiên bản bất biến. Bản mới nhất vẫn
         # nằm trong scoped_user_summary để đọc nhanh, còn các bản cũ giúp phục
         # hồi một chi tiết từng bị model tóm tắt sau đó lược bỏ.
@@ -245,6 +257,41 @@ async def init_db() -> None:
             (GLOBAL_MEMORY_SCOPE,),
         )
         await db.commit()
+
+
+async def is_ai_blacklisted(user_id: int) -> bool:
+    """Kiểm tra một Discord user ID có bị cấm trò chuyện với Peto hay không."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT 1 FROM ai_chat_blacklist WHERE user_id = ? LIMIT 1",
+            (int(user_id),),
+        )
+        return await cursor.fetchone() is not None
+
+
+async def add_ai_blacklist(user_id: int, added_by: int) -> bool:
+    """Thêm user vào blacklist; trả True nếu đây là mục mới."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        before = db.total_changes
+        await db.execute(
+            "INSERT OR IGNORE INTO ai_chat_blacklist (user_id, added_by) "
+            "VALUES (?, ?)",
+            (int(user_id), int(added_by)),
+        )
+        await db.commit()
+        return db.total_changes > before
+
+
+async def remove_ai_blacklist(user_id: int) -> bool:
+    """Bỏ user khỏi blacklist; trả True nếu đã xóa một mục."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        before = db.total_changes
+        await db.execute(
+            "DELETE FROM ai_chat_blacklist WHERE user_id = ?",
+            (int(user_id),),
+        )
+        await db.commit()
+        return db.total_changes > before
 
 
 async def add_message(

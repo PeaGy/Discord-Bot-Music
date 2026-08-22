@@ -177,6 +177,7 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 | Media | `/download` |
 | AI & riêng tư | `/private`, `/andanh`, `/resetmemory` |
 | Quản trị bộ nhớ | `/resetmemoryall`, `/resetmemoryglobal` |
+| Quản trị Peto | `/blacklist`, `/unblacklist` (chỉ chủ bot) |
 | Ảnh | `/art`, `/artecchi`, `/artnsfw`, `/wallpaper`, `/artinfo`, `/sticker`, `/emoji`, `/saucy` |
 | Kiểm tra | `/latency`, `/help` |
 

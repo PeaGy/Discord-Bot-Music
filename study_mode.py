@@ -12,6 +12,8 @@ from typing import Any
 
 import discord
 
+import user_memory
+
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +185,12 @@ class StudyView(discord.ui.View):
         self.message: discord.Message | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if await user_memory.is_ai_blacklisted(interaction.user.id):
+            await interaction.response.send_message(
+                user_memory.AI_BLACKLIST_DENIAL_MESSAGE,
+                ephemeral=True,
+            )
+            return False
         if interaction.user.id == self.session.owner_id:
             return True
         await interaction.response.send_message(

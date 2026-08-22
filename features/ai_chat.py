@@ -3757,6 +3757,8 @@ class GrokChat(commands.Cog):
     ) -> str:
         """Trả lời context menu bằng danh tính/trí nhớ của người bấm."""
         user_id = interaction.user.id
+        if await user_memory.is_ai_blacklisted(user_id):
+            return user_memory.AI_BLACKLIST_DENIAL_MESSAGE
         channel_id = interaction.channel_id
         scope = user_memory.scope_for_guild(interaction.guild_id)
         anonymous = await user_memory.is_anonymous_mode(user_id, scope)
@@ -4008,6 +4010,12 @@ class GrokChat(commands.Cog):
         # bắt họ phải mention Peto ở từng câu.
         if not (is_private_chat or is_mentioned or is_reply_to_bot):
             return
+
+        if await user_memory.is_ai_blacklisted(message.author.id):
+            return await message.reply(
+                user_memory.AI_BLACKLIST_DENIAL_MESSAGE,
+                mention_author=False,
+            )
 
         clean_text = message.content
         for mention in message.mentions:

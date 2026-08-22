@@ -74,7 +74,7 @@ class HelpDropdown(discord.ui.View):
                     "🏫 **Multi-Server:** Mỗi server có queue, lịch sử và chế độ phát riêng.\n"
                     "❤️ **Thư viện cá nhân:** Lưu favorites, playlist và lịch sử nghe bằng SQLite.\n"
                     "🤖 **Peto AI:** Trò chuyện bằng Grok, xem ảnh, tìm web qua Tavily và ghi nhớ bằng SQLite.\n"
-                    "📚 **Study Mode:** Gợi ý, giải chi tiết, kiểm tra đáp án và xuất lời giải PNG.\n"
+                    "📚 **Study Mode:** Gợi ý, chép đề và xuất lời giải PNG.\n"
                     "🎨 **Danbooru:** Tìm anime art, wallpaper và xem thông tin post.\n\n"
                     "Original code by Eva Music Bot, inspired by Lara Bot. "
                     "Thanks to Ryuz-V.\n\n"
@@ -196,7 +196,8 @@ class HelpDropdown(discord.ui.View):
                     "`/andanh` — Bật/tắt Ẩn danh tại DM hoặc server hiện tại\n"
                     "`/resetmemory` — Xóa toàn bộ trí nhớ đã lưu của chính bạn\n"
                     "`/resetmemoryall` — Admin xóa lịch sử chat trong server hiện tại\n"
-                    "`/resetmemoryglobal` — Chủ bot xóa toàn bộ trí nhớ AI"
+                    "`/resetmemoryglobal` — Chủ bot xóa toàn bộ trí nhớ AI\n"
+                    "`/blacklist` · `/unblacklist` — Chủ bot chặn hoặc mở lại quyền chat với Peto"
                 ),
             )
 
