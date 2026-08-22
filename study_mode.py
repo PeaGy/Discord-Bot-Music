@@ -175,32 +175,6 @@ def render_solution_png(problem_text: str, solution: str) -> io.BytesIO:
     return output
 
 
-class AnswerCheckModal(discord.ui.Modal, title="Kiểm tra đáp án"):
-    answer = discord.ui.TextInput(
-        label="Đáp án hoặc cách làm của bạn",
-        placeholder="Nhập đáp án và các bước bạn đã làm...",
-        style=discord.TextStyle.paragraph,
-        max_length=1500,
-        required=True,
-    )
-
-    def __init__(self, view: "StudyView"):
-        super().__init__()
-        self.study_view = view
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        result = await self.study_view.cog.generate_study_response(
-            self.study_view.session,
-            action="check",
-            student_answer=self.answer.value,
-        )
-        await interaction.followup.send(
-            truncate_for_discord(result),
-            ephemeral=True,
-        )
-
-
 class StudyView(discord.ui.View):
     def __init__(self, cog, session: StudySession):
         super().__init__(timeout=STUDY_VIEW_TIMEOUT)
@@ -237,23 +211,6 @@ class StudyView(discord.ui.View):
             truncate_for_discord(result),
             ephemeral=True,
         )
-
-    @discord.ui.button(label="Giải chi tiết", emoji="🧠", style=discord.ButtonStyle.primary)
-    async def detailed(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        result = await self.cog.generate_study_response(
-            self.session,
-            action="detailed",
-        )
-        self.session.latest_solution = result
-        await interaction.followup.send(
-            truncate_for_discord(result),
-            ephemeral=True,
-        )
-
-    @discord.ui.button(label="Kiểm tra đáp án", emoji="✅", style=discord.ButtonStyle.success)
-    async def check_answer(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(AnswerCheckModal(self))
 
     @discord.ui.button(label="Chép đề", emoji="🔎", style=discord.ButtonStyle.secondary)
     async def extract_problem(self, interaction: discord.Interaction, button: discord.ui.Button):

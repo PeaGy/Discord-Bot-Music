@@ -37,43 +37,10 @@ class AskPetoModal(discord.ui.Modal, title="Hỏi Peto về tin nhắn này"):
             self.target,
             str(self.request.value),
         )
-        verification_question = (
-            f"{self.request.value}\nTin nhắn được chọn: {self.target.clean_content[:1500]}"
-        )
-        view = SourceCheckView(
-            cog, interaction.user.id, verification_question, answer
-        ) if cog._looks_like_factual_request(str(self.request.value)) else None
-        send_kwargs = {
-            "content": answer[:2000] or "Peto chưa tạo được câu trả lời.",
-            "ephemeral": True,
-            "suppress_embeds": True,
-        }
-        # discord.py 2.7 không chấp nhận truyền view=None vào webhook followup.
-        if view is not None:
-            send_kwargs["view"] = view
-        await interaction.followup.send(**send_kwargs)
-
-
-class SourceCheckView(discord.ui.View):
-    def __init__(self, cog, owner_id: int, question: str, answer: str):
-        super().__init__(timeout=10 * 60)
-        self.cog = cog
-        self.owner_id = owner_id
-        self.question = question
-        self.answer = answer
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.owner_id:
-            return True
-        await interaction.response.send_message("❌ Hãy hỏi Peto bằng tin nhắn của bạn nhé.", ephemeral=True)
-        return False
-
-    @discord.ui.button(label="Kiểm tra nguồn", emoji="🔎", style=discord.ButtonStyle.secondary)
-    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        result = await self.cog.verify_answer(self.question, self.answer)
         await interaction.followup.send(
-            result[:2000], ephemeral=True, suppress_embeds=True
+            answer[:2000] or "Peto chưa tạo được câu trả lời.",
+            ephemeral=True,
+            suppress_embeds=True,
         )
 
 

@@ -4165,22 +4165,6 @@ class GrokChat(commands.Cog):
                 )
                 study_view = StudyView(self, session)
             response_view = study_view
-            if (
-                study_view is None
-                and not looks_like_study
-                and reply_text
-                and not embeds
-                and not reply_files
-                and not reply_text.startswith("❌")
-                and self._looks_like_factual_request(clean_text)
-            ):
-                from features.ai_actions import SourceCheckView
-                response_view = SourceCheckView(
-                    self,
-                    message.author.id,
-                    clean_text,
-                    reply_text,
-                )
 
             sent_message = None
             # Discord giới hạn tổng text embed mỗi message. Full Identity kit có
