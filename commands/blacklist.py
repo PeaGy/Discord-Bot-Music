@@ -66,7 +66,6 @@ class AIChatBlacklist(commands.Cog):
         await interaction.response.send_message(
             f"🚫 Đã blacklist {user.mention}. Từ giờ họ sẽ nhận: "
             f"**{user_memory.AI_BLACKLIST_DENIAL_MESSAGE}**",
-            ephemeral=True,
         )
 
     @app_commands.command(
