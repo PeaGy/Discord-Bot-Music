@@ -147,9 +147,8 @@ Token được lưu cục bộ và tự refresh. Nếu không dùng OAuth, đặ
 
 Trong Discord Developer Portal:
 
-1. Bật **Message Content Intent**.
-2. Mời bot với scope `bot` và `applications.commands`.
-3. Cấp các quyền cần thiết: View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Connect, Speak và Use Application Commands. Cấp thêm `Manage Messages` nếu bật Social Embed để bot ẩn preview gốc bị trùng.
+1. Mời bot với scope `bot` và `applications.commands`.
+2. Cứ cấp quyền mạnh nhất cho bot. 
 
 Custom embed Pixiv còn cần `PIXIV_PHPSESSID` trong `.env`. Chỉ sao chép **giá trị** cookie `PHPSESSID` từ phiên Pixiv của chính bạn; cookie này có quyền truy cập tài khoản nên tuyệt đối không gửi vào Discord hoặc commit lên Git.
 
@@ -234,8 +233,11 @@ Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không 
 - Ryuz-V
 - Eva Music Bot
 - Lara Bot
-- PeaGy
   
 ## 📄 License
 
 Dự án này được phân phối dưới giấy phép MIT.
+
+---
+
+**Made by [PeaGy](https://github.com/PeaGy)** ❤️
