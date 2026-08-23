@@ -1,7 +1,28 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+import time
+
+
+logger = logging.getLogger(__name__)
+
+_TRANSIENT_YTDLP_ERROR_MARKERS = (
+    "http error 403",
+    "403 forbidden",
+    "http error 429",
+    "too many requests",
+    "host unreachable",
+    "network is unreachable",
+    "socks5error",
+    "connection reset",
+    "connection aborted",
+    "remote end closed",
+    "temporarily unavailable",
+    "timed out",
+    "timeout",
+)
 
 
 def youtube_proxy_enabled() -> bool:
@@ -25,6 +46,45 @@ def should_use_long_audio_temp(
         and not is_radio
         and seconds > int(stream_threshold)
     )
+
+
+def is_transient_ytdlp_error(error: BaseException) -> bool:
+    """Recognize network/proxy failures worth one fresh metadata attempt."""
+    message = str(error or "").casefold()
+    return any(marker in message for marker in _TRANSIENT_YTDLP_ERROR_MARKERS)
+
+
+def extract_info_with_retry(
+    query: str,
+    options: dict,
+    *,
+    download: bool = False,
+    attempts: int = 2,
+    retry_delay: float = 3.0,
+):
+    """Extract metadata using a fresh YoutubeDL session after transient failures."""
+    import yt_dlp
+
+    attempts = max(1, int(attempts))
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with yt_dlp.YoutubeDL(dict(options)) as ydl:
+                return ydl.extract_info(query, download=download)
+        except Exception as error:
+            last_error = error
+            if attempt >= attempts or not is_transient_ytdlp_error(error):
+                raise
+            logger.warning(
+                "yt-dlp metadata lỗi tạm thời (lần %s/%s): %s — thử lại sau %.1fs",
+                attempt,
+                attempts,
+                error,
+                retry_delay,
+            )
+            time.sleep(max(0.0, float(retry_delay)))
+
+    raise last_error
 
 
 def youtube_ydl_options(base: dict | None = None) -> dict:

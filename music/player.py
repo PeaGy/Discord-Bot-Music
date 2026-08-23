@@ -20,7 +20,11 @@ from cache_manager import (
     get_long_audio_source,
     preload_audio,
 )
-from ytdlp_support import should_use_long_audio_temp, youtube_ydl_options
+from ytdlp_support import (
+    extract_info_with_retry,
+    should_use_long_audio_temp,
+    youtube_ydl_options,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -397,15 +401,14 @@ async def _play_next_locked(
 
     # LẤY URL STREAM KHÔNG BỊ BLOCK LOOP
     def extract_stream():
-        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-            query = song.get("search_query") or song["url"]
-            if song.get("source") == "spotify" and not query.startswith("ytsearch"):
-                query = f"ytsearch1:{query}"
-                
-            info = ydl.extract_info(query, download=False)
-            if "entries" in info:
-                info = info["entries"][0]
-            return info
+        query = song.get("search_query") or song["url"]
+        if song.get("source") == "spotify" and not query.startswith("ytsearch"):
+            query = f"ytsearch1:{query}"
+
+        info = extract_info_with_retry(query, YDL_OPTIONS, download=False)
+        if "entries" in info:
+            info = next((entry for entry in info["entries"] if entry), None)
+        return info
 
     loop = bot.loop
     try:

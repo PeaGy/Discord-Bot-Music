@@ -4,14 +4,13 @@ import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
-import yt_dlp
 
 import music_library
 from cache_manager import preload_audio
 from music.player import play_next, start_idle_timer
 from music.spotify import get_spotify_info, is_spotify_url
 from music.state import get_guild_state
-from ytdlp_support import youtube_ydl_options
+from ytdlp_support import extract_info_with_retry, youtube_ydl_options
 
 logger = logging.getLogger(__name__)
 
@@ -29,15 +28,28 @@ def get_song_info(query: str):
     options = youtube_ydl_options(
         {"format": "bestaudio/best", "quiet": True, "noplaylist": True}
     )
-    with yt_dlp.YoutubeDL(options) as ydl:
-        if is_soundcloud_url(query) or is_youtube_url(query):
-            info = ydl.extract_info(query, download=False)
-        else:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)["entries"][0]
-        if "entries" in info: info = info["entries"][0]
-        return {"title": info["title"], "author": info.get("uploader") or info.get("creator") or info.get("channel", "Unknown"),
-                "duration": info.get("duration", 0), "url": info["webpage_url"], "thumbnail": info.get("thumbnail"),
-                "source": "soundcloud" if is_soundcloud_url(query) else "youtube"}
+    lookup = (
+        query
+        if is_soundcloud_url(query) or is_youtube_url(query)
+        else f"ytsearch1:{query}"
+    )
+    info = extract_info_with_retry(lookup, options, download=False)
+    if "entries" in info:
+        info = next((entry for entry in info["entries"] if entry), None)
+    if not info:
+        raise ValueError("Không tìm thấy kết quả phù hợp.")
+    return {
+        "title": info["title"],
+        "author": (
+            info.get("uploader")
+            or info.get("creator")
+            or info.get("channel", "Unknown")
+        ),
+        "duration": info.get("duration", 0),
+        "url": info["webpage_url"],
+        "thumbnail": info.get("thumbnail"),
+        "source": "soundcloud" if is_soundcloud_url(query) else "youtube",
+    }
 
 
 class DuplicateConfirmView(discord.ui.View):
