@@ -3,8 +3,11 @@ import json
 import hashlib
 import asyncio
 import logging
+import glob
 import subprocess
 import tempfile
+import time
+import uuid
 from contextlib import asynccontextmanager
 
 import yt_dlp
@@ -21,6 +24,9 @@ CACHE_DIR = "audio_cache"
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
 
+LONG_AUDIO_TEMP_DIR = os.path.join(CACHE_DIR, "long_temp")
+os.makedirs(LONG_AUDIO_TEMP_DIR, exist_ok=True)
+
 # Target loudness dùng chung cho toàn bộ bot (khớp với radio path bên player.py)
 LOUDNORM_TARGET = "I=-16:TP=-1.5:LRA=11"
 DOWNLOAD_MP3_BITRATE = "128k"
@@ -28,10 +34,14 @@ CACHE_FORMAT_VERSION = "v2_fec10"
 OPUS_EXPECTED_PACKET_LOSS = 10
 OPUS_PREROLL_FRAMES = 8  # 8 x 20 ms = 160 ms để ổn định nhịp gửi lúc bắt đầu
 OPUS_SILENCE_PACKET = b"\xF8\xFF\xFE"
+LONG_AUDIO_TEMP_MAX_DURATION = 2 * 60 * 60
+LONG_AUDIO_TEMP_MAX_BYTES = 300 * 1024 * 1024
+LONG_AUDIO_TEMP_STALE_SECONDS = 6 * 60 * 60
 
 _cache_locks = {}
 _download_locks = {}
 _cache_build_semaphore = asyncio.Semaphore(1)
+_long_audio_download_semaphore = asyncio.Semaphore(2)
 
 
 class AudioDownloadError(RuntimeError):
@@ -65,6 +75,36 @@ class OpusPrerollAudioSource(discord.AudioSource):
         self.source.cleanup()
 
 
+class TemporaryFileAudioSource(discord.AudioSource):
+    """Audio source that removes its downloaded file when Discord is done with it."""
+
+    def __init__(self, source, filepath):
+        self.source = source
+        self.filepath = filepath
+        self._cleaned = False
+
+    def read(self):
+        return self.source.read()
+
+    def is_opus(self):
+        return self.source.is_opus()
+
+    def cleanup(self):
+        if self._cleaned:
+            return
+        self._cleaned = True
+        try:
+            self.source.cleanup()
+        finally:
+            try:
+                os.remove(self.filepath)
+                logger.info("Đã xóa audio tạm của bài dài: %s", self.filepath)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logger.warning("Không xóa được audio tạm %s: %s", self.filepath, error)
+
+
 def is_cache_build_active():
     """Cho lệnh chẩn đoán biết FFmpeg có đang tạo cache hay không."""
     return _cache_build_semaphore.locked()
@@ -81,6 +121,137 @@ def _get_lock(lock_store, url):
 
 def _is_valid_file(path):
     return os.path.exists(path) and os.path.getsize(path) > 0
+
+
+def cleanup_stale_long_audio_files(max_age=LONG_AUDIO_TEMP_STALE_SECONDS):
+    """Remove abandoned long-track files left behind by a crash or forced shutdown."""
+    cutoff = time.time() - max(0, int(max_age))
+    try:
+        entries = os.scandir(LONG_AUDIO_TEMP_DIR)
+    except OSError as error:
+        logger.warning("Không quét được thư mục audio tạm: %s", error)
+        return
+
+    with entries:
+        for entry in entries:
+            try:
+                if entry.is_file() and entry.stat().st_mtime < cutoff:
+                    os.remove(entry.path)
+            except OSError:
+                continue
+
+
+def _remove_long_audio_bundle(prefix):
+    for path in glob.glob(f"{glob.escape(prefix)}*"):
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def _download_long_audio_sync(url):
+    """Download original long-form audio through yt-dlp without normalization."""
+    token = uuid.uuid4().hex
+    prefix = os.path.join(LONG_AUDIO_TEMP_DIR, f"long_{token}_")
+    outtmpl = f"{prefix}%(id)s.%(ext)s"
+    ydl_opts = youtube_ydl_options({
+        "format": "bestaudio[acodec^=opus]/bestaudio/best",
+        "outtmpl": outtmpl,
+        "quiet": True,
+        "noprogress": True,
+        "noplaylist": True,
+        "nocheckcertificate": True,
+        "continuedl": True,
+        "retries": 2,
+        "fragment_retries": 2,
+        "max_filesize": LONG_AUDIO_TEMP_MAX_BYTES,
+    })
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if "entries" in info:
+                info = next((entry for entry in info["entries"] if entry), None)
+            if not info:
+                raise AudioDownloadError("yt-dlp không trả về thông tin audio.")
+
+            filepath = ydl.prepare_filename(info)
+            if not _is_valid_file(filepath):
+                candidates = [
+                    path for path in glob.glob(f"{glob.escape(prefix)}*")
+                    if _is_valid_file(path) and not path.endswith(".part")
+                ]
+                if not candidates:
+                    raise AudioDownloadError("Không tìm thấy file audio dài sau khi tải.")
+                filepath = max(candidates, key=os.path.getmtime)
+
+            if os.path.getsize(filepath) > LONG_AUDIO_TEMP_MAX_BYTES:
+                raise AudioDownloadError("Audio dài vượt quá giới hạn 300 MiB.")
+
+            requested = info.get("requested_downloads") or []
+            selected = requested[0] if requested else info
+            codec = str(selected.get("acodec") or info.get("acodec") or "").lower()
+            return filepath, codec
+    except Exception:
+        _remove_long_audio_bundle(prefix)
+        raise
+
+
+async def get_long_audio_source(url, duration):
+    """Prepare a temporary local source for a proxied long track, with one retry."""
+    duration = int(duration or 0)
+    if duration > LONG_AUDIO_TEMP_MAX_DURATION:
+        raise AudioDownloadError(
+            "Bài dài vượt quá giới hạn phát tạm 2 giờ trên VPS."
+        )
+
+    cleanup_stale_long_audio_files()
+    last_error = None
+    for attempt in range(1, 3):
+        filepath = None
+        try:
+            logger.info(
+                "Tải audio tạm cho bài dài (lần %s/2): %s",
+                attempt,
+                url,
+            )
+            async with _long_audio_download_semaphore:
+                filepath, codec = await asyncio.to_thread(
+                    _download_long_audio_sync,
+                    url,
+                )
+            ffmpeg_source = discord.FFmpegOpusAudio(
+                filepath,
+                codec="copy" if "opus" in codec else "libopus",
+                bitrate=160,
+                options="-vn",
+            )
+            logger.info(
+                "Audio tạm bài dài sẵn sàng: %s (%s)",
+                filepath,
+                codec or "codec không rõ",
+            )
+            return TemporaryFileAudioSource(
+                OpusPrerollAudioSource(ffmpeg_source),
+                filepath,
+            )
+        except Exception as error:
+            last_error = error
+            if filepath:
+                try:
+                    os.remove(filepath)
+                except OSError:
+                    pass
+            logger.warning(
+                "Không chuẩn bị được audio tạm bài dài (lần %s/2): %s",
+                attempt,
+                error,
+            )
+            if attempt < 2:
+                await asyncio.sleep(3)
+
+    raise AudioDownloadError("Không tải được audio tạm cho bài dài.") from last_error
 
 
 def get_cache_paths(url):

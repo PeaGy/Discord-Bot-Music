@@ -1,5 +1,30 @@
+from __future__ import annotations
+
 import os
 from pathlib import Path
+
+
+def youtube_proxy_enabled() -> bool:
+    """Return whether this deployment routes yt-dlp through a dedicated proxy."""
+    return bool(os.getenv("YTDLP_PROXY", "").strip())
+
+
+def should_use_long_audio_temp(
+    duration: int | float | None,
+    *,
+    is_radio: bool = False,
+    stream_threshold: int = 600,
+) -> bool:
+    """Keep home/radio streaming unchanged; bridge proxied long tracks locally."""
+    try:
+        seconds = int(duration or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    return bool(
+        youtube_proxy_enabled()
+        and not is_radio
+        and seconds > int(stream_threshold)
+    )
 
 
 def youtube_ydl_options(base: dict | None = None) -> dict:

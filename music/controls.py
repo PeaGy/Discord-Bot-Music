@@ -134,12 +134,17 @@ class MusicStatusPanel(discord.ui.LayoutView):
         )
 
 
-def create_loading_panel(track):
+def create_loading_panel(track, *, long_track=False):
+    detail = (
+        "Bot đang tải tạm audio gốc của bài dài, phát xong file sẽ tự xóa..."
+        if long_track
+        else "Bot đang tải và chuẩn hóa âm thanh, vui lòng đợi một chút..."
+    )
     return MusicStatusPanel(
         heading="⏳ ĐANG CHUẨN BỊ",
         description=(
             f"**{_safe_text(track.get('title'), 'Unknown')}**\n"
-            "-# Bot đang tải và chuẩn hóa âm thanh, vui lòng đợi một chút..."
+            f"-# {detail}"
         ),
         accent_color=PANEL_ACCENT_COLOR,
         thumbnail_url=track.get("thumbnail"),

@@ -15,8 +15,12 @@ from music.controls import (
     send_panel_message,
 )
 from music.state import get_guild_state
-from cache_manager import get_audio_source, preload_audio
-from ytdlp_support import youtube_ydl_options
+from cache_manager import (
+    get_audio_source,
+    get_long_audio_source,
+    preload_audio,
+)
+from ytdlp_support import should_use_long_audio_temp, youtube_ydl_options
 
 
 logger = logging.getLogger(__name__)
@@ -501,13 +505,18 @@ async def _play_next_locked(
     duration = int(song.get("duration") or 0)
     is_radio = song.get("source") == "radio"
     is_too_long = duration > 600
+    use_long_temp_file = should_use_long_audio_temp(
+        duration,
+        is_radio=is_radio,
+    )
+    use_direct_stream = is_radio or (is_too_long and not use_long_temp_file)
 
     # ==============================
     # LOADING PANEL V2 (hiện ngay trong lúc tải/cache/normalize nhạc)
     # ==============================
     loading_msg = None
-    if not is_radio and not is_too_long:
-        loading_view = create_loading_panel(song)
+    if not is_radio and not use_direct_stream:
+        loading_view = create_loading_panel(song, long_track=use_long_temp_file)
 
         existing_msg = state.now_playing_message
         try:
@@ -523,8 +532,10 @@ async def _play_next_locked(
             state.now_playing_message = loading_msg
 
     try:
-        # Nếu là Radio HOẶC Nhạc dài hơn 10 phút -> Phóng thẳng luồng Stream trực tiếp
-        if is_radio or is_too_long:
+        # Radio luôn giữ đường stream cũ. Máy nhà cũng tiếp tục stream nhạc dài.
+        # Trên VPS dùng proxy, yt-dlp và FFmpeg có IP ra khác nhau nên signed URL
+        # Googlevideo bị 403; tải file tạm qua yt-dlp để cả bài chỉ dùng một IP.
+        if use_direct_stream:
             logger.info(
                 "Stream trực tiếp %r, duration=%ss (guild=%s)",
                 song.get("title"),
@@ -532,6 +543,14 @@ async def _play_next_locked(
                 vc.guild.id,
             )
             base_source = discord.FFmpegPCMAudio(source, **FFMPEG_OPTIONS)
+        elif use_long_temp_file:
+            logger.info(
+                "Chuẩn bị file tạm cho bài dài %r, duration=%ss (guild=%s)",
+                song.get("title"),
+                duration,
+                vc.guild.id,
+            )
+            base_source = await get_long_audio_source(song["url"], duration)
         else:
             logger.info(
                 "Chuẩn bị cache %r, duration=%ss (guild=%s)",
@@ -559,7 +578,7 @@ async def _play_next_locked(
     # tránh decode rồi encode lossy thêm một lần trước khi gửi Discord.
     audio_source = None
     try:
-        if is_radio or is_too_long:
+        if use_direct_stream:
             audio_source = discord.PCMVolumeTransformer(base_source)
             audio_source.volume = getattr(vc, 'current_volume', 1.0)
         else:
