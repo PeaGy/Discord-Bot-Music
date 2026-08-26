@@ -13,6 +13,9 @@ _TRANSIENT_YTDLP_ERROR_MARKERS = (
     "403 forbidden",
     "http error 429",
     "too many requests",
+    "sign in to confirm you're not a bot",
+    "sign in to confirm you’re not a bot",
+    "missing required visitor data",
     "host unreachable",
     "network is unreachable",
     "socks5error",
@@ -60,7 +63,7 @@ def extract_info_with_retry(
     *,
     download: bool = False,
     attempts: int = 2,
-    retry_delay: float = 3.0,
+    retry_delay: float = 5.0,
 ):
     """Extract metadata using a fresh YoutubeDL session after transient failures."""
     import yt_dlp
@@ -94,6 +97,7 @@ def youtube_ydl_options(base: dict | None = None) -> dict:
     proxy = os.getenv("YTDLP_PROXY", "").strip()
     runtime = os.getenv("YTDLP_JS_RUNTIME", "").strip().lower()
     bgutil_url = os.getenv("YTDLP_BGUTIL_URL", "").strip()
+    youtube_client = os.getenv("YTDLP_YOUTUBE_CLIENT", "").strip().lower()
     components = {
         item.strip()
         for item in os.getenv("YTDLP_REMOTE_COMPONENTS", "").split(",")
@@ -101,7 +105,7 @@ def youtube_ydl_options(base: dict | None = None) -> dict:
     }
 
     # Preserve the old home-PC route unless this deployment explicitly opts in.
-    if not proxy and not runtime and not components and not bgutil_url:
+    if not proxy and not runtime and not components and not bgutil_url and not youtube_client:
         return options
 
     # On the VPS, let current yt-dlp choose a working YouTube client instead of
@@ -115,13 +119,28 @@ def youtube_ydl_options(base: dict | None = None) -> dict:
         options["js_runtimes"] = {runtime: {}}
     if components:
         options["remote_components"] = components
+    extractor_args = {}
+    if youtube_client or bgutil_url:
+        # BgUtils currently supports WEB/MWEB/TV clients, not VISIONOS. Recent
+        # yt-dlp builds may auto-select VISIONOS, making the provider reject the
+        # request before a PO token can be generated. Prefer the token-free
+        # embedded client for public/embeddable videos, then let MWEB cover the
+        # rest. The value remains configurable as a comma-separated client list.
+        clients = [
+            item.strip()
+            for item in (youtube_client or "web_embedded,mweb").split(",")
+            if item.strip()
+        ]
+        extractor_args["youtube"] = {
+            "player_client": clients,
+        }
     if bgutil_url:
         # The native provider may listen on IPv6 only on some Linux hosts.
         # Point yt-dlp's HTTP provider at the reachable loopback address while
         # leaving the on-demand Node script available as its fallback.
-        options["extractor_args"] = {
-            "youtubepot-bgutilhttp": {"base_url": [bgutil_url]},
-        }
+        extractor_args["youtubepot-bgutilhttp"] = {"base_url": [bgutil_url]}
+    if extractor_args:
+        options["extractor_args"] = extractor_args
 
     cookie_path = os.getenv("YTDLP_COOKIE_FILE", "cookies.txt").strip()
     if cookie_path and Path(cookie_path).is_file():

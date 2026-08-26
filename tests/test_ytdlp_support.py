@@ -41,6 +41,7 @@ class YoutubeYdlOptionsTests(unittest.TestCase):
             "YTDLP_JS_RUNTIME",
             "YTDLP_REMOTE_COMPONENTS",
             "YTDLP_BGUTIL_URL",
+            "YTDLP_YOUTUBE_CLIENT",
         )
         with patch.dict(os.environ, {name: "" for name in env_names}):
             base = {"extractor_args": {"youtube": {"player_client": ["tv"]}}}
@@ -59,7 +60,28 @@ class YoutubeYdlOptionsTests(unittest.TestCase):
 
         self.assertEqual(
             options["extractor_args"],
-            {"youtubepot-bgutilhttp": {"base_url": ["http://[::1]:4416"]}},
+            {
+                "youtube": {
+                    "player_client": ["web_embedded", "mweb"]
+                },
+                "youtubepot-bgutilhttp": {
+                    "base_url": ["http://[::1]:4416"]
+                },
+            },
+        )
+
+    def test_youtube_client_can_be_overridden(self):
+        env = {
+            "YTDLP_BGUTIL_URL": "http://127.0.0.1:4416",
+            "YTDLP_YOUTUBE_CLIENT": "web_embedded,mweb",
+            "YTDLP_COOKIE_FILE": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            options = youtube_ydl_options({})
+
+        self.assertEqual(
+            options["extractor_args"]["youtube"],
+            {"player_client": ["web_embedded", "mweb"]},
         )
 
 
@@ -100,6 +122,11 @@ class YoutubeMetadataRetryTests(unittest.TestCase):
         self.assertFalse(is_transient_ytdlp_error(ValueError("no results")))
         self.assertTrue(
             is_transient_ytdlp_error(RuntimeError("Socks5Error: Host unreachable"))
+        )
+        self.assertTrue(
+            is_transient_ytdlp_error(
+                RuntimeError("Sign in to confirm you’re not a bot")
+            )
         )
 
 
