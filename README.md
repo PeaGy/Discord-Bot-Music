@@ -48,6 +48,14 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - Full kit và từng Skill/Defense được trình bày bằng embed có màu Sin Affinity, Coin, damage type, status và resistance.
 - Tin thời sự được kiểm tra qua X chính thức, Steam News API và ảnh notice thay vì chỉ đọc thumbnail.
 - Kết quả đọc ảnh Steam được cache theo hash; câu hỏi cùng chủ đề dùng cache ngắn hạn để tránh lặp lại lượt Vision chậm.
+- Có thể theo dõi RSS của kênh YouTube ProjectMoon Official và thông báo video Limbus mới vào một kênh Discord đã chọn. Trạng thái SQLite chống gửi trùng sau restart; lần chạy đầu chỉ ghi nhận mốc hiện tại.
+
+### ⏰Daily Reset
+
+- Scheduler UTC cho NIKKE, Blue Archive, Trickcal: Chibi Go, Chaos Zero Nightmare, Limbus Company và Brown Dust 2; từng game có thể bật/tắt, đổi giờ, kênh và role riêng trong `.env`.
+- Gửi cảnh báo trước reset và checklist tiếng Việt khi reset; role chỉ được ping ở thông báo reset thật.
+- Thành viên tự đăng ký/tắt DM bằng `/dailyreset subscribe`, `/dailyreset unsubscribe` hoặc nút dưới card reset.
+- SQLite chống gửi trùng sau restart và có cửa sổ gửi bù ngắn nếu bot vừa mất kết nối đúng giờ reset.
 
 ### 🖼️Danbooru
 
@@ -129,6 +137,8 @@ Các tùy chọn quan trọng đã được chú thích trong `.env.example`, g�
 - `XAI_API_KEY`, `XAI_BASE_URL`, `XAI_IMAGE_DETAIL`, `XAI_MAX_IMAGES`
 - `PIXIV_PHPSESSID`, `PIXIV_UGOIRA_*` để bật custom embed và điều chỉnh Ugoira Pixiv
 - `LIMBUS_WIKI_*`, `LIMBUS_OFFICIAL_X_HANDLES`, `LIMBUS_NEWS_ANSWER_CACHE_MINUTES`
+- `PROJECT_MOON_YOUTUBE_*` để bật thông báo video chính thức, chọn kênh Discord, role ping và bộ lọc Limbus
+- `DAILY_RESET_*` để chọn một/nhiều game hoặc `all`, giờ UTC, kênh Discord, role ping, ảnh và thời gian cảnh báo
 - `DOWNLOAD_PUBLIC_BASE_URL`, `DOWNLOAD_GATEWAY_*`
 - `LOG_LEVEL`, `MUSIC_LIBRARY_DB`, `STUDY_FONT_PATH`
 
@@ -178,6 +188,8 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 | AI & riêng tư | `/private`, `/andanh`, `/resetmemory` |
 | Quản trị bộ nhớ | `/resetmemoryall`, `/resetmemoryglobal` |
 | Quản trị Peto | `/blacklist`, `/unblacklist` (chỉ chủ bot) |
+| Project Moon | `/projectmoon status`, `/projectmoon preview`, `/projectmoon test`, `/projectmoon check` (chỉ chủ bot) |
+| Daily Reset | `/dailyreset next`, `/dailyreset subscribe`, `/dailyreset unsubscribe`, `/dailyreset subscriptions`; `status/preview/test/check` dành cho chủ bot |
 | Ảnh | `/art`, `/artecchi`, `/artnsfw`, `/wallpaper`, `/artinfo`, `/sticker`, `/emoji`, `/saucy` |
 | Kiểm tra | `/latency`, `/help` |
 
@@ -203,6 +215,8 @@ Gateway cho file vượt giới hạn Discord chạy tại `127.0.0.1:8765`; Clo
 | `bot_memory.db` | Lịch sử và trí nhớ AI theo người dùng |
 | `music_library.db` | Favorites, playlist và lịch sử nghe |
 | `limbus_knowledge.db` | Wiki RAG và cache notice chính thức |
+| `youtube_notifications.db` | Video Project Moon đã thấy và trạng thái chống thông báo trùng |
+| `daily_reset_notifications.db` | Lịch đã gửi và đăng ký Daily Reset DM của thành viên |
 | `audio_cache/` | Cache âm thanh đã xử lý |
 | `temp_downloads/` | File tải tạm thời |
 
