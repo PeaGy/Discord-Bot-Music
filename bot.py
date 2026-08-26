@@ -5,6 +5,7 @@ import aiohttp
 import asyncio
 import logging
 import os
+import random
 import config
 
 from logging_setup import configure_logging
@@ -26,11 +27,16 @@ class MusicBot(commands.Bot):
         )
 
         self.status_list = [
-            "24/7 Bot Music",
-            "Use /play To Play Music",
-            "Use /help To See All Commands"
+            "Roblox",
+            "Honkai: Star Rail",
+            "Brown Dust 2",
+            "Trickcal RE:VIVE",
+            "Girls' Frontline 2: Exilium",
+            "Minecraft",
+            "Blue Archive",
+            "Umamusume: Pretty Derby",
         ]
-        self.status_index = 0
+        self.current_status = None
         self.last_presence_warning_at = 0.0
 
     async def setup_hook(self):
@@ -50,14 +56,18 @@ class MusicBot(commands.Bot):
 
         self.rotate_status.start()
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(hours=4)
     async def rotate_status(self):
+        choices = [
+            status for status in self.status_list
+            if status != self.current_status
+        ]
+        selected_status = random.choice(choices or self.status_list)
+
         try:
             await self.change_presence(
-                activity=discord.Activity(
-                    type=discord.ActivityType.listening,
-                    name=self.status_list[self.status_index],
-                )
+                status=discord.Status.online,
+                activity=discord.Game(name=selected_status),
             )
         except (
             aiohttp.ClientConnectionError,
@@ -76,7 +86,7 @@ class MusicBot(commands.Bot):
             logger.exception("Không thể cập nhật trạng thái Discord")
             return
 
-        self.status_index = (self.status_index + 1) % len(self.status_list)
+        self.current_status = selected_status
 
     @rotate_status.before_loop
     async def before_rotate_status(self):
