@@ -46,6 +46,7 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - RAG tự đồng bộ Limbus Company Wiki vào `limbus_knowledge.db` bằng SQLite FTS5.
 - Hiểu nhiều alias cộng đồng; hỗ trợ roster, Identity, E.G.O., skill/passive, status, lore và team building.
 - Full kit và từng Skill/Defense được trình bày bằng embed có màu Sin Affinity, Coin, damage type, status và resistance.
+- Artwork Identity/E.G.O được đồng bộ tăng dần theo revision wiki và dùng làm thumbnail của full kit hoặc card skill riêng. Metadata nằm cùng `limbus_knowledge.db`; lỗi CDN không làm hỏng câu trả lời và cache cũ vẫn được giữ.
 - Tin thời sự được kiểm tra qua X chính thức, Steam News API và ảnh notice thay vì chỉ đọc thumbnail.
 - Kết quả đọc ảnh Steam được cache theo hash; câu hỏi cùng chủ đề dùng cache ngắn hạn để tránh lặp lại lượt Vision chậm.
 - Có thể theo dõi RSS của kênh YouTube ProjectMoon Official và thông báo video Limbus mới vào một kênh Discord đã chọn. Trạng thái SQLite chống gửi trùng sau restart; lần chạy đầu chỉ ghi nhận mốc hiện tại.
@@ -136,7 +137,7 @@ Các tùy chọn quan trọng đã được chú thích trong `.env.example`, g�
 
 - `XAI_API_KEY`, `XAI_BASE_URL`, `XAI_IMAGE_DETAIL`, `XAI_MAX_IMAGES`
 - `PIXIV_PHPSESSID`, `PIXIV_UGOIRA_*` để bật custom embed và điều chỉnh Ugoira Pixiv
-- `LIMBUS_WIKI_*`, `LIMBUS_OFFICIAL_X_HANDLES`, `LIMBUS_NEWS_ANSWER_CACHE_MINUTES`
+- `LIMBUS_WIKI_*`, `LIMBUS_ASSET_THUMB_SIZE`, `LIMBUS_OFFICIAL_X_HANDLES`, `LIMBUS_NEWS_ANSWER_CACHE_MINUTES`
 - `PROJECT_MOON_YOUTUBE_*` để bật thông báo video chính thức, chọn kênh Discord, role ping và bộ lọc Limbus
 - `DAILY_RESET_*` để chọn một/nhiều game hoặc `all`, giờ UTC, kênh Discord, role ping, ảnh và thời gian cảnh báo
 - `DOWNLOAD_PUBLIC_BASE_URL`, `DOWNLOAD_GATEWAY_*`
@@ -188,6 +189,7 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 | AI & riêng tư | `/private`, `/andanh`, `/resetmemory` |
 | Quản trị bộ nhớ | `/resetmemoryall`, `/resetmemoryglobal` |
 | Quản trị Peto | `/blacklist`, `/unblacklist` (chỉ chủ bot) |
+| Limbus Asset | `/limbusasset status`, `/limbusasset preview`; `/limbusasset sync` dành cho chủ bot |
 | Project Moon | `/projectmoon status`, `/projectmoon preview`, `/projectmoon test`, `/projectmoon check` (chỉ chủ bot) |
 | Daily Reset | `/dailyreset next`, `/dailyreset subscribe`, `/dailyreset unsubscribe`, `/dailyreset subscriptions`; `status/preview/test/check` dành cho chủ bot |
 | Ảnh | `/art`, `/artecchi`, `/artnsfw`, `/wallpaper`, `/artinfo`, `/sticker`, `/emoji`, `/saucy` |

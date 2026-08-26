@@ -231,6 +231,8 @@ def build_identity_kit_embeds(kit: dict) -> list[discord.Embed]:
             ),
             color=0x2B2D31,
         )
+        if kit.get("asset_url"):
+            overview.set_thumbnail(url=str(kit["asset_url"]))
         overview.set_footer(text="Màu viền và emoji của mỗi card biểu thị Sin Affinity")
         embeds.append(overview)
 
@@ -278,6 +280,8 @@ def build_identity_kit_embeds(kit: dict) -> list[discord.Embed]:
         if kit.get("display_mode") == "single_skill" and kit.get("url"):
             embed.url = str(kit["url"])
             embed.set_footer(text=f"Nguồn: {kit.get('title') or 'Limbus Company Wiki'}")
+            if kit.get("asset_url"):
+                embed.set_thumbnail(url=str(kit["asset_url"]))
         for coin in skill.get("coin_effects") or []:
             coin_emoji = (
                 COIN_EMOJIS["unbreakable_coin"]
@@ -345,6 +349,8 @@ def build_ego_embeds(ego: dict) -> list[discord.Embed]:
         description=_truncate("\n".join(info), 4000),
         color=color,
     )
+    if ego.get("asset_url"):
+        overview.set_thumbnail(url=str(ego["asset_url"]))
     for skill in ego.get("skills") or []:
         coin_kinds = list(skill.get("coin_kinds") or [])
         unbreakable_count = coin_kinds.count("unbreakable")

@@ -16,6 +16,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 import aiohttp
+import discord
+from discord import app_commands
 from discord.ext import commands
 
 
@@ -44,6 +46,7 @@ DB_PATH = Path(os.getenv("LIMBUS_WIKI_DB", "limbus_knowledge.db")).resolve()
 SYNC_HOURS = max(1.0, _env_float("LIMBUS_WIKI_SYNC_HOURS", 12.0))
 SYNC_CONCURRENCY = max(1, min(3, _env_int("LIMBUS_WIKI_SYNC_CONCURRENCY", 2)))
 REQUEST_DELAY = max(0.05, _env_float("LIMBUS_WIKI_REQUEST_DELAY", 0.20))
+ASSET_THUMB_SIZE = max(256, min(1200, _env_int("LIMBUS_ASSET_THUMB_SIZE", 700)))
 INDEX_VERSION = "2"
 CHUNK_CHARS = 2400
 CHUNK_OVERLAP = 250
@@ -72,6 +75,20 @@ CREATE TABLE IF NOT EXISTS official_news_answer_cache (
     created_at INTEGER NOT NULL,
     last_used_at INTEGER NOT NULL
 );
+"""
+
+ASSET_CACHE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS wiki_assets (
+    pageid INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    revid INTEGER NOT NULL DEFAULT 0,
+    file_title TEXT NOT NULL DEFAULT '',
+    original_url TEXT NOT NULL DEFAULT '',
+    thumbnail_url TEXT NOT NULL DEFAULT '',
+    synced_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wiki_assets_title
+    ON wiki_assets(title COLLATE NOCASE);
 """
 
 
@@ -367,6 +384,60 @@ class WikiPage:
     revid: int
     timestamp: str
     text: str
+
+
+def _asset_file_candidates(title: str, *, kind: str = "") -> list[str]:
+    """Build the canonical file names used by IDPage/EGPage on wiki.gg."""
+    exact = re.sub(r"\s+", "_", str(title or "").strip())
+    no_colon = exact.replace(":", "")
+    candidates: list[str] = []
+    if kind == "identity":
+        suffixes = ("_Profile.png",)
+    elif kind == "ego":
+        suffixes = ("_Icon.png",)
+    else:
+        suffixes = (
+            "_Profile.png",
+            "_Icon.png",
+            "_Full_Uptied.png",
+            "_Full.png",
+        )
+    for base in (exact, no_colon):
+        for suffix in suffixes:
+            candidate = f"{base}{suffix}"
+            if candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def _asset_from_imageinfo_pages(
+    pages: list[dict], *, content_page: WikiPage, candidates: list[str]
+) -> dict | None:
+    available: dict[str, tuple[str, dict]] = {}
+    for page in pages:
+        info_items = page.get("imageinfo") or []
+        if not info_items:
+            continue
+        file_title = str(page.get("title") or "").removeprefix("File:")
+        available[file_title.replace(" ", "_").casefold()] = (file_title, info_items[0])
+    for candidate in candidates:
+        match = available.get(candidate.casefold())
+        if not match:
+            continue
+        file_title, info = match
+        original_url = str(info.get("url") or "").strip()
+        thumbnail_url = str(info.get("thumburl") or original_url).strip()
+        if not (thumbnail_url or original_url):
+            continue
+        return {
+            "pageid": content_page.pageid,
+            "title": content_page.title,
+            "file_title": file_title,
+            "original_url": original_url,
+            "thumbnail_url": thumbnail_url,
+            "asset_url": thumbnail_url or original_url,
+        }
+    return None
 
 
 class _WikiHTMLTextParser(HTMLParser):
@@ -849,6 +920,11 @@ def _parse_latest_banner(text: str, *, now: datetime | None = None) -> dict | No
 class LimbusWiki(commands.Cog):
     """Kho kiến thức Limbus Company tự đồng bộ từ wiki.gg."""
 
+    limbusasset = app_commands.Group(
+        name="limbusasset",
+        description="Artwork Identity/E.G.O đã đồng bộ từ Limbus Company Wiki",
+    )
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.session: aiohttp.ClientSession | None = None
@@ -857,6 +933,7 @@ class LimbusWiki(commands.Cog):
         self.sync_lock = asyncio.Lock()
         self.request_lock = asyncio.Lock()
         self.last_request_at = 0.0
+        self.asset_tasks: set[asyncio.Task] = set()
 
     async def cog_load(self) -> None:
         await asyncio.to_thread(self._init_db_sync)
@@ -870,6 +947,11 @@ class LimbusWiki(commands.Cog):
         )
 
     async def cog_unload(self) -> None:
+        for task in tuple(self.asset_tasks):
+            task.cancel()
+        if self.asset_tasks:
+            await asyncio.gather(*self.asset_tasks, return_exceptions=True)
+        self.asset_tasks.clear()
         if self.sync_task:
             self.sync_task.cancel()
             try:
@@ -917,6 +999,7 @@ class LimbusWiki(commands.Cog):
                 """
             )
             db.executescript(OFFICIAL_NEWS_CACHE_SCHEMA)
+            db.executescript(ASSET_CACHE_SCHEMA)
             current = db.execute(
                 "SELECT value FROM wiki_meta WHERE key='index_version'"
             ).fetchone()
@@ -958,6 +1041,215 @@ class LimbusWiki(commands.Cog):
                     break
                 await asyncio.sleep(1.5 * (attempt + 1))
         raise RuntimeError("Không thể đọc Limbus Company Wiki API") from last_error
+
+    def _cached_asset_sync(
+        self, pageid: int, *, revid: int | None = None
+    ) -> dict | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT pageid, title, revid, file_title, original_url, "
+                "thumbnail_url, synced_at FROM wiki_assets WHERE pageid = ?",
+                (pageid,),
+            ).fetchone()
+        if not row or (revid is not None and int(row["revid"]) != int(revid)):
+            return None
+        result = dict(row)
+        result["asset_url"] = result["thumbnail_url"] or result["original_url"]
+        return result
+
+    def _upsert_asset_sync(self, asset: dict, revid: int) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO wiki_assets(
+                    pageid, title, revid, file_title, original_url,
+                    thumbnail_url, synced_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(pageid) DO UPDATE SET
+                    title=excluded.title,
+                    revid=excluded.revid,
+                    file_title=excluded.file_title,
+                    original_url=excluded.original_url,
+                    thumbnail_url=excluded.thumbnail_url,
+                    synced_at=excluded.synced_at
+                """,
+                (
+                    int(asset.get("pageid") or 0),
+                    str(asset.get("title") or ""),
+                    int(revid or 0),
+                    str(asset.get("file_title") or ""),
+                    str(asset.get("original_url") or ""),
+                    str(asset.get("thumbnail_url") or ""),
+                    int(time.time()),
+                ),
+            )
+
+    def _asset_status_sync(self) -> dict:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(CASE WHEN thumbnail_url != '' OR original_url != '' THEN 1 ELSE 0 END) "
+                "AS with_image, MAX(synced_at) AS last_sync FROM wiki_assets"
+            ).fetchone()
+        return {
+            "total": int(row["total"] or 0),
+            "with_image": int(row["with_image"] or 0),
+            "last_sync": int(row["last_sync"] or 0),
+        }
+
+    def _missing_asset_pages_sync(self) -> list[tuple[WikiPage, str]]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT p.pageid, p.title, p.url, p.revid, p.timestamp, p.text
+                FROM wiki_pages AS p
+                LEFT JOIN wiki_assets AS a ON a.pageid = p.pageid
+                WHERE p.title NOT LIKE '%/%'
+                  AND (a.pageid IS NULL OR a.revid != p.revid)
+                  AND (
+                    p.text LIKE '%Skill 1Skill 2Skill 3Defense%'
+                    OR (
+                        p.text LIKE '%Risk Level%'
+                        AND p.text NOT LIKE '%Skill 1Skill 2Skill 3Defense%'
+                    )
+                  )
+                ORDER BY p.title COLLATE NOCASE
+                """
+            ).fetchall()
+        result: list[tuple[WikiPage, str]] = []
+        for row in rows:
+            text = str(row["text"])
+            kind = "identity" if "Skill 1Skill 2Skill 3Defense" in text else "ego"
+            result.append((
+                WikiPage(
+                    pageid=int(row["pageid"]),
+                    title=str(row["title"]),
+                    url=str(row["url"]),
+                    revid=int(row["revid"]),
+                    timestamp=str(row["timestamp"]),
+                    text=text,
+                ),
+                kind,
+            ))
+        return result
+
+    async def _sync_missing_assets(self) -> tuple[int, int]:
+        entries = await asyncio.to_thread(self._missing_asset_pages_sync)
+        if not entries:
+            return 0, 0
+        completed = 0
+        failed = 0
+        # Mỗi trang chỉ tạo tối đa hai tên file. Dùng batch nhỏ vì tên Identity
+        # có thể rất dài; như vậy URL GET không chạm giới hạn proxy/CDN dù số
+        # title vẫn thấp hơn mức 50 của MediaWiki.
+        batch_size = 8
+        for offset in range(0, len(entries), batch_size):
+            batch = entries[offset: offset + batch_size]
+            all_candidates: list[str] = []
+            candidates_by_page: dict[int, list[str]] = {}
+            for page, kind in batch:
+                candidates = _asset_file_candidates(page.title, kind=kind)
+                candidates_by_page[page.pageid] = candidates
+                all_candidates.extend(candidates)
+            try:
+                payload = await self._api_get(
+                    action="query",
+                    titles="|".join(f"File:{name}" for name in all_candidates),
+                    prop="imageinfo",
+                    iiprop="url|mime",
+                    iiurlwidth=ASSET_THUMB_SIZE,
+                )
+                image_pages = payload.get("query", {}).get("pages", [])
+                for page, _kind in batch:
+                    asset = _asset_from_imageinfo_pages(
+                        image_pages,
+                        content_page=page,
+                        candidates=candidates_by_page[page.pageid],
+                    ) or {
+                        "pageid": page.pageid,
+                        "title": page.title,
+                        "file_title": "",
+                        "original_url": "",
+                        "thumbnail_url": "",
+                        "asset_url": "",
+                    }
+                    await asyncio.to_thread(self._upsert_asset_sync, asset, page.revid)
+                    completed += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                failed += len(batch)
+                logger.warning(
+                    "Không thể đồng bộ batch Limbus asset %s-%s",
+                    offset + 1,
+                    offset + len(batch),
+                    exc_info=True,
+                )
+        logger.info(
+            "Limbus Asset sync xong: cập nhật=%s, lỗi=%s", completed, failed
+        )
+        return completed, failed
+
+    def _queue_asset_refresh(self, page: WikiPage, *, kind: str = "") -> None:
+        if any(task.get_name() == f"limbus-asset-{page.pageid}" for task in self.asset_tasks):
+            return
+        task = asyncio.create_task(
+            self._page_asset(page, force=True, kind=kind),
+            name=f"limbus-asset-{page.pageid}",
+        )
+        self.asset_tasks.add(task)
+        task.add_done_callback(self.asset_tasks.discard)
+
+    async def _page_asset(
+        self, page: WikiPage, *, force: bool = False, kind: str = ""
+    ) -> dict | None:
+        if not force:
+            cached = await asyncio.to_thread(
+                self._cached_asset_sync, page.pageid, revid=page.revid
+            )
+            if cached:
+                return cached if cached.get("asset_url") else None
+
+        stale = await asyncio.to_thread(self._cached_asset_sync, page.pageid)
+        if not force:
+            # Không bắt người chat chờ wiki/CDN. Lượt đầu có thể chưa có thumbnail,
+            # nhưng refresh tiếp tục nền và các lượt sau dùng cache ngay lập tức.
+            self._queue_asset_refresh(page, kind=kind)
+            return stale if stale and stale.get("asset_url") else None
+        try:
+            candidates = _asset_file_candidates(page.title, kind=kind)
+            payload = await self._api_get(
+                action="query",
+                titles="|".join(f"File:{name}" for name in candidates),
+                prop="imageinfo",
+                iiprop="url|mime",
+                iiurlwidth=ASSET_THUMB_SIZE,
+            )
+            pages = payload.get("query", {}).get("pages", [])
+            asset = _asset_from_imageinfo_pages(
+                pages, content_page=page, candidates=candidates
+            )
+            if not asset:
+                # Cache cả kết quả "không có" theo revision để không gọi wiki lại ở
+                # mọi câu hỏi. Revision đổi sẽ tự thử lại.
+                asset = {
+                    "pageid": page.pageid,
+                    "title": page.title,
+                    "file_title": "",
+                    "original_url": "",
+                    "thumbnail_url": "",
+                    "asset_url": "",
+                }
+            await asyncio.to_thread(self._upsert_asset_sync, asset, page.revid)
+            return asset if asset.get("asset_url") else None
+        except Exception:
+            # Ảnh chỉ là phần trình bày; wiki lỗi không được làm hỏng câu trả lời kit.
+            logger.warning(
+                "Không thể làm mới Limbus asset: %s; dùng cache cũ nếu có",
+                page.title,
+                exc_info=True,
+            )
+            return stale if stale and stale.get("asset_url") else None
 
     async def _catalog(self) -> list[dict]:
         pages: list[dict] = []
@@ -1364,6 +1656,7 @@ class LimbusWiki(commands.Cog):
         except Exception:
             logger.exception("Không thể lấy wikitext E.G.O: %s", page.title)
             return None
+        asset = await self._page_asset(page, kind="ego")
         outer_templates = _extract_templates_from_region(wikitext, "EGPage")
         if not outer_templates:
             return None
@@ -1395,6 +1688,9 @@ class LimbusWiki(commands.Cog):
             "type": "ego_detail",
             "title": page.title,
             "url": _wiki_url(page.title),
+            "asset_url": str((asset or {}).get("asset_url") or ""),
+            "asset_original_url": str((asset or {}).get("original_url") or ""),
+            "asset_file": str((asset or {}).get("file_title") or ""),
             "name": _plain_wikitext(params.get("prefix", "")) or skills[0].get("name"),
             "sinner": _plain_wikitext(params.get("sinner", "")),
             "risk": _plain_wikitext(params.get("risk", "")),
@@ -1622,6 +1918,7 @@ class LimbusWiki(commands.Cog):
         except Exception:
             logger.exception("Không thể lấy wikitext kit: %s", page.title)
             return None
+        asset = await self._page_asset(page, kind="identity")
         skills: list[dict] = []
         for slot in (
             "skill1", "skill1-2", "skill2", "skill2-2",
@@ -1639,6 +1936,9 @@ class LimbusWiki(commands.Cog):
             "type": "identity_kit",
             "title": page.title,
             "url": _wiki_url(page.title),
+            "asset_url": str((asset or {}).get("asset_url") or ""),
+            "asset_original_url": str((asset or {}).get("original_url") or ""),
+            "asset_file": str((asset or {}).get("file_title") or ""),
             "hp": self._stat_from_rendered_html(rendered_html, "HP"),
             "speed": speed.group(1).strip() if speed else None,
             "defense_level": self._stat_from_rendered_html(rendered_html, "Defense"),
@@ -1779,12 +2079,15 @@ class LimbusWiki(commands.Cog):
 
             await asyncio.gather(*(update_one(entry) for entry in changed))
             removed = await asyncio.to_thread(self._delete_missing_sync, live_ids)
+            asset_completed, asset_failed = await self._sync_missing_assets()
             now = str(int(time.time()))
             await asyncio.to_thread(self._set_meta_sync, "last_sync", now)
             await asyncio.to_thread(self._set_meta_sync, "catalog_pages", str(len(catalog)))
             logger.info(
-                "Limbus Wiki sync xong: cập nhật=%s, lỗi=%s, xóa=%s, %.1fs",
-                completed, failed, removed, time.monotonic() - started,
+                "Limbus Wiki sync xong: cập nhật=%s, lỗi=%s, xóa=%s, "
+                "asset=%s/%s, %.1fs",
+                completed, failed, removed, asset_completed,
+                asset_completed + asset_failed, time.monotonic() - started,
             )
 
     async def _sync_loop(self) -> None:
@@ -1918,6 +2221,108 @@ class LimbusWiki(commands.Cog):
             except Exception:
                 logger.warning("Không thể cache trang Limbus Wiki: %s", title, exc_info=True)
         return warmed
+
+    async def _asset_page_for_query(self, query: str) -> WikiPage | None:
+        query = str(query or "").strip()
+        if not query:
+            return None
+        page = await asyncio.to_thread(self._page_by_title_sync, query)
+        if page:
+            return page
+        page = await asyncio.to_thread(self._find_identity_page_sync, query)
+        if page:
+            return page
+        return await asyncio.to_thread(self._find_ego_page_sync, query)
+
+    @limbusasset.command(name="status", description="Xem trạng thái kho artwork Limbus")
+    async def asset_status(self, interaction: discord.Interaction) -> None:
+        status = await asyncio.to_thread(self._asset_status_sync)
+        last_sync = (
+            f"<t:{status['last_sync']}:R>" if status["last_sync"] else "chưa có"
+        )
+        await interaction.response.send_message(
+            "🖼️ **Limbus Asset Sync**\n"
+            f"• Đã ghi nhận: `{status['total']}` trang\n"
+            f"• Có artwork dùng được: `{status['with_image']}` trang\n"
+            f"• Lần cập nhật gần nhất: {last_sync}\n"
+            "• Asset được tải theo nhu cầu và tự làm mới khi revision wiki đổi.",
+            ephemeral=True,
+        )
+
+    @limbusasset.command(name="preview", description="Xem artwork wiki của Identity/E.G.O")
+    @app_commands.describe(name="Tên đầy đủ hoặc alias Identity/E.G.O")
+    async def asset_preview(
+        self, interaction: discord.Interaction, name: str
+    ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        page = await self._asset_page_for_query(name)
+        if not page:
+            return await interaction.followup.send(
+                "❌ Không tìm thấy đúng trang Identity/E.G.O này trong dữ liệu đã đồng bộ.",
+                ephemeral=True,
+            )
+        try:
+            asset = await asyncio.wait_for(
+                self._page_asset(page, force=True), timeout=30
+            )
+        except asyncio.TimeoutError:
+            return await interaction.followup.send(
+                "⏱️ Wiki/CDN phản hồi quá 30 giây. Cache cũ không bị mất; hãy thử lại sau.",
+                ephemeral=True,
+            )
+        if not asset or not asset.get("asset_url"):
+            return await interaction.followup.send(
+                f"ℹ️ Trang **{page.title}** hiện không có ảnh đại diện đọc được qua wiki API.",
+                ephemeral=True,
+            )
+        embed = discord.Embed(
+            title=page.title,
+            url=page.url,
+            description=(
+                f"`{asset.get('file_title') or 'Wiki asset'}`\n"
+                "Ảnh này sẽ tự xuất hiện trong embed kit tương ứng."
+            ),
+            color=0x2B2D31,
+        )
+        embed.set_image(url=str(asset["asset_url"]))
+        embed.set_footer(text="Nguồn: Limbus Company Wiki (wiki.gg) • CC BY-SA 4.0")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @limbusasset.command(
+        name="sync", description="[Chủ bot] Buộc làm mới artwork của một Identity/E.G.O"
+    )
+    @app_commands.describe(name="Tên đầy đủ hoặc alias Identity/E.G.O")
+    async def asset_sync(self, interaction: discord.Interaction, name: str) -> None:
+        if not await self.bot.is_owner(interaction.user):
+            return await interaction.response.send_message(
+                "❌ Chỉ chủ bot mới được buộc đồng bộ Limbus asset.", ephemeral=True
+            )
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        page = await self._asset_page_for_query(name)
+        if not page:
+            return await interaction.followup.send(
+                "❌ Không tìm thấy đúng trang Identity/E.G.O này trong dữ liệu đã đồng bộ.",
+                ephemeral=True,
+            )
+        try:
+            asset = await asyncio.wait_for(
+                self._page_asset(page, force=True), timeout=30
+            )
+        except asyncio.TimeoutError:
+            return await interaction.followup.send(
+                "⏱️ Wiki/CDN phản hồi quá 30 giây. Cache cũ không bị mất; hãy thử lại sau.",
+                ephemeral=True,
+            )
+        if not asset or not asset.get("asset_url"):
+            return await interaction.followup.send(
+                f"ℹ️ Đã kiểm tra **{page.title}**, nhưng wiki chưa trả artwork dùng được.",
+                ephemeral=True,
+            )
+        await interaction.followup.send(
+            f"✅ Đã làm mới artwork của **{page.title}**. Dùng "
+            f"`/limbusasset preview name:{page.title}` để xem.",
+            ephemeral=True,
+        )
 
     async def search(self, query: str, limit: int = 6, *, context: str = "") -> dict:
         query = str(query or "").strip()[:300]
