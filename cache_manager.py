@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 
 import yt_dlp
 import discord
-from ytdlp_support import youtube_ydl_options
+from ytdlp_support import youtube_player_clients, youtube_ydl_options
 
 
 logger = logging.getLogger(__name__)
@@ -150,7 +150,7 @@ def _remove_long_audio_bundle(prefix):
             pass
 
 
-def _download_long_audio_sync(url):
+def _download_long_audio_sync(url, player_client=None):
     """Download original long-form audio through yt-dlp without normalization."""
     token = uuid.uuid4().hex
     prefix = os.path.join(LONG_AUDIO_TEMP_DIR, f"long_{token}_")
@@ -167,6 +167,12 @@ def _download_long_audio_sync(url):
         "fragment_retries": 2,
         "max_filesize": LONG_AUDIO_TEMP_MAX_BYTES,
     })
+    if player_client:
+        extractor_args = dict(ydl_opts.get("extractor_args") or {})
+        youtube_args = dict(extractor_args.get("youtube") or {})
+        youtube_args["player_client"] = [player_client]
+        extractor_args["youtube"] = youtube_args
+        ydl_opts["extractor_args"] = extractor_args
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -207,19 +213,22 @@ async def get_long_audio_source(url, duration):
         )
 
     cleanup_stale_long_audio_files()
+    clients = youtube_player_clients()
     last_error = None
     for attempt in range(1, 3):
         filepath = None
         try:
             logger.info(
-                "Tải audio tạm cho bài dài (lần %s/2): %s",
+                "Tải audio tạm cho bài dài (lần %s/2, client=%s): %s",
                 attempt,
+                clients[min(attempt - 1, len(clients) - 1)] if clients else "auto",
                 url,
             )
             async with _long_audio_download_semaphore:
                 filepath, codec = await asyncio.to_thread(
                     _download_long_audio_sync,
                     url,
+                    clients[min(attempt - 1, len(clients) - 1)] if clients else None,
                 )
             ffmpeg_source = discord.FFmpegOpusAudio(
                 filepath,

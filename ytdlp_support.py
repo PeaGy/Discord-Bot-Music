@@ -33,6 +33,20 @@ def youtube_proxy_enabled() -> bool:
     return bool(os.getenv("YTDLP_PROXY", "").strip())
 
 
+def youtube_player_clients() -> tuple[str, ...]:
+    """Return the ordered YouTube client fallback list for this deployment."""
+    configured = os.getenv("YTDLP_YOUTUBE_CLIENT", "").strip().lower()
+    if configured:
+        return tuple(
+            item.strip()
+            for item in configured.split(",")
+            if item.strip()
+        )
+    if os.getenv("YTDLP_BGUTIL_URL", "").strip():
+        return ("web_embedded", "mweb")
+    return ()
+
+
 def should_use_long_audio_temp(
     duration: int | float | None,
     *,
@@ -97,7 +111,7 @@ def youtube_ydl_options(base: dict | None = None) -> dict:
     proxy = os.getenv("YTDLP_PROXY", "").strip()
     runtime = os.getenv("YTDLP_JS_RUNTIME", "").strip().lower()
     bgutil_url = os.getenv("YTDLP_BGUTIL_URL", "").strip()
-    youtube_client = os.getenv("YTDLP_YOUTUBE_CLIENT", "").strip().lower()
+    youtube_clients = youtube_player_clients()
     components = {
         item.strip()
         for item in os.getenv("YTDLP_REMOTE_COMPONENTS", "").split(",")
@@ -105,7 +119,7 @@ def youtube_ydl_options(base: dict | None = None) -> dict:
     }
 
     # Preserve the old home-PC route unless this deployment explicitly opts in.
-    if not proxy and not runtime and not components and not bgutil_url and not youtube_client:
+    if not proxy and not runtime and not components and not bgutil_url and not youtube_clients:
         return options
 
     # On the VPS, let current yt-dlp choose a working YouTube client instead of
@@ -120,19 +134,14 @@ def youtube_ydl_options(base: dict | None = None) -> dict:
     if components:
         options["remote_components"] = components
     extractor_args = {}
-    if youtube_client or bgutil_url:
+    if youtube_clients or bgutil_url:
         # BgUtils currently supports WEB/MWEB/TV clients, not VISIONOS. Recent
         # yt-dlp builds may auto-select VISIONOS, making the provider reject the
         # request before a PO token can be generated. Prefer the token-free
         # embedded client for public/embeddable videos, then let MWEB cover the
         # rest. The value remains configurable as a comma-separated client list.
-        clients = [
-            item.strip()
-            for item in (youtube_client or "web_embedded,mweb").split(",")
-            if item.strip()
-        ]
         extractor_args["youtube"] = {
-            "player_client": clients,
+            "player_client": list(youtube_clients or ("web_embedded", "mweb")),
         }
     if bgutil_url:
         # The native provider may listen on IPv6 only on some Linux hosts.

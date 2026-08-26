@@ -8,12 +8,24 @@ from ytdlp_support import (
     extract_info_with_retry,
     is_transient_ytdlp_error,
     should_use_long_audio_temp,
+    youtube_player_clients,
     youtube_proxy_enabled,
     youtube_ydl_options,
 )
 
 
 class YoutubeYdlOptionsTests(unittest.TestCase):
+    def test_bgutil_default_clients_have_an_embedded_fallback(self):
+        env = {
+            "YTDLP_BGUTIL_URL": "http://127.0.0.1:4416",
+            "YTDLP_YOUTUBE_CLIENT": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            self.assertEqual(
+                youtube_player_clients(),
+                ("web_embedded", "mweb"),
+            )
+
     def test_proxy_detection_is_explicit(self):
         with patch.dict(os.environ, {"YTDLP_PROXY": ""}):
             self.assertFalse(youtube_proxy_enabled())
