@@ -8,22 +8,128 @@ HELP_IMAGE_URL = (
     "1470602546371493950/uma-musume-agnes-tachyon.gif"
 )
 EMBED_COLOR = 0x2B2D31
+HELP_PAGE_DESCRIPTION_LIMIT = 3900
 
 
-def build_embed(title: str, description: str) -> discord.Embed:
+def split_help_description(
+    description: str,
+    limit: int = HELP_PAGE_DESCRIPTION_LIMIT,
+) -> list[str]:
+    """Chia help dài thành nhiều trang mà không vượt giới hạn embed Discord."""
+    if len(description) <= limit:
+        return [description]
+
+    pages: list[str] = []
+    current = ""
+    for paragraph in description.split("\n\n"):
+        pending = paragraph
+        prefix = "\n\n" if current else ""
+        if len(current) + len(prefix) + len(pending) <= limit:
+            current += prefix + pending
+            continue
+
+        if current:
+            pages.append(current)
+            current = ""
+
+        while len(pending) > limit:
+            split_at = pending.rfind("\n", 0, limit + 1)
+            if split_at <= 0:
+                split_at = limit
+            pages.append(pending[:split_at].rstrip())
+            pending = pending[split_at:].lstrip("\n")
+        current = pending
+
+    if current:
+        pages.append(current)
+    return pages or [description[:limit]]
+
+
+def build_embed(
+    title: str,
+    description: str,
+    *,
+    page: int = 0,
+    page_count: int = 1,
+) -> discord.Embed:
     embed = discord.Embed(
         title=title,
         description=description,
         color=EMBED_COLOR,
     )
     embed.set_image(url=HELP_IMAGE_URL)
-    embed.set_footer(text="Tracen Jukebox • Chọn danh mục bên dưới để xem thêm")
+    footer = "Tracen Jukebox • Chọn danh mục bên dưới để xem thêm"
+    if page_count > 1:
+        footer += f" • Trang {page + 1}/{page_count}"
+    embed.set_footer(text=footer)
     return embed
 
 
 class HelpDropdown(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        self.current_title = ""
+        self.current_pages: list[str] = []
+        self.current_page = 0
+        self.previous_page.disabled = True
+        self.next_page.disabled = True
+
+    def _current_embed(self) -> discord.Embed:
+        return build_embed(
+            self.current_title,
+            self.current_pages[self.current_page],
+            page=self.current_page,
+            page_count=len(self.current_pages),
+        )
+
+    def _update_page_buttons(self) -> None:
+        self.previous_page.disabled = self.current_page <= 0
+        self.next_page.disabled = self.current_page >= len(self.current_pages) - 1
+
+    async def _show_embed(
+        self,
+        interaction: discord.Interaction,
+        embed: discord.Embed,
+    ) -> None:
+        self.current_title = str(embed.title or "Tracen Jukebox Help")
+        self.current_pages = split_help_description(str(embed.description or ""))
+        self.current_page = 0
+        self._update_page_buttons()
+        await interaction.response.edit_message(embed=self._current_embed(), view=self)
+
+    @discord.ui.button(
+        label="Trước",
+        emoji="◀️",
+        style=discord.ButtonStyle.secondary,
+        disabled=True,
+        row=1,
+    )
+    async def previous_page(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        if self.current_pages and self.current_page > 0:
+            self.current_page -= 1
+        self._update_page_buttons()
+        await interaction.response.edit_message(embed=self._current_embed(), view=self)
+
+    @discord.ui.button(
+        label="Sau",
+        emoji="▶️",
+        style=discord.ButtonStyle.secondary,
+        disabled=True,
+        row=1,
+    )
+    async def next_page(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        if self.current_pages and self.current_page < len(self.current_pages) - 1:
+            self.current_page += 1
+        self._update_page_buttons()
+        await interaction.response.edit_message(embed=self._current_embed(), view=self)
 
     @discord.ui.select(
         placeholder="Chọn một danh mục trợ giúp",
@@ -273,7 +379,7 @@ class HelpDropdown(discord.ui.View):
                 ),
             )
 
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self._show_embed(interaction, embed)
 
 
 class Help(commands.Cog):
