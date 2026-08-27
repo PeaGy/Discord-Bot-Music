@@ -230,14 +230,32 @@ def load_gacha_pool_sync(db_path: Path = DB_PATH) -> GachaPool:
                 "Database chưa có trang Extraction/Extraction List; hãy chờ Limbus Wiki sync xong."
             )
         names_by_kind = parse_extraction_list(str(page["text"]))
-        rows = connection.execute(
+        asset_table = connection.execute(
             """
-            SELECT p.title, p.url,
-                   COALESCE(a.thumbnail_url, a.original_url, '') AS image_url
-            FROM wiki_pages AS p
-            LEFT JOIN wiki_assets AS a ON a.pageid = p.pageid
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'wiki_assets'
             """
-        ).fetchall()
+        ).fetchone()
+        if asset_table:
+            rows = connection.execute(
+                """
+                SELECT p.title, p.url,
+                       COALESCE(a.thumbnail_url, a.original_url, '') AS image_url
+                FROM wiki_pages AS p
+                LEFT JOIN wiki_assets AS a ON a.pageid = p.pageid
+                """
+            ).fetchall()
+        else:
+            # Database được đồng bộ từ phiên bản cũ vẫn có đủ roster để quay.
+            # Artwork dùng URL MediaWiki dự phòng cho tới khi LimbusWiki tạo bảng
+            # wiki_assets trong lần khởi động kế tiếp.
+            rows = connection.execute(
+                """
+                SELECT p.title, p.url, '' AS image_url
+                FROM wiki_pages AS p
+                """
+            ).fetchall()
     finally:
         connection.close()
 
