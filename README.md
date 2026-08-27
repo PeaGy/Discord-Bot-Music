@@ -47,7 +47,7 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - Hiểu nhiều alias cộng đồng; hỗ trợ roster, Identity, E.G.O., skill/passive, status, lore và team building.
 - Full kit và từng Skill/Defense được trình bày bằng embed có màu Sin Affinity, Coin, damage type, status và resistance.
 - Artwork Identity/E.G.O được đồng bộ tăng dần theo revision wiki và dùng làm thumbnail của full kit hoặc card skill riêng. Metadata nằm cùng `limbus_knowledge.db`; lỗi CDN không làm hỏng câu trả lời và cache cũ vẫn được giữ.
-- `/gacha` mô phỏng Standard Extraction bằng đúng pool 3★, 2★, 1★ và E.G.O trong wiki đã đồng bộ. Có quay ×1/×10, lượt thứ 10 bảo đảm 2★ trở lên, ảnh tổng hợp 2×5 và nút quay lại/xem tỷ lệ; tính năng không tiêu Lunacy hay lưu inventory.
+- `/gacha` mô phỏng Standard Extraction bằng đúng pool 3★, 2★, 1★ và E.G.O trong wiki đã đồng bộ. Có quay ×1/×10, lượt thứ 10 bảo đảm 2★ trở lên, ảnh tổng hợp 2×5 và nút quay lại/xem tỷ lệ; hiện chưa có chức năng lưu inventory.
 - Tin thời sự được kiểm tra qua X chính thức, Steam News API và ảnh notice thay vì chỉ đọc thumbnail.
 - Kết quả đọc ảnh Steam được cache theo hash; câu hỏi cùng chủ đề dùng cache ngắn hạn để tránh lặp lại lượt Vision chậm.
 - Có thể theo dõi RSS của kênh YouTube ProjectMoon Official và thông báo video Limbus mới vào một kênh Discord đã chọn. Trạng thái SQLite chống gửi trùng sau restart; lần chạy đầu chỉ ghi nhận mốc hiện tại.
@@ -62,7 +62,7 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 ### 🎟️Gift Code
 
 - Kho code cho Brown Dust 2, NIKKE và Blue Archive; chủ bot thêm/xóa code bằng slash command.
-- Thành viên có thể tự nguyện lưu nickname/UID trong hồ sơ riêng. Brown Dust 2 hỗ trợ auto-redeem qua endpoint bên thứ ba BD2 Pulse; Peto không lưu mật khẩu hay token game. NIKKE và Blue Archive vẫn nhập tay vì chưa có API tương ứng.
+- Thành viên có thể lưu nickname/UID trong hồ sơ riêng. Brown Dust 2 hỗ trợ auto-redeem qua endpoint bên thứ ba BD2 Pulse; Bot không cần lưu tài khoản/mật khẩu. NIKKE và Blue Archive vẫn nhập tay vì chưa có API hỗ trợ.
 - Thành viên xem code đang hoạt động, đăng ký DM theo từng game và tùy chọn code mới, cảnh báo hết hạn hoặc bản tổng hợp Chủ nhật.
 - Code redeem thành công, được API báo `AlreadyUsed`, hoặc được đánh dấu `/coupon used` sẽ được ẩn khỏi danh sách của riêng người đó; `/coupon history` xem lại kết quả.
 - Có thể cấu hình kênh công khai và role ping riêng cho từng game; SQLite chống thông báo trùng sau restart.
@@ -201,12 +201,12 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 | Media | `/download` |
 | AI & riêng tư | `/private`, `/andanh`, `/resetmemory` |
 | Quản trị bộ nhớ | `/resetmemoryall`, `/resetmemoryglobal` |
-| Quản trị Peto | `/blacklist`, `/unblacklist` (chỉ chủ bot) |
-| Limbus Asset | `/limbusasset status`, `/limbusasset preview`; `/limbusasset sync` dành cho chủ bot |
+| Quản trị Peto | `/blacklist`, `/unblacklist` (chủ bot) |
+| Limbus Asset | `/limbusasset status`, `/limbusasset preview`; `/limbusasset sync` (chủ bot) |
 | Limbus Gacha | `/gacha [pulls]` — mô phỏng Standard Extraction ×1 hoặc ×10 |
-| Project Moon | `/projectmoon status`, `/projectmoon preview`, `/projectmoon test`, `/projectmoon check` (chỉ chủ bot) |
-| Daily Reset | `/dailyreset next`, `/dailyreset subscribe`, `/dailyreset unsubscribe`, `/dailyreset subscriptions`; `status/preview/test/check` dành cho chủ bot |
-| Gift Code | `/coupon codes`, `/coupon subscribe`, `/coupon unsubscribe`, `/coupon subscriptions`, `/coupon history`, `/coupon preferences`, `/coupon used`; `add/remove/status` dành cho chủ bot |
+| Project Moon | `/projectmoon status`, `/projectmoon preview`, `/projectmoon test`, `/projectmoon check` (chủ bot) |
+| Daily Reset | `/dailyreset next`, `/dailyreset subscribe`, `/dailyreset unsubscribe`, `/dailyreset subscriptions`; `status/preview/test/check` (chủ bot) |
+| Gift Code | `/coupon codes`, `/coupon subscribe`, `/coupon unsubscribe`, `/coupon subscriptions`, `/coupon history`, `/coupon preferences`, `/coupon used`; `add/remove/status` (chủ bot) |
 | Ảnh | `/art`, `/artecchi`, `/artnsfw`, `/wallpaper`, `/artinfo`, `/sticker`, `/emoji`, `/saucy` |
 | Kiểm tra | `/latency`, `/help` |
 
@@ -234,7 +234,7 @@ Gateway cho file vượt giới hạn Discord chạy tại `127.0.0.1:8765`; Clo
 | `limbus_knowledge.db` | Wiki RAG và cache notice chính thức |
 | `youtube_notifications.db` | Video Project Moon đã thấy và trạng thái chống thông báo trùng |
 | `daily_reset_notifications.db` | Lịch đã gửi và đăng ký Daily Reset DM của thành viên |
-| `coupon_codes.db` | Gift code, hồ sơ nickname/UID tự nguyện, lịch sử redeem, đăng ký DM và trạng thái chống gửi trùng |
+| `coupon_codes.db` | Gift code, hồ sơ nickname/UID, lịch sử redeem, đăng ký DM và trạng thái chống gửi trùng |
 | `audio_cache/` | Cache âm thanh đã xử lý |
 | `temp_downloads/` | File tải tạm thời |
 
