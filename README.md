@@ -150,7 +150,7 @@ Các tùy chọn quan trọng đã được chú thích trong `.env.example`, g�
 - `PROJECT_MOON_YOUTUBE_*` để bật thông báo video chính thức, chọn kênh Discord, role ping và bộ lọc Limbus
 - `DAILY_RESET_*` để chọn một/nhiều game hoặc `all`, giờ UTC, kênh Discord, role ping, ảnh và thời gian cảnh báo
 - `COUPON_*` để chọn database, số ngày cảnh báo, kênh và role thông báo gift code cho từng game
-- `WELCOME_*` để bật welcome embed, chọn kênh, tiêu đề và GIF
+- `WELCOME_*` để bật welcome embed, chọn kênh gửi, kênh rules/roles, tiêu đề và GIF
 - `DOWNLOAD_PUBLIC_BASE_URL`, `DOWNLOAD_GATEWAY_*`
 - `LOG_LEVEL`, `MUSIC_LIBRARY_DB`, `STUDY_FONT_PATH`
 

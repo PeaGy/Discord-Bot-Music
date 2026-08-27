@@ -33,6 +33,8 @@ def _env_int(name: str) -> int:
 
 WELCOME_ENABLED = _env_bool("WELCOME_ENABLED")
 WELCOME_CHANNEL_ID = _env_int("WELCOME_CHANNEL_ID")
+WELCOME_RULES_CHANNEL_ID = _env_int("WELCOME_RULES_CHANNEL_ID")
+WELCOME_ROLES_CHANNEL_ID = _env_int("WELCOME_ROLES_CHANNEL_ID")
 WELCOME_INCLUDE_BOTS = _env_bool("WELCOME_INCLUDE_BOTS")
 WELCOME_TITLE = os.getenv("WELCOME_TITLE", DEFAULT_WELCOME_TITLE).strip() or DEFAULT_WELCOME_TITLE
 WELCOME_GIF_FILE = Path(
@@ -44,12 +46,16 @@ WELCOME_GIF_URL = os.getenv("WELCOME_GIF_URL", "").strip()
 def build_welcome_embed(
     member: discord.Member,
     image_url: str = DEFAULT_WELCOME_GIF_URL,
+    rules_channel_id: int = WELCOME_RULES_CHANNEL_ID,
+    roles_channel_id: int = WELCOME_ROLES_CHANNEL_ID,
 ) -> discord.Embed:
-    guild = member.guild
-    member_count = guild.member_count
-    description = f"Chào mừng {member.mention} đã tham gia **{guild.name}**!"
-    if member_count:
-        description += f"\nBạn là thành viên thứ **{member_count}** của server."
+    rules_channel = f"<#{rules_channel_id}>" if rules_channel_id else "`#rules`"
+    roles_channel = f"<#{roles_channel_id}>" if roles_channel_id else "`#roles`"
+    description = (
+        f"Xin chào {member.mention}! Hãy làm quen với server bằng cách đọc "
+        f"{rules_channel} và ghé {roles_channel} để chọn hoặc cập nhật những "
+        "vai trò phù hợp với bạn."
+    )
 
     avatar_url = member.display_avatar.url
     embed = discord.Embed(
@@ -61,7 +67,6 @@ def build_welcome_embed(
     embed.set_author(name=member.display_name, icon_url=avatar_url)
     embed.set_thumbnail(url=avatar_url)
     embed.set_image(url=image_url)
-    embed.set_footer(text=f"Chào mừng đến với {guild.name}")
     return embed
 
 
