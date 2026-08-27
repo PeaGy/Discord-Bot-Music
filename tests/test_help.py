@@ -1,9 +1,25 @@
 import unittest
 
-from commands.help import HELP_PAGE_DESCRIPTION_LIMIT, split_help_description
+import discord
+
+from commands.help import (
+    HELP_PAGE_DESCRIPTION_LIMIT,
+    HelpDropdown,
+    split_help_description,
+)
 
 
 class HelpPaginationTests(unittest.TestCase):
+    def test_game_category_is_available(self):
+        view = HelpDropdown()
+        values = {
+            option.value
+            for child in view.children
+            if isinstance(child, discord.ui.Select)
+            for option in child.options
+        }
+        self.assertIn("games", values)
+
     def test_short_description_stays_on_one_page(self):
         self.assertEqual(split_help_description("hello"), ["hello"])
 

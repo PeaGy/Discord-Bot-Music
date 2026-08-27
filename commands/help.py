@@ -153,6 +153,12 @@ class HelpDropdown(discord.ui.View):
                 value="art_ai",
             ),
             discord.SelectOption(
+                label="Game",
+                description="Limbus, Daily Reset và Gift Code",
+                emoji="🎮",
+                value="games",
+            ),
+            discord.SelectOption(
                 label="Tải media",
                 description="Tải TikTok, YouTube và X",
                 emoji="📥",
@@ -265,44 +271,6 @@ class HelpDropdown(discord.ui.View):
                     "reply clip rồi hỏi `video này nói gì?` / `tóm tắt clip`. Peto "
                     "sẽ đọc các khung hình theo thời gian và phiên âm lời nói; bot "
                     "không tự phân tích mọi video được gửi trong kênh.\n\n"
-                    "Với **Limbus Company**, Peto có kho wiki.gg tự đồng bộ riêng để tra "
-                    "Identity, E.G.O., skill/passive, status, enemy, lore, Mirror Dungeon "
-                    "và team building. Câu trả lời ưu tiên dữ liệu wiki, có link nguồn và "
-                    "nói rõ khi dữ liệu chưa đủ thay vì đoán. Hỏi `full skill` hoặc "
-                    "`full kit` để nhận các card skill/passive có màu theo Sin Affinity "
-                    "cùng emoji damage type/status, không bị cắt thành một khối chữ dài. "
-                    "Hỏi riêng `S1`, `S2`, `S3` hoặc `Defense` để chỉ nhận một card. "
-                    "Identity/E.G.O có artwork wiki sẽ hiện thumbnail tự động. Dùng "
-                    "`/limbusasset preview <tên>` để xem ảnh và `/limbusasset status` "
-                    "để xem trạng thái cache.\n\n"
-                    "Dùng `/gacha [pulls]` để mô phỏng **Standard Extraction** ×1/×10 "
-                    "với roster và artwork đã đồng bộ. Lượt thứ 10 bảo đảm 2★ trở lên; "
-                    "đây chỉ là mô phỏng, không tiêu Lunacy và không lưu inventory.\n\n"
-                    "Khi được chủ bot cấu hình, Peto còn theo dõi kênh YouTube chính thức "
-                    "của Project Moon và đăng video Limbus mới mà không gửi trùng sau khi "
-                    "restart. Nhóm lệnh chủ bot: `/projectmoon status`, "
-                    "`/projectmoon preview`, `/projectmoon test` và "
-                    "`/projectmoon check`.\n\n"
-                    "**Daily Reset game**\n"
-                    "`/dailyreset next <game>` — Xem lần reset tiếp theo theo giờ của bạn\n"
-                    "`/dailyreset subscribe <game>` — Nhận cảnh báo/reset qua DM\n"
-                    "`/dailyreset unsubscribe <game>` — Tắt DM của game\n"
-                    "`/dailyreset subscriptions` — Xem các game đã đăng ký\n"
-                    "Thông báo reset công khai có checklist tiếng Việt và nút đăng ký DM; "
-                    "hiện hỗ trợ NIKKE, Blue Archive, Trickcal, Chaos Zero Nightmare và "
-                    "Limbus Company, Brown Dust 2.\n\n"
-                    "**Gift Code game**\n"
-                    "`/coupon codes <game>` — Xem code chưa dùng còn hoạt động\n"
-                    "`/coupon subscribe <game> [account_id] [auto_redeem]` — Bật DM; "
-                    "Brown Dust 2 có thể tự nhập code bằng nickname\n"
-                    "`/coupon unsubscribe <game>` — Xóa đăng ký và hồ sơ game đó\n"
-                    "`/coupon subscriptions` · `/coupon history` — Xem chế độ/hồ sơ và kết quả redeem\n"
-                    "`/coupon preferences` — Chọn code mới, sắp hết hạn hoặc digest tuần\n"
-                    "`/coupon used <game> <code>` — Ẩn code bạn đã nhập\n"
-                    "Chủ bot dùng `/coupon add`, `/coupon remove` và `/coupon status`. "
-                    "Hệ thống hỗ trợ Brown Dust 2, NIKKE và Blue Archive. UID/nickname "
-                    "là tùy chọn riêng tư; Peto không lưu mật khẩu/token game. Auto-redeem "
-                    "hiện chỉ có BD2 và dùng endpoint bên thứ ba BD2 Pulse.\n\n"
                     "Peto hiểu tối đa 8 tin trong chuỗi reply. Bạn có thể hỏi "
                     "`mọi người đang bàn gì?` để tóm tắt tối đa 40 tin gần nhất "
                     "trong đúng kênh hiện tại. Câu trả lời dài được tự chia tối đa "
@@ -335,6 +303,53 @@ class HelpDropdown(discord.ui.View):
                     "`/resetmemoryall` — Admin xóa lịch sử chat trong server hiện tại\n"
                     "`/resetmemoryglobal` — Chủ bot xóa toàn bộ trí nhớ AI\n"
                     "`/blacklist` · `/unblacklist` — Chủ bot chặn hoặc mở lại quyền chat với Peto"
+                ),
+            )
+
+        elif value == "games":
+            embed = build_embed(
+                "🎮 Tiện ích game",
+                (
+                    "**Limbus Company Wiki & Kit**\n"
+                    "Peto có kho wiki.gg tự đồng bộ riêng để tra Identity, E.G.O., "
+                    "skill/passive, status, enemy, lore, Mirror Dungeon và team building. "
+                    "Câu trả lời ưu tiên dữ liệu wiki, có link nguồn và nói rõ khi dữ liệu "
+                    "chưa đủ thay vì đoán.\n\n"
+                    "Hỏi `full skill` hoặc `full kit` để nhận các card skill/passive có màu "
+                    "theo Sin Affinity cùng emoji damage type/status. Hỏi riêng `S1`, `S2`, "
+                    "`S3` hoặc `Defense` để chỉ nhận một card. Identity/E.G.O có artwork wiki "
+                    "sẽ hiện thumbnail tự động.\n"
+                    "`/limbusasset preview <tên>` — Xem artwork Identity/E.G.O\n"
+                    "`/limbusasset status` — Xem trạng thái kho artwork\n\n"
+                    "**Limbus Gacha**\n"
+                    "`/gacha [pulls]` — Mô phỏng Standard Extraction ×1/×10 bằng roster "
+                    "và artwork đã đồng bộ. Lượt thứ 10 bảo đảm 2★ trở lên; không tiêu "
+                    "Lunacy và không lưu inventory.\n\n"
+                    "**Project Moon YouTube**\n"
+                    "Khi được chủ bot cấu hình, Peto theo dõi kênh YouTube chính thức của "
+                    "Project Moon và đăng video Limbus mới mà không gửi trùng sau khi restart.\n"
+                    "Chủ bot: `/projectmoon status`, `/projectmoon preview`, "
+                    "`/projectmoon test` và `/projectmoon check`.\n\n"
+                    "**Daily Reset**\n"
+                    "`/dailyreset next <game>` — Xem lần reset tiếp theo theo giờ của bạn\n"
+                    "`/dailyreset subscribe <game>` — Nhận cảnh báo/reset qua DM\n"
+                    "`/dailyreset unsubscribe <game>` — Tắt DM của game\n"
+                    "`/dailyreset subscriptions` — Xem các game đã đăng ký\n"
+                    "Thông báo công khai có checklist tiếng Việt và nút đăng ký DM. Hiện "
+                    "hỗ trợ NIKKE, Blue Archive, Trickcal, Chaos Zero Nightmare, Limbus "
+                    "Company và Brown Dust 2.\n\n"
+                    "**Gift Code**\n"
+                    "`/coupon codes <game>` — Xem code chưa dùng còn hoạt động\n"
+                    "`/coupon subscribe <game> [account_id] [auto_redeem]` — Bật DM; "
+                    "Brown Dust 2 có thể tự nhập code bằng nickname\n"
+                    "`/coupon unsubscribe <game>` — Xóa đăng ký và hồ sơ game đó\n"
+                    "`/coupon subscriptions` · `/coupon history` — Xem hồ sơ và kết quả redeem\n"
+                    "`/coupon preferences` — Chọn code mới, sắp hết hạn hoặc digest tuần\n"
+                    "`/coupon used <game> <code>` — Ẩn code bạn đã nhập\n"
+                    "Chủ bot dùng `/coupon add`, `/coupon remove` và `/coupon status`. Hệ "
+                    "thống hỗ trợ Brown Dust 2, NIKKE và Blue Archive. UID/nickname là tùy "
+                    "chọn riêng tư; Peto không lưu mật khẩu/token game. Auto-redeem hiện "
+                    "chỉ có BD2 và dùng endpoint bên thứ ba BD2 Pulse."
                 ),
             )
 
@@ -400,6 +415,7 @@ class Help(commands.Cog):
                 "📢 **Giới thiệu** — Tổng quan tính năng và công nghệ\n"
                 "🎵 **Lệnh âm nhạc** — Phát nhạc, hàng đợi và voice\n"
                 "🎨 **Art & AI** — Danbooru, Peto và bộ nhớ hội thoại\n"
+                "🎮 **Game** — Limbus, Daily Reset và Gift Code\n"
                 "📥 **Tải media** — TikTok video/ảnh, YouTube MP3/MP4 và X video/ảnh/GIF\n\n"
                 "Chọn một danh mục trong menu bên dưới để xem chi tiết."
             ),
