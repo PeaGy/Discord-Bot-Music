@@ -265,6 +265,7 @@ Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không 
 - Ryuz-V
 - Eva Music Bot
 - Lara Bot
+- rapi-bot - mascarell
   
 ## 📄 License
 
