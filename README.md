@@ -58,6 +58,14 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - Thành viên tự đăng ký/tắt DM bằng `/dailyreset subscribe`, `/dailyreset unsubscribe` hoặc nút dưới card reset.
 - SQLite chống gửi trùng sau restart và có cửa sổ gửi bù ngắn nếu bot vừa mất kết nối đúng giờ reset.
 
+### 🎟️Gift Code
+
+- Kho code cho Brown Dust 2, NIKKE và Blue Archive; chủ bot thêm/xóa code bằng slash command.
+- Thành viên có thể tự nguyện lưu nickname/UID trong hồ sơ riêng. Brown Dust 2 hỗ trợ auto-redeem qua endpoint bên thứ ba BD2 Pulse; Peto không lưu mật khẩu hay token game. NIKKE và Blue Archive vẫn nhập tay vì chưa có API tương ứng.
+- Thành viên xem code đang hoạt động, đăng ký DM theo từng game và tùy chọn code mới, cảnh báo hết hạn hoặc bản tổng hợp Chủ nhật.
+- Code redeem thành công, được API báo `AlreadyUsed`, hoặc được đánh dấu `/coupon used` sẽ được ẩn khỏi danh sách của riêng người đó; `/coupon history` xem lại kết quả.
+- Có thể cấu hình kênh công khai và role ping riêng cho từng game; SQLite chống thông báo trùng sau restart.
+
 ### 🖼️Danbooru
 
 - `/art`, `/wallpaper` và `/artinfo` cho nội dung SFW.
@@ -140,6 +148,7 @@ Các tùy chọn quan trọng đã được chú thích trong `.env.example`, g�
 - `LIMBUS_WIKI_*`, `LIMBUS_ASSET_THUMB_SIZE`, `LIMBUS_OFFICIAL_X_HANDLES`, `LIMBUS_NEWS_ANSWER_CACHE_MINUTES`
 - `PROJECT_MOON_YOUTUBE_*` để bật thông báo video chính thức, chọn kênh Discord, role ping và bộ lọc Limbus
 - `DAILY_RESET_*` để chọn một/nhiều game hoặc `all`, giờ UTC, kênh Discord, role ping, ảnh và thời gian cảnh báo
+- `COUPON_*` để chọn database, số ngày cảnh báo, kênh và role thông báo gift code cho từng game
 - `DOWNLOAD_PUBLIC_BASE_URL`, `DOWNLOAD_GATEWAY_*`
 - `LOG_LEVEL`, `MUSIC_LIBRARY_DB`, `STUDY_FONT_PATH`
 
@@ -192,6 +201,7 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 | Limbus Asset | `/limbusasset status`, `/limbusasset preview`; `/limbusasset sync` dành cho chủ bot |
 | Project Moon | `/projectmoon status`, `/projectmoon preview`, `/projectmoon test`, `/projectmoon check` (chỉ chủ bot) |
 | Daily Reset | `/dailyreset next`, `/dailyreset subscribe`, `/dailyreset unsubscribe`, `/dailyreset subscriptions`; `status/preview/test/check` dành cho chủ bot |
+| Gift Code | `/coupon codes`, `/coupon subscribe`, `/coupon unsubscribe`, `/coupon subscriptions`, `/coupon history`, `/coupon preferences`, `/coupon used`; `add/remove/status` dành cho chủ bot |
 | Ảnh | `/art`, `/artecchi`, `/artnsfw`, `/wallpaper`, `/artinfo`, `/sticker`, `/emoji`, `/saucy` |
 | Kiểm tra | `/latency`, `/help` |
 
@@ -219,6 +229,7 @@ Gateway cho file vượt giới hạn Discord chạy tại `127.0.0.1:8765`; Clo
 | `limbus_knowledge.db` | Wiki RAG và cache notice chính thức |
 | `youtube_notifications.db` | Video Project Moon đã thấy và trạng thái chống thông báo trùng |
 | `daily_reset_notifications.db` | Lịch đã gửi và đăng ký Daily Reset DM của thành viên |
+| `coupon_codes.db` | Gift code, hồ sơ nickname/UID tự nguyện, lịch sử redeem, đăng ký DM và trạng thái chống gửi trùng |
 | `audio_cache/` | Cache âm thanh đã xử lý |
 | `temp_downloads/` | File tải tạm thời |
 
@@ -242,7 +253,7 @@ Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không 
 
 - Không chia sẻ Discord token, API key, cookie, `.xai_tokens.json` hoặc database.
 - Nếu bí mật từng xuất hiện công khai, hãy rotate/reset ngay tại dịch vụ tương ứng.
-- Sao lưu `bot_memory.db`, `music_library.db` và `limbus_knowledge.db` trước khi chuyển máy.
+- Sao lưu `bot_memory.db`, `music_library.db`, `limbus_knowledge.db` và `coupon_codes.db` trước khi chuyển máy.
 
 ## 🤝Ghi nhận
 
