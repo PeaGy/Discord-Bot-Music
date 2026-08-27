@@ -423,7 +423,7 @@ def build_rates_embed(pool: GachaPool | None = None) -> discord.Embed:
             inline=False,
         )
     embed.set_footer(
-        text="Lượt 10 bảo đảm 2★ trở lên • Mô phỏng không tiêu Lunacy và không lưu sở hữu"
+        text="Lượt 10 bảo đảm 2★ trở lên • Không lưu sở hữu"
     )
     return embed
 
@@ -644,7 +644,7 @@ class LimbusGacha(commands.Cog):
             if entry.image_url:
                 embed.set_image(url=entry.image_url)
             embed.set_footer(
-                text="Peto Gacha • Mô phỏng, không tiêu Lunacy • Nguồn roster: Limbus Company Wiki"
+                text="Peto Gacha • Mô phỏng • Nguồn: Limbus Company Wiki"
             )
             return GachaPayload(embed, None, pulls)
 
@@ -674,13 +674,13 @@ class LimbusGacha(commands.Cog):
         if file:
             embed.set_image(url=f"attachment://{file.filename}")
         embed.set_footer(
-            text="Lượt 10 bảo đảm 2★+ • Mô phỏng, không tiêu Lunacy • Nguồn roster: Limbus Company Wiki"
+            text="Lượt 10 bảo đảm 2★+ • Mô phỏng • Nguồn: Limbus Company Wiki"
         )
         return GachaPayload(embed, file, pulls)
 
     @app_commands.command(
         name="gacha",
-        description="Mô phỏng Standard Extraction của Limbus Company",
+        description="Standard Extraction của Limbus Company",
     )
     @app_commands.describe(pulls="Số lượt quay; mặc định là 10")
     @app_commands.choices(
