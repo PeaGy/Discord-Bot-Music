@@ -177,19 +177,18 @@ class HelpDropdown(discord.ui.View):
             embed = build_embed(
                 "📢 Giới thiệu Tracen Jukebox",
                 (
-                    "Bot âm nhạc, hình ảnh và trò chuyện AI dành cho học viện Tracen.\n\n"
+                    "Bot âm nhạc, hình ảnh và trò chuyện AI dành cho server của bạn.\n\n"
                     "✨ **Tính năng nổi bật**\n"
                     "💾 **Intelligent Cache:** Lưu nhạc ngắn trên ổ đĩa và tải trước bài kế tiếp.\n"
                     "🎚️ **Loudness Normalization:** Chuẩn hóa âm lượng để các bài nghe đồng đều hơn.\n"
                     "📡 **Smart Streaming:** Stream trực tiếp radio và bài dài hơn 10 phút.\n"
                     "🎵 **Multi-Platform:** Hỗ trợ YouTube, Spotify track và SoundCloud.\n"
                     "🏫 **Multi-Server:** Mỗi server có queue, lịch sử và chế độ phát riêng.\n"
-                    "❤️ **Thư viện cá nhân:** Lưu favorites, playlist và lịch sử nghe bằng SQLite.\n"
-                    "🤖 **Peto AI:** Trò chuyện bằng Grok, xem ảnh, tìm web qua Tavily và ghi nhớ bằng SQLite.\n"
+                    "❤️ **Thư viện cá nhân:** Lưu favorites, playlist và lịch sử nghe.\n"
+                    "🤖 **Peto AI:** Trò chuyện, xem ảnh, xem video, tìm web và ghi nhớ những gì bạn nói.\n"
                     "📚 **Study Mode:** Gợi ý, chép đề và xuất lời giải PNG.\n"
                     "🎨 **Danbooru:** Tìm anime art, wallpaper và xem thông tin post.\n\n"
-                    "👋 **Welcome:** Chào thành viên mới bằng embed, avatar và GIF; "
-                    "chủ bot có thể xem trước bằng `/welcome preview`.\n\n"
+                    "👋 **Welcome:** Chào thành viên mới; \n\n"
                     "Original code by Eva Music Bot, inspired by Lara Bot. "
                     "Thanks to Ryuz-V.\n\n"
                     "Created by **PeaGy**"
@@ -239,8 +238,6 @@ class HelpDropdown(discord.ui.View):
                     "không áp dụng cho radio hoặc file vượt giới hạn upload.\n\n"
                     "❤️ **Nút Yêu thích:** Thêm hoặc xóa bài hiện tại khỏi favorites của bạn.\n"
                     "➕ **Nút Playlist:** Chọn playlist và lưu bài đang phát bằng menu riêng tư.\n\n"
-                    "🧩 **Music Panel V2:** Ảnh bìa, thông tin bài, tiến trình và hai hàng nút "
-                    "được sắp xếp bằng giao diện Components V2 của Discord.\n\n"
                     "-# Nút Loop và lệnh /loop cùng chuyển theo chu kỳ Off → Track → Queue."
                 ),
             )
@@ -264,8 +261,8 @@ class HelpDropdown(discord.ui.View):
                     "Mention **@Peto** hoặc reply tin nhắn của bot để trò chuyện, "
                     "không cần slash command. Dùng `/private` để Peto mở DM; trong "
                     "DM bạn chỉ cần nhắn bình thường, không cần mention.\n\n"
-                    "Peto có thể xem ảnh và video ngắn đính kèm, tìm thông tin mới trên web qua Tavily, "
-                    "phát nhạc, bỏ qua bài và duy trì trí nhớ hội thoại bằng SQLite. "
+                    "Peto có thể xem ảnh và video ngắn đính kèm, tìm thông tin mới trên web, "
+                    "phát nhạc, bỏ qua bài và duy trì trí nhớ hội thoại. "
                     "Trí nhớ dài hạn của mỗi người được đồng bộ giữa DM và mọi server, "
                     "nhưng không chia sẻ cho người khác. Bạn cũng có thể nhờ Peto tìm "
                     "fanart SFW trực tiếp từ Danbooru.\n\n"
@@ -412,7 +409,7 @@ class Help(commands.Cog):
             "🍐 Tracen Jukebox Help Panel",
             (
                 "Tracen Jukebox kết hợp phát nhạc chất lượng cao, radio internet, "
-                "anime art và trợ lý AI Peto sử dụng Grok của xAI.\n\n"
+                "anime art và trợ lý AI Peto sẵn sàng trò chuyện cùng bạn.\n\n"
                 "**Danh mục trợ giúp**\n"
                 "📢 **Giới thiệu** — Tổng quan tính năng và công nghệ\n"
                 "🎵 **Lệnh âm nhạc** — Phát nhạc, hàng đợi và voice\n"
