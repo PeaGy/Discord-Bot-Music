@@ -25,6 +25,15 @@ class LimbusAssetTests(unittest.TestCase):
             candidates,
         )
 
+    def test_file_candidates_replace_double_colon_with_a_space(self):
+        candidates = _asset_file_candidates(
+            "N Corp. E.G.O::Contempt, Awe Ryōshū", kind="identity"
+        )
+        self.assertIn(
+            "N_Corp._E.G.O_Contempt,_Awe_Ryōshū_Profile.png",
+            candidates,
+        )
+
     def test_imageinfo_prefers_profile_before_icon(self):
         page = WikiPage(42, "Test Identity Yi Sang", "https://example.test", 9, "", "")
         candidates = _asset_file_candidates(page.title)

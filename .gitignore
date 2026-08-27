@@ -15,6 +15,7 @@ ENV/
 .txt
 cookies.txt
 audio_cache
+limbus_gacha_art_cache/
 temp_downloads/
 *.env
 .xai_tokens.json

@@ -47,6 +47,7 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - Hiểu nhiều alias cộng đồng; hỗ trợ roster, Identity, E.G.O., skill/passive, status, lore và team building.
 - Full kit và từng Skill/Defense được trình bày bằng embed có màu Sin Affinity, Coin, damage type, status và resistance.
 - Artwork Identity/E.G.O được đồng bộ tăng dần theo revision wiki và dùng làm thumbnail của full kit hoặc card skill riêng. Metadata nằm cùng `limbus_knowledge.db`; lỗi CDN không làm hỏng câu trả lời và cache cũ vẫn được giữ.
+- `/gacha` mô phỏng Standard Extraction bằng đúng pool 3★, 2★, 1★ và E.G.O trong wiki đã đồng bộ. Có quay ×1/×10, lượt thứ 10 bảo đảm 2★ trở lên, ảnh tổng hợp 2×5 và nút quay lại/xem tỷ lệ; tính năng không tiêu Lunacy hay lưu inventory.
 - Tin thời sự được kiểm tra qua X chính thức, Steam News API và ảnh notice thay vì chỉ đọc thumbnail.
 - Kết quả đọc ảnh Steam được cache theo hash; câu hỏi cùng chủ đề dùng cache ngắn hạn để tránh lặp lại lượt Vision chậm.
 - Có thể theo dõi RSS của kênh YouTube ProjectMoon Official và thông báo video Limbus mới vào một kênh Discord đã chọn. Trạng thái SQLite chống gửi trùng sau restart; lần chạy đầu chỉ ghi nhận mốc hiện tại.
@@ -145,7 +146,7 @@ Các tùy chọn quan trọng đã được chú thích trong `.env.example`, g�
 
 - `XAI_API_KEY`, `XAI_BASE_URL`, `XAI_IMAGE_DETAIL`, `XAI_MAX_IMAGES`
 - `PIXIV_PHPSESSID`, `PIXIV_UGOIRA_*` để bật custom embed và điều chỉnh Ugoira Pixiv
-- `LIMBUS_WIKI_*`, `LIMBUS_ASSET_THUMB_SIZE`, `LIMBUS_OFFICIAL_X_HANDLES`, `LIMBUS_NEWS_ANSWER_CACHE_MINUTES`
+- `LIMBUS_WIKI_*`, `LIMBUS_ASSET_THUMB_SIZE`, `LIMBUS_OFFICIAL_X_HANDLES`, `LIMBUS_NEWS_ANSWER_CACHE_MINUTES`, `LIMBUS_GACHA_*`
 - `PROJECT_MOON_YOUTUBE_*` để bật thông báo video chính thức, chọn kênh Discord, role ping và bộ lọc Limbus
 - `DAILY_RESET_*` để chọn một/nhiều game hoặc `all`, giờ UTC, kênh Discord, role ping, ảnh và thời gian cảnh báo
 - `COUPON_*` để chọn database, số ngày cảnh báo, kênh và role thông báo gift code cho từng game
@@ -199,6 +200,7 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 | Quản trị bộ nhớ | `/resetmemoryall`, `/resetmemoryglobal` |
 | Quản trị Peto | `/blacklist`, `/unblacklist` (chỉ chủ bot) |
 | Limbus Asset | `/limbusasset status`, `/limbusasset preview`; `/limbusasset sync` dành cho chủ bot |
+| Limbus Gacha | `/gacha [pulls]` — mô phỏng Standard Extraction ×1 hoặc ×10 |
 | Project Moon | `/projectmoon status`, `/projectmoon preview`, `/projectmoon test`, `/projectmoon check` (chỉ chủ bot) |
 | Daily Reset | `/dailyreset next`, `/dailyreset subscribe`, `/dailyreset unsubscribe`, `/dailyreset subscriptions`; `status/preview/test/check` dành cho chủ bot |
 | Gift Code | `/coupon codes`, `/coupon subscribe`, `/coupon unsubscribe`, `/coupon subscriptions`, `/coupon history`, `/coupon preferences`, `/coupon used`; `add/remove/status` dành cho chủ bot |

@@ -390,6 +390,9 @@ def _asset_file_candidates(title: str, *, kind: str = "") -> list[str]:
     """Build the canonical file names used by IDPage/EGPage on wiki.gg."""
     exact = re.sub(r"\s+", "_", str(title or "").strip())
     no_colon = exact.replace(":", "")
+    colon_as_space = re.sub(
+        r"\s+", "_", re.sub(r":+", " ", str(title or "")).strip()
+    )
     candidates: list[str] = []
     if kind == "identity":
         suffixes = ("_Profile.png",)
@@ -402,7 +405,7 @@ def _asset_file_candidates(title: str, *, kind: str = "") -> list[str]:
             "_Full_Uptied.png",
             "_Full.png",
         )
-    for base in (exact, no_colon):
+    for base in (exact, no_colon, colon_as_space):
         for suffix in suffixes:
             candidate = f"{base}{suffix}"
             if candidate not in candidates:
