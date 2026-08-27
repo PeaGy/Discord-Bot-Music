@@ -188,6 +188,8 @@ class HelpDropdown(discord.ui.View):
                     "🤖 **Peto AI:** Trò chuyện bằng Grok, xem ảnh, tìm web qua Tavily và ghi nhớ bằng SQLite.\n"
                     "📚 **Study Mode:** Gợi ý, chép đề và xuất lời giải PNG.\n"
                     "🎨 **Danbooru:** Tìm anime art, wallpaper và xem thông tin post.\n\n"
+                    "👋 **Welcome:** Chào thành viên mới bằng embed, avatar và GIF; "
+                    "chủ bot có thể xem trước bằng `/welcome preview`.\n\n"
                     "Original code by Eva Music Bot, inspired by Lara Bot. "
                     "Thanks to Ryuz-V.\n\n"
                     "Created by **PeaGy**"

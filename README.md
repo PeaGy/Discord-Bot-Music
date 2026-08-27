@@ -150,6 +150,7 @@ Các tùy chọn quan trọng đã được chú thích trong `.env.example`, g�
 - `PROJECT_MOON_YOUTUBE_*` để bật thông báo video chính thức, chọn kênh Discord, role ping và bộ lọc Limbus
 - `DAILY_RESET_*` để chọn một/nhiều game hoặc `all`, giờ UTC, kênh Discord, role ping, ảnh và thời gian cảnh báo
 - `COUPON_*` để chọn database, số ngày cảnh báo, kênh và role thông báo gift code cho từng game
+- `WELCOME_*` để bật welcome embed, chọn kênh, tiêu đề và GIF
 - `DOWNLOAD_PUBLIC_BASE_URL`, `DOWNLOAD_GATEWAY_*`
 - `LOG_LEVEL`, `MUSIC_LIBRARY_DB`, `STUDY_FONT_PATH`
 
@@ -167,6 +168,8 @@ Token được lưu cục bộ và tự refresh. Nếu không dùng OAuth, đặ
 ### 5. Cấu hình Discord
 
 Trong Discord Developer Portal:
+
+- Nếu bật `WELCOME_ENABLED=true`, bật **Server Members Intent** tại trang **Bot**.
 
 1. Mời bot với scope `bot` và `applications.commands`.
 2. Cứ cấp quyền mạnh nhất cho bot. 

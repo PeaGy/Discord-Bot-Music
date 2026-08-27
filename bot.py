@@ -20,6 +20,12 @@ class MusicBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.voice_states = True
+        intents.members = os.getenv("WELCOME_ENABLED", "false").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
 
         super().__init__(
             command_prefix="!",
