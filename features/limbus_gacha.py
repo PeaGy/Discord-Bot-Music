@@ -88,10 +88,14 @@ RARITY_SHORT = {
 }
 RARITY_COLOR = {
     KIND_ID1: (112, 119, 126),
-    KIND_ID2: (224, 168, 55),
-    KIND_ID3: (223, 64, 83),
-    KIND_EGO: (143, 92, 224),
+    KIND_ID2: (215, 54, 62),
+    KIND_ID3: (241, 190, 46),
+    # Discord chỉ cho embed một màu accent; cam đỏ là màu trung gian của
+    # khung vàng–đỏ dùng cho E.G.O trong collage.
+    KIND_EGO: (231, 105, 38),
 }
+EGO_FRAME_GOLD = (241, 190, 46)
+EGO_FRAME_RED = (202, 45, 50)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -366,9 +370,21 @@ def render_gacha_collage(
         x = margin + column * (card_w + gap)
         y = margin + row * (card_h + gap)
         color = RARITY_COLOR[entry.kind]
+        card_box = (x, y, x + card_w, y + card_h)
         draw.rounded_rectangle(
-            (x, y, x + card_w, y + card_h), radius=12, fill=(35, 38, 48), outline=color, width=5
+            card_box,
+            radius=12,
+            fill=(35, 38, 48),
+            outline=EGO_FRAME_GOLD if entry.kind == KIND_EGO else color,
+            width=5,
         )
+        if entry.kind == KIND_EGO:
+            draw.rounded_rectangle(
+                (x + 4, y + 4, x + card_w - 4, y + card_h - 4),
+                radius=9,
+                outline=EGO_FRAME_RED,
+                width=3,
+            )
         art_box = (x + 7, y + 7, x + card_w - 7, y + card_h - 48)
         raw = image_data.get(entry.image_url, b"")
         art: Image.Image | None = None

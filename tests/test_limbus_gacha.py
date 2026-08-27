@@ -11,9 +11,12 @@ from features.limbus_gacha import (
     KIND_ID1,
     KIND_ID2,
     KIND_ID3,
+    EGO_FRAME_GOLD,
+    EGO_FRAME_RED,
     GachaEntry,
     GachaPool,
     LimbusGacha,
+    RARITY_COLOR,
     _fallback_asset_url,
     _image_is_decodable,
     _prepare_art_cache_dir,
@@ -60,6 +63,16 @@ class FixedRandom:
 
 
 class GachaParsingTests(unittest.TestCase):
+    def test_rarity_colors_follow_limbus_extraction(self):
+        red = RARITY_COLOR[KIND_ID2]
+        gold = RARITY_COLOR[KIND_ID3]
+
+        self.assertGreater(red[0], red[1] * 2)
+        self.assertGreater(gold[0], 200)
+        self.assertGreater(gold[1], 150)
+        self.assertEqual(EGO_FRAME_GOLD, gold)
+        self.assertGreater(EGO_FRAME_RED[0], EGO_FRAME_RED[1] * 3)
+
     def test_extraction_list_is_split_into_four_pools(self):
         pools = parse_extraction_list(EXTRACTION_TEXT)
         self.assertEqual(pools[KIND_ID3], ["Three A", "Three B"])
