@@ -13,13 +13,22 @@ from features.limbus_gacha import (
     KIND_ID3,
     EGO_FRAME_GOLD,
     EGO_FRAME_RED,
+    EGO_VISIBLE_SIZE,
+    FRAME_ASSET_NAMES,
+    GACHA_CANVAS_SIZE,
+    GACHA_COLUMN_CENTERS,
+    GACHA_ROW_CENTERS,
+    GACHA_UI_DIR,
+    IDENTITY_VISIBLE_SIZE,
     GachaEntry,
     GachaPool,
     LimbusGacha,
     RARITY_COLOR,
     _fallback_asset_url,
     _image_is_decodable,
+    _prepared_gacha_frame,
     _prepare_art_cache_dir,
+    _visible_alpha_bbox,
     load_gacha_pool_sync,
     parse_extraction_list,
     pull_entries,
@@ -142,7 +151,41 @@ class GachaParsingTests(unittest.TestCase):
 
 
 class GachaCollageTests(unittest.TestCase):
-    def test_collage_is_a_two_by_five_png(self):
+    def test_game_ui_assets_are_packaged_with_the_bot(self):
+        self.assertTrue((GACHA_UI_DIR / "background.png").is_file())
+        for filename in FRAME_ASSET_NAMES.values():
+            path = GACHA_UI_DIR / filename
+            self.assertTrue(path.is_file(), filename)
+            with Image.open(path) as asset:
+                self.assertEqual(asset.mode, "RGBA")
+                self.assertIn(0, asset.getchannel("A").getextrema())
+
+    def test_visible_frame_sizes_are_normalized_like_the_game(self):
+        for kind in (KIND_ID1, KIND_ID2, KIND_ID3):
+            frame, artwork_mask = _prepared_gacha_frame(kind)
+            left, top, right, bottom = _visible_alpha_bbox(frame)
+            self.assertAlmostEqual(right - left, IDENTITY_VISIBLE_SIZE[0], delta=2)
+            self.assertAlmostEqual(bottom - top, IDENTITY_VISIBLE_SIZE[1], delta=2)
+            art_left, art_top, art_right, art_bottom = artwork_mask.getbbox()
+            self.assertGreaterEqual(art_right - art_left, 180)
+            self.assertGreaterEqual(art_bottom - art_top, 110)
+
+        ego_frame, ego_mask = _prepared_gacha_frame(KIND_EGO)
+        left, top, right, bottom = _visible_alpha_bbox(ego_frame)
+        self.assertAlmostEqual(right - left, EGO_VISIBLE_SIZE[0], delta=2)
+        self.assertAlmostEqual(bottom - top, EGO_VISIBLE_SIZE[1], delta=2)
+        self.assertGreater(EGO_VISIBLE_SIZE[1], IDENTITY_VISIBLE_SIZE[1])
+        ego_left, ego_top, ego_right, ego_bottom = ego_mask.getbbox()
+        self.assertLess(ego_right - ego_left, EGO_VISIBLE_SIZE[0] - 20)
+        self.assertLess(ego_bottom - ego_top, EGO_VISIBLE_SIZE[1] - 20)
+
+    def test_larger_slots_still_leave_space_between_results(self):
+        column_gap = GACHA_COLUMN_CENTERS[1] - GACHA_COLUMN_CENTERS[0]
+        row_gap = GACHA_ROW_CENTERS[1] - GACHA_ROW_CENTERS[0]
+        self.assertGreater(column_gap, IDENTITY_VISIBLE_SIZE[0])
+        self.assertGreater(row_gap, EGO_VISIBLE_SIZE[1])
+
+    def test_collage_is_a_limbus_style_two_by_five_png(self):
         source = Image.new("RGB", (80, 120), (200, 30, 80))
         raw = io.BytesIO()
         source.save(raw, format="PNG")
@@ -160,9 +203,14 @@ class GachaCollageTests(unittest.TestCase):
         )
         with Image.open(io.BytesIO(result)) as rendered:
             self.assertEqual(rendered.format, "PNG")
-            self.assertGreater(rendered.width, rendered.height)
-            self.assertEqual(rendered.width, 1082)
-            self.assertEqual(rendered.height, 546)
+            self.assertEqual(rendered.size, GACHA_CANVAS_SIZE)
+            rgb = rendered.convert("RGB")
+            for y in GACHA_ROW_CENTERS:
+                for x in GACHA_COLUMN_CENTERS:
+                    red, green, blue = rgb.getpixel((x, y))
+                    self.assertGreater(red, 150)
+                    self.assertLess(green, 80)
+                    self.assertGreater(blue, 50)
 
 
 if __name__ == "__main__":

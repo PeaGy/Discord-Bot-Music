@@ -18,6 +18,7 @@ import sqlite3
 import time
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Mapping, Sequence
 from urllib.parse import quote
@@ -26,7 +27,14 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+from PIL import (
+    Image,
+    ImageChops,
+    ImageDraw,
+    ImageFilter,
+    ImageOps,
+    UnidentifiedImageError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +57,15 @@ IMAGE_TIMEOUT_SECONDS = _env_int("LIMBUS_GACHA_IMAGE_TIMEOUT_SECONDS", 45, 15)
 ART_CACHE_DIR = Path(
     os.getenv("LIMBUS_GACHA_ART_CACHE_DIR", "limbus_gacha_art_cache")
 ).resolve()
+GACHA_UI_DIR = Path(__file__).resolve().parent.parent / "assets" / "limbus_gacha"
+GACHA_CANVAS_SIZE = (1280, 720)
+GACHA_COLUMN_CENTERS = (180, 410, 640, 870, 1100)
+GACHA_ROW_CENTERS = (250, 470)
+IDENTITY_VISIBLE_SIZE = (225, 150)
+EGO_VISIBLE_SIZE = (198, 198)
+FRAME_ALPHA_THRESHOLD = 12
+FRAME_RENDER_PADDING = 12
+IDENTITY_ART_MASK_EXPANSION = 21
 
 KIND_EGO = "ego"
 KIND_ID3 = "id3"
@@ -80,12 +97,6 @@ RARITY_TEXT = {
     KIND_ID3: "3★ Identity",
     KIND_EGO: "E.G.O",
 }
-RARITY_SHORT = {
-    KIND_ID1: "1*",
-    KIND_ID2: "2*",
-    KIND_ID3: "3*",
-    KIND_EGO: "E.G.O",
-}
 RARITY_COLOR = {
     KIND_ID1: (112, 119, 126),
     KIND_ID2: (215, 54, 62),
@@ -96,6 +107,18 @@ RARITY_COLOR = {
 }
 EGO_FRAME_GOLD = (241, 190, 46)
 EGO_FRAME_RED = (202, 45, 50)
+FRAME_ASSET_NAMES = {
+    KIND_ID1: "frame_id1.png",
+    KIND_ID2: "frame_id2.png",
+    KIND_ID3: "frame_id3.png",
+    KIND_EGO: "frame_ego.png",
+}
+FRAME_GLOW_COLORS = {
+    KIND_ID1: (174, 105, 22),
+    KIND_ID2: (235, 33, 29),
+    KIND_ID3: (255, 202, 42),
+    KIND_EGO: (224, 229, 224),
+}
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -333,94 +356,205 @@ def pull_entries(
     return tuple(results)
 
 
-def _load_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
-    custom = os.getenv("LIMBUS_GACHA_FONT_PATH", "").strip()
-    candidates = [
-        custom,
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        if bold
-        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file():
-            try:
-                return ImageFont.truetype(candidate, size)
-            except OSError:
-                continue
-    return ImageFont.load_default()
+def _open_gacha_ui_asset(filename: str) -> Image.Image:
+    path = GACHA_UI_DIR / filename
+    if not path.is_file():
+        raise RuntimeError(f"Thiếu Limbus Gacha UI asset: {path}")
+    try:
+        with Image.open(path) as source:
+            source.load()
+            return source.convert("RGBA")
+    except (OSError, UnidentifiedImageError, ValueError) as error:
+        raise RuntimeError(f"Không đọc được Limbus Gacha UI asset: {path}") from error
+
+
+def _frame_interior_mask(frame: Image.Image) -> Image.Image:
+    """Return the transparent component enclosed by a frame.
+
+    The source textures include transparent padding outside the frame as well as
+    a transparent window in its centre. Flood-filling from the centre isolates
+    the window without letting character artwork leak around the outer glow.
+    """
+    alpha = frame.getchannel("A")
+    flood_map = alpha.point(
+        lambda value: 255 if value > FRAME_ALPHA_THRESHOLD else 0
+    )
+    centre = (frame.width // 2, frame.height // 2)
+    if flood_map.getpixel(centre) != 0:
+        raise RuntimeError("Limbus Gacha frame không có vùng ảnh trong suốt ở giữa.")
+    ImageDraw.floodfill(flood_map, centre, 128, thresh=0)
+    return flood_map.point(lambda value: 255 if value == 128 else 0)
+
+
+def _visible_alpha_bbox(image: Image.Image) -> tuple[int, int, int, int]:
+    alpha = image.getchannel("A")
+    visible = alpha.point(
+        lambda value: 255 if value > FRAME_ALPHA_THRESHOLD else 0
+    )
+    bounds = visible.getbbox()
+    if not bounds:
+        raise RuntimeError("Limbus Gacha frame không có pixel hữu hình.")
+    return bounds
+
+
+def _normalize_frame_and_mask(
+    frame: Image.Image,
+    interior_mask: Image.Image,
+    visible_size: tuple[int, int],
+) -> tuple[Image.Image, Image.Image]:
+    """Scale different source canvases by their visible alpha bounds.
+
+    The four game textures use unrelated canvas sizes and transparent padding.
+    Scaling the raw canvases makes otherwise identical result slots look uneven.
+    This normalizes the visible frame while preserving a small amount of its
+    built-in outer glow.
+    """
+    left, top, right, bottom = _visible_alpha_bbox(frame)
+    scale_x = visible_size[0] / (right - left)
+    scale_y = visible_size[1] / (bottom - top)
+    resized_size = (
+        max(1, round(frame.width * scale_x)),
+        max(1, round(frame.height * scale_y)),
+    )
+    resized_frame = frame.resize(resized_size, Image.Resampling.LANCZOS)
+    resized_mask = interior_mask.resize(resized_size, Image.Resampling.LANCZOS)
+
+    visible_left, visible_top, visible_right, visible_bottom = _visible_alpha_bbox(
+        resized_frame
+    )
+    visible_centre_x = (visible_left + visible_right) / 2
+    visible_centre_y = (visible_top + visible_bottom) / 2
+    output_size = (
+        visible_size[0] + FRAME_RENDER_PADDING * 2,
+        visible_size[1] + FRAME_RENDER_PADDING * 2,
+    )
+    crop_left = round(visible_centre_x - output_size[0] / 2)
+    crop_top = round(visible_centre_y - output_size[1] / 2)
+    crop_box = (
+        crop_left,
+        crop_top,
+        crop_left + output_size[0],
+        crop_top + output_size[1],
+    )
+    return resized_frame.crop(crop_box), resized_mask.crop(crop_box)
+
+
+@lru_cache(maxsize=1)
+def _prepared_gacha_background() -> Image.Image:
+    background = _open_gacha_ui_asset("background.png")
+    return ImageOps.fit(
+        background,
+        GACHA_CANVAS_SIZE,
+        method=Image.Resampling.LANCZOS,
+        centering=(0.5, 0.5),
+    )
+
+
+@lru_cache(maxsize=4)
+def _prepared_gacha_frame(kind: str) -> tuple[Image.Image, Image.Image]:
+    try:
+        filename = FRAME_ASSET_NAMES[kind]
+    except KeyError as error:
+        raise ValueError(f"Loại kết quả gacha không hợp lệ: {kind}") from error
+    frame = _open_gacha_ui_asset(filename)
+    interior_mask = _frame_interior_mask(frame)
+    visible_size = EGO_VISIBLE_SIZE if kind == KIND_EGO else IDENTITY_VISIBLE_SIZE
+    normalized_frame, normalized_mask = _normalize_frame_and_mask(
+        frame,
+        interior_mask,
+        visible_size,
+    )
+    if kind != KIND_EGO:
+        # Broken-glass pieces are part of the foreground texture. The original
+        # centre flood-fill stops at those pieces, leaving a window that is too
+        # small after the frame is enlarged. Let artwork extend beneath the
+        # glass and chains; the frame is composited afterwards and masks them.
+        normalized_mask = normalized_mask.filter(
+            ImageFilter.MaxFilter(IDENTITY_ART_MASK_EXPANSION)
+        )
+    return normalized_frame, normalized_mask
+
+
+def _render_artwork(
+    raw: bytes,
+    frame_size: tuple[int, int],
+    interior_mask: Image.Image,
+    *,
+    ego: bool,
+) -> Image.Image | None:
+    if not raw:
+        return None
+    try:
+        with Image.open(io.BytesIO(raw)) as source:
+            source.load()
+            artwork = source.convert("RGBA")
+    except (OSError, UnidentifiedImageError, ValueError):
+        return None
+
+    bounds = interior_mask.getbbox()
+    if not bounds:
+        return None
+    left, top, right, bottom = bounds
+    fitted = ImageOps.fit(
+        artwork,
+        (right - left, bottom - top),
+        method=Image.Resampling.LANCZOS,
+        # Identity profile art usually places the face above centre. E.G.O icons
+        # are already square and should stay geometrically centred.
+        centering=(0.5, 0.5 if ego else 0.42),
+    )
+    layer = Image.new("RGBA", frame_size, (0, 0, 0, 0))
+    layer.alpha_composite(fitted, (left, top))
+    layer.putalpha(ImageChops.multiply(layer.getchannel("A"), interior_mask))
+    return layer
+
+
+def _render_frame_glow(frame: Image.Image, kind: str, padding: int = 18) -> Image.Image:
+    expanded_size = (frame.width + padding * 2, frame.height + padding * 2)
+    alpha = Image.new("L", expanded_size, 0)
+    alpha.paste(frame.getchannel("A"), (padding, padding))
+    alpha = alpha.filter(ImageFilter.GaussianBlur(12))
+    # Keep the original in-game frame glow subtle; the background already
+    # contains bright particles and should remain the visual focus.
+    alpha = alpha.point(lambda value: min(120, int(value * 0.72)))
+    glow = Image.new("RGBA", expanded_size, FRAME_GLOW_COLORS[kind] + (0,))
+    glow.putalpha(alpha)
+    return glow
 
 
 def render_gacha_collage(
     pulls: Sequence[GachaEntry],
     image_data: Mapping[str, bytes],
 ) -> bytes:
-    """Render ten pulls as a compact 5x2 PNG; invalid images become placeholders."""
+    """Render ten pulls as a Limbus-style two-row result screen."""
     if len(pulls) != 10:
         raise ValueError("Collage cần đúng 10 kết quả.")
-    card_w, card_h, gap, margin = 202, 252, 10, 16
-    canvas_w = margin * 2 + card_w * 5 + gap * 4
-    canvas_h = margin * 2 + card_h * 2 + gap
-    canvas = Image.new("RGB", (canvas_w, canvas_h), (18, 20, 26))
-    draw = ImageDraw.Draw(canvas)
-    label_font = _load_font(20, bold=True)
-
+    canvas = _prepared_gacha_background().copy()
     for index, entry in enumerate(pulls):
         column, row = index % 5, index // 5
-        x = margin + column * (card_w + gap)
-        y = margin + row * (card_h + gap)
-        color = RARITY_COLOR[entry.kind]
-        card_box = (x, y, x + card_w, y + card_h)
-        draw.rounded_rectangle(
-            card_box,
-            radius=12,
-            fill=(35, 38, 48),
-            outline=EGO_FRAME_GOLD if entry.kind == KIND_EGO else color,
-            width=5,
+        frame, interior_mask = _prepared_gacha_frame(entry.kind)
+        frame = frame.copy()
+        interior_mask = interior_mask.copy()
+        x = GACHA_COLUMN_CENTERS[column] - frame.width // 2
+        y = GACHA_ROW_CENTERS[row] - frame.height // 2
+
+        glow = _render_frame_glow(frame, entry.kind)
+        glow_padding_x = (glow.width - frame.width) // 2
+        glow_padding_y = (glow.height - frame.height) // 2
+        canvas.alpha_composite(glow, (x - glow_padding_x, y - glow_padding_y))
+
+        artwork = _render_artwork(
+            image_data.get(entry.image_url, b""),
+            frame.size,
+            interior_mask,
+            ego=entry.kind == KIND_EGO,
         )
-        if entry.kind == KIND_EGO:
-            draw.rounded_rectangle(
-                (x + 4, y + 4, x + card_w - 4, y + card_h - 4),
-                radius=9,
-                outline=EGO_FRAME_RED,
-                width=3,
-            )
-        art_box = (x + 7, y + 7, x + card_w - 7, y + card_h - 48)
-        raw = image_data.get(entry.image_url, b"")
-        art: Image.Image | None = None
-        if raw:
-            try:
-                with Image.open(io.BytesIO(raw)) as source:
-                    source.load()
-                    art = ImageOps.fit(
-                        source.convert("RGB"),
-                        (art_box[2] - art_box[0], art_box[3] - art_box[1]),
-                        method=Image.Resampling.LANCZOS,
-                    )
-            except (OSError, UnidentifiedImageError, ValueError):
-                art = None
-        if art is not None:
-            canvas.paste(art, art_box[:2])
-        else:
-            draw.rectangle(art_box, fill=(49, 52, 64))
-            draw.text(
-                ((art_box[0] + art_box[2]) // 2, (art_box[1] + art_box[3]) // 2),
-                RARITY_SHORT[entry.kind],
-                fill=color,
-                font=label_font,
-                anchor="mm",
-            )
-        label = f"#{index + 1:02d}  {RARITY_SHORT[entry.kind]}"
-        draw.text(
-            (x + card_w // 2, y + card_h - 24),
-            label,
-            fill=color,
-            font=label_font,
-            anchor="mm",
-        )
+        if artwork is not None:
+            canvas.alpha_composite(artwork, (x, y))
+        canvas.alpha_composite(frame, (x, y))
 
     output = io.BytesIO()
-    canvas.save(output, format="PNG", optimize=True)
+    canvas.convert("RGB").save(output, format="PNG", optimize=True)
     return output.getvalue()
 
 

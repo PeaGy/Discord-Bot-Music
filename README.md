@@ -49,7 +49,7 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - Hiểu nhiều alias cộng đồng; hỗ trợ roster, Identity, E.G.O., skill/passive, status, lore và team building.
 - Full kit và từng Skill/Defense được trình bày bằng embed có màu Sin Affinity, Coin, damage type, status và resistance.
 - Artwork Identity/E.G.O được đồng bộ tăng dần theo revision wiki và dùng làm thumbnail của full kit hoặc card skill riêng. Metadata nằm cùng `limbus_knowledge.db`; lỗi CDN không làm hỏng câu trả lời và cache cũ vẫn được giữ.
-- `/gacha` mô phỏng Standard Extraction bằng đúng pool 3★, 2★, 1★ và E.G.O trong wiki đã đồng bộ. Có quay ×1/×10, hiện chưa có chức năng lưu inventory.
+- `/gacha` mô phỏng Standard Extraction bằng đúng pool 3★, 2★, 1★ và E.G.O trong wiki đã đồng bộ. Quay ×10 được dựng thành màn hình kết quả theo giao diện Limbus; hiện chưa có chức năng lưu inventory.
 - Tin về game được kiểm tra qua X Limbus chính thức, Steam News API và ảnh notice.
 - Kết quả đọc ảnh Steam được cache theo hash; câu hỏi cùng chủ đề dùng cache ngắn hạn để tránh lặp lại lượt Vision chậm.
 - Có thể theo dõi RSS của kênh YouTube ProjectMoon Official và thông báo video Limbus mới vào một kênh Discord đã chọn. Trạng thái SQLite chống gửi trùng sau restart; lần chạy đầu chỉ ghi nhận mốc hiện tại.
