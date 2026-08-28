@@ -28,6 +28,7 @@ from features.limbus_gacha import (
     _image_is_decodable,
     _prepared_gacha_frame,
     _prepare_art_cache_dir,
+    _render_artwork,
     _visible_alpha_bbox,
     load_gacha_pool_sync,
     parse_extraction_list,
@@ -184,6 +185,30 @@ class GachaCollageTests(unittest.TestCase):
         row_gap = GACHA_ROW_CENTERS[1] - GACHA_ROW_CENTERS[0]
         self.assertGreater(column_gap, IDENTITY_VISIBLE_SIZE[0])
         self.assertGreater(row_gap, EGO_VISIBLE_SIZE[1])
+
+    def test_identity_artwork_keeps_more_of_square_profile_image(self):
+        source = Image.new("RGB", (256, 256), (210, 30, 50))
+        for x in range(64):
+            for y in range(256):
+                source.putpixel((x, y), (20, 80, 220))
+                source.putpixel((255 - x, y), (20, 190, 80))
+        raw = io.BytesIO()
+        source.save(raw, format="PNG")
+
+        mask = Image.new("L", (180, 110), 255)
+        rendered = _render_artwork(
+            raw.getvalue(),
+            mask.size,
+            mask,
+            ego=False,
+        )
+
+        self.assertIsNotNone(rendered)
+        assert rendered is not None
+        left = rendered.getpixel((24, 55))
+        right = rendered.getpixel((155, 55))
+        self.assertGreater(left[2], left[0])
+        self.assertGreater(right[1], right[0])
 
     def test_collage_is_a_limbus_style_two_by_five_png(self):
         source = Image.new("RGB", (80, 120), (200, 30, 80))

@@ -66,6 +66,12 @@ EGO_VISIBLE_SIZE = (198, 198)
 FRAME_ALPHA_THRESHOLD = 12
 FRAME_RENDER_PADDING = 12
 IDENTITY_ART_MASK_EXPANSION = 21
+# Wiki profile artwork is square while the in-game result window is wide. A
+# straight cover crop cuts away too much of the character and turns every pull
+# into a face close-up. Keep a softer cover layer behind a slightly zoomed-out
+# foreground so the slot stays filled while more of the original art remains.
+IDENTITY_ARTWORK_FOREGROUND_SCALE = 0.78
+IDENTITY_ARTWORK_BACKGROUND_BLUR = 3.0
 
 KIND_EGO = "ego"
 KIND_ID3 = "id3"
@@ -495,14 +501,51 @@ def _render_artwork(
     if not bounds:
         return None
     left, top, right, bottom = bounds
+    window_size = (right - left, bottom - top)
+    centering = (0.5, 0.5 if ego else 0.42)
     fitted = ImageOps.fit(
         artwork,
-        (right - left, bottom - top),
+        window_size,
         method=Image.Resampling.LANCZOS,
         # Identity profile art usually places the face above centre. E.G.O icons
         # are already square and should stay geometrically centred.
-        centering=(0.5, 0.5 if ego else 0.42),
+        centering=centering,
     )
+    if not ego:
+        # The wiki only exposes square profile thumbnails for most Identities,
+        # unlike the wider result artwork used by the game. Use the normal cover
+        # crop as a blurred edge fill, then place a smaller copy over it. This
+        # reveals more shoulders/background without leaving empty bars inside the
+        # broken-glass frame.
+        fitted = fitted.filter(
+            ImageFilter.GaussianBlur(IDENTITY_ARTWORK_BACKGROUND_BLUR)
+        )
+        cover_scale = max(
+            window_size[0] / artwork.width,
+            window_size[1] / artwork.height,
+        )
+        foreground_size = (
+            max(
+                1,
+                round(
+                    artwork.width
+                    * cover_scale
+                    * IDENTITY_ARTWORK_FOREGROUND_SCALE
+                ),
+            ),
+            max(
+                1,
+                round(
+                    artwork.height
+                    * cover_scale
+                    * IDENTITY_ARTWORK_FOREGROUND_SCALE
+                ),
+            ),
+        )
+        foreground = artwork.resize(foreground_size, Image.Resampling.LANCZOS)
+        foreground_x = round((window_size[0] - foreground.width) * centering[0])
+        foreground_y = round((window_size[1] - foreground.height) * centering[1])
+        fitted.alpha_composite(foreground, (foreground_x, foreground_y))
     layer = Image.new("RGBA", frame_size, (0, 0, 0, 0))
     layer.alpha_composite(fitted, (left, top))
     layer.putalpha(ImageChops.multiply(layer.getchannel("A"), interior_mask))
