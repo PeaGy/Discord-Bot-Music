@@ -55,6 +55,7 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 ### ⏰Daily Reset
 
 - Scheduler UTC cho NIKKE, Blue Archive, Trickcal: Chibi Go, Chaos Zero Nightmare, Limbus Company và Brown Dust 2; từng game có thể bật/tắt, đổi giờ, kênh và role riêng trong `.env`.
+- Riêng Limbus chỉ nhắc Mirror Dungeon Reset vào Thứ Năm hằng tuần (06:00 KST), thay vì gửi checklist mỗi ngày.
 - Gửi cảnh báo trước reset và checklist tiếng Việt khi reset; role chỉ được ping ở thông báo reset thật.
 - Thành viên tự đăng ký/tắt DM bằng `/dailyreset subscribe`, `/dailyreset unsubscribe` hoặc nút dưới card reset.
 - SQLite chống gửi trùng sau restart và có cửa sổ gửi bù ngắn nếu bot vừa mất kết nối đúng giờ reset.

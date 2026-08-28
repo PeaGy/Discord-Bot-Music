@@ -75,15 +75,48 @@ class DailyResetScheduleTests(unittest.TestCase):
         self.assertEqual(len(build_daily_embed(NIKKE, reset_event).fields), len(NIKKE.checklist))
         self.assertEqual(len(build_daily_embed(NIKKE, warning_event).fields), 0)
 
-    def test_limbus_reset_is_0600_kst_and_thursday_has_weekly_note(self):
+    def test_limbus_next_reset_is_thursday_0600_kst(self):
+        before = datetime(2026, 8, 26, 20, 59, tzinfo=UTC)
+        exact = datetime(2026, 8, 26, 21, 0, tzinfo=UTC)
+
+        self.assertEqual(next_reset_at(LIMBUS, before), exact)
+        self.assertEqual(
+            next_reset_at(LIMBUS, exact),
+            datetime(2026, 9, 2, 21, 0, tzinfo=UTC),
+        )
+
+    def test_limbus_is_not_due_on_an_ordinary_daily_reset_time(self):
+        events = due_events(
+            LIMBUS,
+            datetime(2026, 8, 27, 21, 1, tzinfo=UTC),
+            warning_minutes=60,
+            catchup_minutes=5,
+        )
+
+        self.assertEqual(events, [])
+
+    def test_limbus_weekly_reset_is_due_on_wednesday_utc(self):
+        events = due_events(
+            LIMBUS,
+            datetime(2026, 8, 26, 21, 1, tzinfo=UTC),
+            warning_minutes=60,
+            catchup_minutes=5,
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "reset")
+        self.assertEqual(events[0].reset_at, datetime(2026, 8, 26, 21, 0, tzinfo=UTC))
+
+    def test_limbus_embed_is_weekly_mirror_dungeon_reminder(self):
         reset_at = datetime(2026, 8, 26, 21, 0, tzinfo=UTC)
         event = DailyEvent("limbus_company", "reset", reset_at, reset_at)
         embed = build_daily_embed(LIMBUS, event)
 
         self.assertEqual((LIMBUS.reset_hour, LIMBUS.reset_minute), (21, 0))
-        self.assertTrue(
-            any(field.name == "Reset tuần (Thứ Năm KST)" for field in embed.fields)
-        )
+        self.assertEqual(LIMBUS.reset_weekdays_utc, (2,))
+        self.assertIn("Mirror Dungeon đã reset tuần", embed.title)
+        self.assertIn("Lunacy", embed.description)
+        self.assertEqual([field.name for field in embed.fields], ["Mirror Dungeon", "Weekly Missions"])
 
     def test_all_keyword_enables_every_supported_game(self):
         with patch.dict(os.environ, {"DAILY_RESET_GAMES": "all"}):

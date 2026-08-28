@@ -71,6 +71,10 @@ class DailyGame:
     emoji: str
     footer: str
     checklist: tuple[tuple[str, str], ...]
+    # Empty means every UTC date. Limbus uses Wednesday UTC because its
+    # Thursday 06:00 KST reset occurs at Wednesday 21:00 UTC.
+    reset_weekdays_utc: tuple[int, ...] = ()
+    schedule_label: str = "hằng ngày"
     channel_id: int | None = None
     role_id: int | None = None
     image_url: str = ""
@@ -166,13 +170,18 @@ BASE_GAMES: tuple[DailyGame, ...] = (
         emoji="⏰",
         footer="Face the Sin, Save the E.G.O, Manager.",
         checklist=(
-            ("Enkephalin", "Đổi Enkephalin thành Module trước khi chạm giới hạn."),
-            ("Daily Missions", "Hoàn thành và nhận toàn bộ mốc Daily Missions/Limbus Pass."),
-            ("EXP Luxcavation", "Dùng bonus hằng ngày nếu đang cần vé EXP."),
-            ("Thread Luxcavation", "Dùng bonus hằng ngày nếu đang cần Thread."),
-            ("Attendance & Mail", "Nhận Attendance Check, quà đăng nhập và hộp thư."),
-            ("Event", "Kiểm tra nhiệm vụ, stamina và shop event đang diễn ra."),
+            (
+                "Mirror Dungeon",
+                "Weekly Bonus đã được làm mới — hoàn thành Mirror Dungeon để "
+                "nhận Lunacy và Battle Pass EXP của tuần này.",
+            ),
+            (
+                "Weekly Missions",
+                "Kiểm tra và hoàn thành các nhiệm vụ tuần trong Limbus Pass.",
+            ),
         ),
+        reset_weekdays_utc=(2,),
+        schedule_label="Thứ Năm hằng tuần (06:00 KST)",
     ),
     DailyGame(
         slug="brown_dust_2",
@@ -261,12 +270,23 @@ def reset_at_for_date(game: DailyGame, date_value) -> datetime:
     )
 
 
+def is_reset_date(game: DailyGame, date_value) -> bool:
+    return (
+        not game.reset_weekdays_utc
+        or date_value.weekday() in game.reset_weekdays_utc
+    )
+
+
 def next_reset_at(game: DailyGame, now: datetime) -> datetime:
     now = now.astimezone(UTC)
-    candidate = reset_at_for_date(game, now.date())
-    if candidate <= now:
-        candidate += timedelta(days=1)
-    return candidate
+    for day_offset in range(8):
+        date_value = (now + timedelta(days=day_offset)).date()
+        if not is_reset_date(game, date_value):
+            continue
+        candidate = reset_at_for_date(game, date_value)
+        if candidate > now:
+            return candidate
+    raise RuntimeError(f"Không tính được lần reset tiếp theo của {game.slug}")
 
 
 def due_events(
@@ -279,10 +299,10 @@ def due_events(
     now = now.astimezone(UTC)
     due: list[DailyEvent] = []
     for day_offset in (-1, 0, 1):
-        reset_at = reset_at_for_date(
-            game,
-            (now + timedelta(days=day_offset)).date(),
-        )
+        date_value = (now + timedelta(days=day_offset)).date()
+        if not is_reset_date(game, date_value):
+            continue
+        reset_at = reset_at_for_date(game, date_value)
         candidates = [("reset", reset_at)]
         if warning_minutes > 0:
             candidates.append(
@@ -308,11 +328,26 @@ def build_daily_embed(
     preview: bool = False,
 ) -> discord.Embed:
     reset_timestamp = int(event.reset_at.timestamp())
-    if event.event_type == "warning":
+    is_limbus_weekly = game.slug == "limbus_company" and bool(
+        game.reset_weekdays_utc
+    )
+    if event.event_type == "warning" and is_limbus_weekly:
+        title = "⏰ Mirror Dungeon sắp reset tuần"
+        description = (
+            f"Manager, Mirror Dungeon sẽ reset <t:{reset_timestamp}:R> "
+            f"(<t:{reset_timestamp}:t>). Hãy dùng Weekly Bonus còn lại nếu chưa nhận."
+        )
+    elif event.event_type == "warning":
         title = f"⏰ {game.name} sắp reset"
         description = (
             f"{game.audience}, server sẽ reset <t:{reset_timestamp}:R> "
             f"(<t:{reset_timestamp}:t>). Hãy kiểm tra các việc còn thiếu."
+        )
+    elif is_limbus_weekly:
+        title = "⏰ Mirror Dungeon đã reset tuần!"
+        description = (
+            "Chào Manager! Weekly Bonus của Mirror Dungeon đã được làm mới. "
+            "Đừng quên nguồn Lunacy quan trọng của tuần này nhé."
         )
     else:
         title = f"{game.emoji} {game.name} đã reset!"
@@ -330,20 +365,10 @@ def build_daily_embed(
     if event.event_type == "reset":
         for name, value in game.checklist:
             embed.add_field(name=name, value=value, inline=False)
-        # Reset tuần Limbus diễn ra cùng mốc daily của sáng Thứ Năm KST.
-        kst_reset = event.reset_at.astimezone(UTC) + timedelta(hours=9)
-        if game.slug == "limbus_company" and kst_reset.weekday() == 3:
-            embed.add_field(
-                name="Reset tuần (Thứ Năm KST)",
-                value=(
-                    "Nhận Weekly Missions và kiểm tra các Weekly Bonus của "
-                    "Mirror Dungeon trước/sau maintenance."
-                ),
-                inline=False,
-            )
     if game.image_url:
         embed.set_image(url=game.image_url)
-    footer = f"Peto Daily Reset • Giờ chuẩn UTC • {game.footer}"
+    reset_kind = "Weekly Reset" if game.reset_weekdays_utc else "Daily Reset"
+    footer = f"Peto {reset_kind} • {game.schedule_label} • {game.footer}"
     if preview:
         footer += " • Bản kiểm thử, không lưu trạng thái"
     embed.set_footer(text=footer[:2048])
@@ -377,7 +402,7 @@ class DailyResetSubscriptionView(discord.ui.View):
         await self.cog.set_subscription(interaction.user.id, self.game_slug, True)
         game = self.cog.games[self.game_slug]
         await interaction.response.send_message(
-            f"✉️ Bạn sẽ nhận nhắc Daily Reset **{game.name}** qua DM.",
+            f"✉️ Bạn sẽ nhận nhắc {game.schedule_label} của **{game.name}** qua DM.",
             ephemeral=True,
         )
 
@@ -385,7 +410,7 @@ class DailyResetSubscriptionView(discord.ui.View):
         await self.cog.set_subscription(interaction.user.id, self.game_slug, False)
         game = self.cog.games[self.game_slug]
         await interaction.response.send_message(
-            f"🔕 Đã tắt nhắc Daily Reset **{game.name}** qua DM.",
+            f"🔕 Đã tắt nhắc {game.schedule_label} của **{game.name}** qua DM.",
             ephemeral=True,
         )
 
@@ -393,7 +418,7 @@ class DailyResetSubscriptionView(discord.ui.View):
 class DailyReset(commands.Cog):
     dailyreset = app_commands.Group(
         name="dailyreset",
-        description="Lịch reset và nhắc việc hằng ngày của game",
+        description="Lịch reset và nhắc việc của game",
     )
 
     def __init__(self, bot: commands.Bot):
@@ -716,7 +741,9 @@ class DailyReset(commands.Cog):
             )
         await self.set_subscription(interaction.user.id, selected.slug, True)
         await interaction.response.send_message(
-            f"✉️ Bạn sẽ nhận nhắc **{selected.name}** qua DM.", ephemeral=True
+            f"✉️ Bạn sẽ nhận nhắc {selected.schedule_label} của "
+            f"**{selected.name}** qua DM.",
+            ephemeral=True,
         )
 
     @dailyreset.command(name="unsubscribe", description="Tắt Daily Reset DM của một game")
@@ -730,7 +757,9 @@ class DailyReset(commands.Cog):
             )
         await self.set_subscription(interaction.user.id, selected.slug, False)
         await interaction.response.send_message(
-            f"🔕 Đã tắt nhắc **{selected.name}** qua DM.", ephemeral=True
+            f"🔕 Đã tắt nhắc {selected.schedule_label} của "
+            f"**{selected.name}** qua DM.",
+            ephemeral=True,
         )
 
     @dailyreset.command(name="subscriptions", description="Xem các Daily Reset DM đã đăng ký")
@@ -760,7 +789,8 @@ class DailyReset(commands.Cog):
             upcoming = next_reset_at(game, now)
             destination = f"<#{game.channel_id}>" if game.channel_id else "chưa có kênh"
             rows.append(
-                f"• **{game.name}** — <t:{int(upcoming.timestamp())}:t> UTC, {destination}"
+                f"• **{game.name}** — {game.schedule_label}, "
+                f"lần tới <t:{int(upcoming.timestamp())}:F>, {destination}"
             )
         last_check = (
             f"<t:{int(self.last_success_at)}:R>" if self.last_success_at else "chưa có"
