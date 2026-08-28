@@ -35,6 +35,7 @@ class StudySession:
     owner_id: int
     display_name: str
     problem_text: str
+    guild_id: int | None = None
     attachments: list[Any] = field(default_factory=list)
     latest_solution: str = ""
     extracted_problem: str = ""
@@ -211,9 +212,8 @@ class StudyView(discord.ui.View):
     @discord.ui.button(label="Gợi ý", emoji="💡", style=discord.ButtonStyle.secondary)
     async def hint(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        result = await self.cog.generate_study_response(
-            self.session,
-            action="hint",
+        result = await self.cog.generate_study_response_for_interaction(
+            interaction, self.session, action="hint"
         )
         await interaction.followup.send(
             truncate_for_discord(result),
@@ -223,9 +223,8 @@ class StudyView(discord.ui.View):
     @discord.ui.button(label="Chép đề", emoji="🔎", style=discord.ButtonStyle.secondary)
     async def extract_problem(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        result = await self.cog.generate_study_response(
-            self.session,
-            action="extract",
+        result = await self.cog.generate_study_response_for_interaction(
+            interaction, self.session, action="extract"
         )
         if not result.startswith("❌"):
             self.session.extracted_problem = result

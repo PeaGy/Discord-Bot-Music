@@ -35,6 +35,8 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 ### 🤖Trợ lý AI
 
 - Mention/reply Bot trong server hoặc dùng `/private` để trò chuyện qua DM.
+- Quản trị viên dùng `/settings ai` để chọn kênh/role, chế độ mention hoặc chat tự nhiên, bật từng khả năng và đặt cooldown/giới hạn đồng thời riêng cho server. Các server đã có Peto trước lần nâng cấp giữ nguyên hành vi cũ.
+- Mỗi người chỉ có một lượt AI đang chạy; từng server có hàng chờ ngắn, độc lập nên một bài Study lâu không chặn server khác. Lượt hoàn thành trước được trả lời trước.
 - Grok qua SuperGrok OAuth hoặc `XAI_API_KEY`; hỗ trợ vision, tạo/sửa ảnh, đọc link và Tavily web search.
 - Có thể xem video Discord MP4/MOV/WebM/MKV ngắn tối đa 2 phút khi được hỏi: FFmpeg lấy 8 khung hình theo thời gian, xAI STT phiên âm lời nói rồi Grok kết hợp cả hai. Bot không tự đọc mọi clip trong kênh.
 - Study Mode tự nhận diện bài tập, kèm các nút Gợi ý, Chép đề và Xuất PNG.
@@ -207,7 +209,7 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 | Limbus Asset | `/limbusasset status`, `/limbusasset preview`; `/limbusasset sync` (chủ bot) |
 | Limbus Gacha | `/gacha [pulls]` — mô phỏng Standard Extraction ×1 hoặc ×10 |
 | Project Moon | `/projectmoon status`, `/projectmoon preview`, `/projectmoon test`, `/projectmoon check` (chủ bot) |
-| Cấu hình server | `/settings notifications` — quản trị viên chọn kênh, role, bật/tắt và gửi thử thông báo |
+| Cấu hình server | `/settings notifications` cho thông báo; `/settings ai [capability]` cho quyền, kênh và chống spam AI |
 | Daily Reset | `/dailyreset next`, `/dailyreset subscribe`, `/dailyreset unsubscribe`, `/dailyreset subscriptions`; `status/preview/test/check` (chủ bot) |
 | Gift Code | `/coupon codes`, `/coupon subscribe`, `/coupon unsubscribe`, `/coupon subscriptions`, `/coupon history`, `/coupon preferences`, `/coupon used`; `add/remove/status` (chủ bot) |
 | Ảnh | `/art`, `/artecchi`, `/artnsfw`, `/wallpaper`, `/artinfo`, `/sticker`, `/emoji`, `/saucy` |
@@ -238,7 +240,7 @@ Gateway cho file vượt giới hạn Discord chạy tại `127.0.0.1:8765`; Clo
 | `youtube_notifications.db` | Video Project Moon đã thấy và trạng thái chống thông báo trùng |
 | `daily_reset_notifications.db` | Lịch đã gửi và đăng ký Daily Reset DM của thành viên |
 | `coupon_codes.db` | Gift code, hồ sơ nickname/UID, lịch sử redeem, đăng ký DM và trạng thái chống gửi trùng |
-| `guild_settings.db` | Kênh, role và trạng thái notification riêng theo `guild_id` |
+| `guild_settings.db` | Notification và chính sách AI riêng theo `guild_id` |
 | `audio_cache/` | Cache âm thanh đã xử lý |
 | `temp_downloads/` | File tải tạm thời |
 

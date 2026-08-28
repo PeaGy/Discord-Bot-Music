@@ -51,7 +51,10 @@ class GuildSettingsStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_settings_command_covers_every_notification_target(self):
         cog = Settings(bot=object())
 
-        self.assertEqual({command.name for command in cog.settings.commands}, {"notifications"})
+        self.assertEqual(
+            {command.name for command in cog.settings.commands},
+            {"notifications", "ai"},
+        )
         self.assertIn("limbus_company", TARGET_LABELS["daily_reset"])
         self.assertIn("brown_dust_2", TARGET_LABELS["coupon"])
         self.assertEqual(

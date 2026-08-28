@@ -10,6 +10,14 @@ from discord.ext import commands
 
 from features.coupon_codes import GAMES as COUPON_GAMES
 from features.daily_reset import BASE_GAMES
+from guild_ai_settings import (
+    AI_CAPABILITIES,
+    GLOBAL_MAX_CONCURRENT,
+    GLOBAL_MAX_VIDEO_SECONDS,
+    ROLE_CAPABILITIES,
+    GuildAIPolicy,
+    GuildAISettingsStore,
+)
 from guild_settings import GuildNotification, GuildSettingsStore
 
 
@@ -24,6 +32,27 @@ TARGET_LABELS = {
     "projectmoon": {"official_youtube": "ProjectMoon Official"},
     "daily_reset": {game.slug: game.name for game in BASE_GAMES},
     "coupon": {slug: game.name for slug, game in COUPON_GAMES.items()},
+}
+
+AI_CAPABILITY_LABELS = {
+    "memory": "Trí nhớ cá nhân",
+    "web": "Web và đọc liên kết",
+    "limbus": "Kiến thức Limbus",
+    "study": "Study Mode",
+    "image_read": "Đọc ảnh",
+    "image_generation": "Tạo và sửa ảnh AI",
+    "video": "Đọc video ngắn",
+    "danbooru": "Tìm ảnh Danbooru",
+    "music": "Điều khiển nhạc bằng lời nói",
+}
+AI_ROLE_LABELS = {
+    "chat": "Chat AI nói chung",
+    "web": "Web",
+    "limbus": "Limbus",
+    "study": "Study Mode",
+    "image": "Đọc/tạo ảnh",
+    "video": "Video",
+    "music": "Điều khiển nhạc",
 }
 
 
@@ -221,6 +250,264 @@ class NotificationSettingsView(discord.ui.View):
         await self.refresh(interaction)
 
 
+class AIResponseModeSelect(discord.ui.Select):
+    def __init__(self, panel: "AISettingsView", policy: GuildAIPolicy):
+        self.panel = panel
+        options = [
+            discord.SelectOption(
+                label="Chỉ mention hoặc reply",
+                value="mention",
+                description="An toàn cho mọi kênh; đây là cách Peto đang hoạt động.",
+                default=policy.response_mode == "mention",
+            ),
+            discord.SelectOption(
+                label="Trò chuyện tự nhiên trong kênh đã chọn",
+                value="channels",
+                description="Không cần mention trong danh sách kênh AI.",
+                default=policy.response_mode == "channels",
+            ),
+            discord.SelectOption(
+                label="Tắt AI trong server",
+                value="off",
+                description="DM và server khác không bị ảnh hưởng.",
+                default=policy.response_mode == "off",
+            ),
+        ]
+        super().__init__(placeholder="Chế độ phản hồi", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self.panel.store.update(
+            self.panel.guild_id,
+            interaction.user.id,
+            response_mode=self.values[0],
+        )
+        await self.panel.replace(interaction)
+
+
+class AIChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, panel: "AISettingsView"):
+        self.panel = panel
+        super().__init__(
+            placeholder="Chọn tối đa 10 kênh được dùng AI",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            min_values=1,
+            max_values=10,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self.panel.store.set_channels(
+            self.panel.guild_id, [int(channel.id) for channel in self.values]
+        )
+        await self.panel.replace(interaction)
+
+
+class AIRoleSelect(discord.ui.RoleSelect):
+    def __init__(self, panel: "AISettingsView"):
+        self.panel = panel
+        super().__init__(
+            placeholder=f"Role được dùng: {AI_ROLE_LABELS[panel.role_capability]}",
+            min_values=1,
+            max_values=10,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        role_ids = [int(role.id) for role in self.values]
+        if self.panel.guild_id in role_ids:
+            return await interaction.response.send_message(
+                "❌ Không cần chọn `@everyone`; hãy bấm **Bỏ giới hạn role**.",
+                ephemeral=True,
+            )
+        await self.panel.store.set_roles(
+            self.panel.guild_id, self.panel.role_capability, role_ids
+        )
+        await self.panel.replace(interaction)
+
+
+class AICapabilitySelect(discord.ui.Select):
+    def __init__(self, panel: "AISettingsView", policy: GuildAIPolicy):
+        self.panel = panel
+        options = [
+            discord.SelectOption(
+                label=AI_CAPABILITY_LABELS[name],
+                value=name,
+                default=policy.capability_enabled(name),
+            )
+            for name in AI_CAPABILITIES
+        ]
+        super().__init__(
+            placeholder="Bật/tắt khả năng AI",
+            options=options,
+            min_values=0,
+            max_values=len(options),
+            row=3,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        enabled = set(self.values)
+        await self.panel.store.update(
+            self.panel.guild_id,
+            interaction.user.id,
+            **{f"{name}_enabled": name in enabled for name in AI_CAPABILITIES},
+        )
+        await self.panel.replace(interaction)
+
+
+class AILimitsModal(discord.ui.Modal, title="Giới hạn AI của server"):
+    cooldown = discord.ui.TextInput(
+        label="Cooldown mỗi người (0-300 giây)",
+        max_length=3,
+    )
+    concurrent = discord.ui.TextInput(
+        label=f"Số câu chạy cùng lúc (1-{GLOBAL_MAX_CONCURRENT})",
+        max_length=2,
+    )
+    heavy_cooldown = discord.ui.TextInput(
+        label="Cooldown tác vụ nặng (0-900 giây)",
+        max_length=3,
+    )
+    video_seconds = discord.ui.TextInput(
+        label=f"Video tối đa (5-{GLOBAL_MAX_VIDEO_SECONDS} giây)",
+        max_length=4,
+    )
+
+    def __init__(self, panel: "AISettingsView", policy: GuildAIPolicy):
+        super().__init__()
+        self.panel = panel
+        self.cooldown.default = str(policy.cooldown_seconds)
+        self.concurrent.default = str(policy.max_concurrent)
+        self.heavy_cooldown.default = str(policy.heavy_cooldown_seconds)
+        self.video_seconds.default = str(policy.max_video_seconds)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            values = {
+                "cooldown_seconds": int(self.cooldown.value),
+                "max_concurrent": int(self.concurrent.value),
+                "heavy_cooldown_seconds": int(self.heavy_cooldown.value),
+                "max_video_seconds": int(self.video_seconds.value),
+            }
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Các giới hạn phải là số nguyên.", ephemeral=True
+            )
+        await self.panel.store.update(
+            self.panel.guild_id, interaction.user.id, **values
+        )
+        await self.panel.replace(interaction)
+
+
+class AISettingsView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "Settings",
+        guild_id: int,
+        user_id: int,
+        role_capability: str,
+        policy: GuildAIPolicy,
+        channels: set[int],
+        roles: set[int],
+    ):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.store = cog.ai_store
+        self.guild_id = int(guild_id)
+        self.user_id = int(user_id)
+        self.role_capability = role_capability
+        self.policy = policy
+        self.channels = channels
+        self.roles = roles
+        self.add_item(AIResponseModeSelect(self, policy))
+        self.add_item(AIChannelSelect(self))
+        self.add_item(AIRoleSelect(self))
+        self.add_item(AICapabilitySelect(self, policy))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "❌ Hãy mở bảng `/settings ai` của riêng bạn.", ephemeral=True
+            )
+            return False
+        if interaction.guild_id != self.guild_id or not (
+            can_manage_guild(interaction) or await self.cog.bot.is_owner(interaction.user)
+        ):
+            await interaction.response.send_message(
+                "❌ Bạn cần quyền **Manage Server** để thay đổi cấu hình này.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def build_embed(self) -> discord.Embed:
+        mode_labels = {
+            "mention": "Chỉ mention/reply",
+            "channels": "Chat tự nhiên trong kênh đã chọn",
+            "off": "Đã tắt trong server",
+        }
+        channel_text = (
+            ", ".join(f"<#{channel_id}>" for channel_id in sorted(self.channels))
+            if self.channels
+            else "Mọi kênh khi mention/reply; chat tự nhiên chưa có kênh"
+        )
+        role_text = (
+            ", ".join(f"<@&{role_id}>" for role_id in sorted(self.roles))
+            if self.roles
+            else "Không giới hạn role"
+        )
+        enabled = [
+            AI_CAPABILITY_LABELS[name]
+            for name in AI_CAPABILITIES
+            if self.policy.capability_enabled(name)
+        ]
+        disabled = [
+            AI_CAPABILITY_LABELS[name]
+            for name in AI_CAPABILITIES
+            if not self.policy.capability_enabled(name)
+        ]
+        embed = discord.Embed(
+            title="🤖 Cấu hình AI của Peto",
+            description=(
+                f"**Phản hồi:** {mode_labels[self.policy.response_mode]}\n"
+                f"**Kênh AI:** {channel_text}\n"
+                f"**Role cho {AI_ROLE_LABELS[self.role_capability]}:** {role_text}\n\n"
+                f"**Đang bật:** {', '.join(enabled) or 'Không có'}\n"
+                f"**Đang tắt:** {', '.join(disabled) or 'Không có'}\n\n"
+                f"**Chống spam:** {self.policy.cooldown_seconds}s/người · "
+                f"{self.policy.heavy_cooldown_seconds}s/tác vụ nặng · "
+                f"{self.policy.max_concurrent} câu cùng lúc/server · "
+                f"video tối đa {self.policy.max_video_seconds}s"
+            ),
+            color=0x57F287 if self.policy.response_mode != "off" else 0xED4245,
+        )
+        embed.set_footer(
+            text="Chọn capability của role ngay trong tham số lệnh /settings ai."
+        )
+        return embed
+
+    async def replace(self, interaction: discord.Interaction) -> None:
+        view = await self.cog.create_ai_view(
+            self.guild_id, self.user_id, self.role_capability
+        )
+        await interaction.response.edit_message(embed=await view.build_embed(), view=view)
+
+    @discord.ui.button(label="Giới hạn", emoji="⏱️", style=discord.ButtonStyle.primary, row=4)
+    async def limits(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        del button
+        await interaction.response.send_modal(AILimitsModal(self, self.policy))
+
+    @discord.ui.button(label="Bỏ giới hạn kênh", emoji="🧹", style=discord.ButtonStyle.secondary, row=4)
+    async def clear_channels(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        del button
+        await self.store.set_channels(self.guild_id, [])
+        await self.replace(interaction)
+
+    @discord.ui.button(label="Bỏ giới hạn role", emoji="👥", style=discord.ButtonStyle.secondary, row=4)
+    async def clear_roles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        del button
+        await self.store.set_roles(self.guild_id, self.role_capability, [])
+        await self.replace(interaction)
+
 class Settings(commands.Cog):
     settings = app_commands.Group(
         name="settings",
@@ -231,9 +518,24 @@ class Settings(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.store = GuildSettingsStore()
+        self.ai_store = GuildAISettingsStore()
+        self._ai_guilds_seeded = False
 
     async def cog_load(self) -> None:
         await self.store.init()
+        await self.ai_store.init()
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        if self._ai_guilds_seeded:
+            return
+        await self.ai_store.seed_existing_guilds([int(guild.id) for guild in self.bot.guilds])
+        self._ai_guilds_seeded = True
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        if self._ai_guilds_seeded:
+            await self.ai_store.ensure(int(guild.id), legacy=False)
 
     async def _allowed(self, interaction: discord.Interaction) -> bool:
         if interaction.guild_id and (
@@ -300,6 +602,53 @@ class Settings(commands.Cog):
             interaction.user.id,
             feature_value,
             normalized_target,
+        )
+        await interaction.response.send_message(
+            embed=await view.build_embed(), view=view, ephemeral=True
+        )
+
+    async def create_ai_view(
+        self,
+        guild_id: int,
+        user_id: int,
+        role_capability: str,
+    ) -> AISettingsView:
+        policy = await self.ai_store.ensure(guild_id)
+        channels = await self.ai_store.list_channels(guild_id)
+        roles = await self.ai_store.list_roles(guild_id, role_capability)
+        return AISettingsView(
+            self,
+            guild_id,
+            user_id,
+            role_capability,
+            policy,
+            channels,
+            roles,
+        )
+
+    @settings.command(
+        name="ai",
+        description="Cấu hình quyền, khả năng và chống spam của Peto AI",
+    )
+    @app_commands.describe(
+        capability="Nhóm tính năng cần chọn role được phép sử dụng",
+    )
+    @app_commands.choices(
+        capability=[
+            app_commands.Choice(name=AI_ROLE_LABELS[value], value=value)
+            for value in ROLE_CAPABILITIES
+        ]
+    )
+    async def ai(
+        self,
+        interaction: discord.Interaction,
+        capability: app_commands.Choice[str] | None = None,
+    ) -> None:
+        if not await self._allowed(interaction):
+            return
+        role_capability = capability.value if capability else "chat"
+        view = await self.create_ai_view(
+            int(interaction.guild_id), interaction.user.id, role_capability
         )
         await interaction.response.send_message(
             embed=await view.build_embed(), view=view, ephemeral=True

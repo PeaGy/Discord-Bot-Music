@@ -340,6 +340,8 @@ class HelpDropdown(discord.ui.View):
                     "vào Thứ Năm hằng tuần.\n"
                     "`/settings notifications` — Quản trị viên chọn kênh, role và "
                     "bật/tắt thông báo riêng cho server (cần Manage Server).\n\n"
+                    "`/settings ai [capability]` — Chọn kênh/role dùng AI, khả năng "
+                    "được bật và giới hạn chống spam riêng cho server.\n\n"
                     "**Gift Code**\n"
                     "`/coupon codes <game>` — Xem code chưa dùng còn hoạt động\n"
                     "`/coupon subscribe <game> [account_id] [auto_redeem]` — Bật DM; "
