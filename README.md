@@ -62,7 +62,14 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 
 ### 🎟️Gift Code
 
-- Kho code cho Brown Dust 2, NIKKE và Blue Archive; chủ bot thêm/xóa code bằng slash command.
+#### Supported Games
+| Game | Auto-Redeem | Manual Redeem |
+|------|-------------|---------------|
+| Brown Dust 2 (BD2) | ✅ | ✅ |
+| NIKKE | ❌ | ✅ |
+| Blue Archive | ❌ | ✅ |
+
+- Chủ bot thêm/xóa code bằng slash command.
 - Thành viên có thể lưu nickname/UID trong hồ sơ riêng. Brown Dust 2 hỗ trợ auto-redeem qua endpoint bên thứ ba BD2 Pulse; Bot không cần lưu tài khoản/mật khẩu. NIKKE và Blue Archive vẫn nhập tay vì chưa có API hỗ trợ.
 - Thành viên xem code đang hoạt động, đăng ký DM theo từng game và tùy chọn code mới, cảnh báo hết hạn hoặc bản tổng hợp Chủ nhật.
 - Code redeem thành công, được API báo `AlreadyUsed`, hoặc được đánh dấu `/coupon used` sẽ được ẩn khỏi danh sách của riêng người đó; `/coupon history` xem lại kết quả.
