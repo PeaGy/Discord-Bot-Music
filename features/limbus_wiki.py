@@ -274,6 +274,8 @@ COMMUNITY_ALIASES = {
     "w don": "W Corp. L3 Cleanup Agent Don Quixote",
     "w ryoshu": "W Corp. L3 Cleanup Agent Ryōshū",
     "w ryōshū": "W Corp. L3 Cleanup Agent Ryōshū",
+    "hos ryoshu": "Blade of the House of Spiders Ryōshū",
+    "hos ryōshū": "Blade of the House of Spiders Ryōshū",
 }
 
 EXCLUDED_SECTIONS = {
