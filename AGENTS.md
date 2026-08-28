@@ -64,6 +64,8 @@ not part of the normal unit suite.
   `setup()` because of the automatic extension loader.
 - `features/limbus_gacha.py`: Standard Extraction simulation and collage rendering.
 - `features/welcome.py` / `assets/welcome_teto.gif`: member welcome system.
+- `guild_settings.py` / `guild_settings.db`: per-guild notification channels,
+  roles, enablement, and legacy `.env` fallback handling.
 - `tests/`: offline-first unit and regression tests.
 - `scripts/manual/`: opt-in diagnostics that may contact external services.
 
@@ -142,6 +144,7 @@ These files contain real user or operational state:
 - `youtube_notifications.db`: Project Moon notification cursor;
 - `daily_reset_notifications.db`: schedules already sent and DM subscriptions;
 - `coupon_codes.db`: codes, voluntary UID/nickname profiles, redeem history;
+- `guild_settings.db`: per-guild public notification destinations and roles;
 - `audio_cache/`: normalized audio files.
 
 Never delete or recreate them as a routine fix. Prefer additive migrations such as

@@ -15,6 +15,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from guild_settings import (
+    GuildNotification,
+    GuildSettingsStore,
+    notification_destinations,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +212,7 @@ BASE_GAMES: tuple[DailyGame, ...] = (
 )
 
 
-def load_games_from_env() -> dict[str, DailyGame]:
+def load_games_from_env(*, include_all: bool = False) -> dict[str, DailyGame]:
     requested = {
         value.strip().casefold().replace("-", "_")
         for value in os.getenv(
@@ -222,7 +228,7 @@ def load_games_from_env() -> dict[str, DailyGame]:
         "czn": "chaos_zero_nightmare",
     }
     requested = {aliases.get(value, value) for value in requested}
-    if "all" in requested:
+    if include_all or "all" in requested:
         requested = {game.slug for game in BASE_GAMES}
     games: dict[str, DailyGame] = {}
     for base in BASE_GAMES:
@@ -423,8 +429,12 @@ class DailyReset(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.settings = GuildSettingsStore()
         self.enabled = _env_bool("DAILY_RESET_ENABLED", False)
-        self.games = load_games_from_env()
+        self.legacy_games = load_games_from_env()
+        # Public guild settings may enable any supported game. DAILY_RESET_GAMES
+        # continues to control only the old .env fallback destinations.
+        self.games = load_games_from_env(include_all=True)
         self.warning_minutes = _env_int(
             "DAILY_RESET_WARNING_MINUTES", 60, 0, 1440
         )
@@ -444,6 +454,7 @@ class DailyReset(commands.Cog):
 
     async def cog_load(self) -> None:
         await self._init_db()
+        await self.settings.init()
         for view in self.views.values():
             self.bot.add_view(view)
         if not self.enabled:
@@ -451,18 +462,11 @@ class DailyReset(commands.Cog):
                 "Daily Reset đang tắt; dùng DAILY_RESET_ENABLED=true để bật"
             )
             return
-        configured = [game for game in self.games.values() if game.channel_id]
-        if not configured:
-            self.enabled = False
-            logger.warning(
-                "Daily Reset bị tắt vì chưa game nào có *_CHANNEL_ID"
-            )
-            return
         self.daily_reset_loop.start()
         logger.info(
             "Daily Reset sẵn sàng cho %s game: %s",
-            len(configured),
-            ", ".join(game.name for game in configured),
+            len(self.games),
+            ", ".join(game.name for game in self.games.values()),
         )
 
     async def cog_unload(self) -> None:
@@ -489,6 +493,19 @@ class DailyReset(commands.Cog):
                     game_slug TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     PRIMARY KEY (user_id, game_slug)
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS daily_reset_guild_sent (
+                    guild_id INTEGER NOT NULL,
+                    event_key TEXT NOT NULL,
+                    game_slug TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    scheduled_at TEXT NOT NULL,
+                    sent_at INTEGER NOT NULL,
+                    PRIMARY KEY (guild_id, event_key)
                 )
                 """
             )
@@ -530,23 +547,25 @@ class DailyReset(commands.Cog):
             )
             return [int(row[0]) for row in await cursor.fetchall()]
 
-    async def _is_sent(self, event_key: str) -> bool:
+    async def _is_sent(self, guild_id: int, event_key: str) -> bool:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "SELECT 1 FROM daily_reset_sent WHERE event_key = ?",
-                (event_key,),
+                "SELECT 1 FROM daily_reset_guild_sent "
+                "WHERE guild_id = ? AND event_key = ?",
+                (int(guild_id), event_key),
             )
             return await cursor.fetchone() is not None
 
-    async def _mark_sent(self, event: DailyEvent) -> None:
+    async def _mark_sent(self, guild_id: int, event: DailyEvent) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT OR IGNORE INTO daily_reset_sent
-                (event_key, game_slug, event_type, scheduled_at, sent_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO daily_reset_guild_sent
+                (guild_id, event_key, game_slug, event_type, scheduled_at, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    int(guild_id),
                     event.key,
                     event.game_slug,
                     event.event_type,
@@ -555,7 +574,7 @@ class DailyReset(commands.Cog):
                 ),
             )
             await db.execute(
-                "DELETE FROM daily_reset_sent WHERE sent_at < ?",
+                "DELETE FROM daily_reset_guild_sent WHERE sent_at < ?",
                 (int(time.time()) - 120 * 86400,),
             )
             await db.commit()
@@ -567,6 +586,17 @@ class DailyReset(commands.Cog):
         if not hasattr(channel, "send"):
             raise RuntimeError("Discord ID đích không phải kênh gửi tin nhắn")
         return channel
+
+    async def _destinations(self, game: DailyGame) -> list[GuildNotification]:
+        legacy = self.legacy_games.get(game.slug)
+        return await notification_destinations(
+            self.bot,
+            self.settings,
+            "daily_reset",
+            game.slug,
+            legacy_channel_id=legacy.channel_id if legacy else None,
+            legacy_role_id=legacy.role_id if legacy else None,
+        )
 
     async def _send_subscriber_dms(
         self,
@@ -609,14 +639,18 @@ class DailyReset(commands.Cog):
         game: DailyGame,
         event: DailyEvent,
         *,
+        destination: GuildNotification | None = None,
         test: bool = False,
     ):
-        if game.channel_id is None:
-            raise RuntimeError(f"{game.name} chưa có CHANNEL_ID")
-        channel = await self._resolve_channel(game.channel_id)
+        if destination is None:
+            destinations = await self._destinations(game)
+            destination = destinations[0] if destinations else None
+        if destination is None or destination.channel_id is None:
+            raise RuntimeError(f"{game.name} chưa có kênh thông báo")
+        channel = await self._resolve_channel(destination.channel_id)
         role_content = None
-        if not test and event.event_type == "reset" and game.role_id:
-            role_content = f"<@&{game.role_id}>"
+        if not test and event.event_type == "reset" and destination.role_id:
+            role_content = f"<@&{destination.role_id}>"
         message = await channel.send(
             content=role_content,
             embed=build_daily_embed(game, event, preview=test),
@@ -638,7 +672,8 @@ class DailyReset(commands.Cog):
         sent_count = 0
         async with self.poll_lock:
             for game in self.games.values():
-                if game.channel_id is None:
+                destinations = await self._destinations(game)
+                if not destinations:
                     continue
                 for event in due_events(
                     game,
@@ -646,22 +681,40 @@ class DailyReset(commands.Cog):
                     warning_minutes=self.warning_minutes,
                     catchup_minutes=self.catchup_minutes,
                 ):
-                    if await self._is_sent(event.key):
-                        continue
-                    await self._announce_event(game, event)
-                    # Ghi nhận ngay sau khi kênh công khai gửi thành công để một
-                    # lỗi DM riêng lẻ không khiến card bị đăng lại ở vòng sau.
-                    await self._mark_sent(event)
-                    delivered, failed = await self._send_subscriber_dms(game, event)
-                    if delivered or failed:
-                        logger.info(
-                            "Daily Reset %s DM %s: thành công=%s, lỗi/đóng DM=%s",
-                            game.slug,
-                            event.event_type,
-                            delivered,
-                            failed,
-                        )
-                    sent_count += 1
+                    for destination in destinations:
+                        if await self._is_sent(destination.guild_id, event.key):
+                            continue
+                        try:
+                            await self._announce_event(
+                                game,
+                                event,
+                                destination=destination,
+                            )
+                        except Exception as error:
+                            logger.warning(
+                                "Không gửi được Daily Reset %s tới guild=%s "
+                                "channel=%s: %s",
+                                game.slug,
+                                destination.guild_id,
+                                destination.channel_id,
+                                error,
+                            )
+                            continue
+                        await self._mark_sent(destination.guild_id, event)
+                        sent_count += 1
+
+                    # Đăng ký DM đi theo user_id, không nhân lên theo số server.
+                    if not await self._is_sent(0, event.key):
+                        delivered, failed = await self._send_subscriber_dms(game, event)
+                        await self._mark_sent(0, event)
+                        if delivered or failed:
+                            logger.info(
+                                "Daily Reset %s DM %s: thành công=%s, lỗi/đóng DM=%s",
+                                game.slug,
+                                event.event_type,
+                                delivered,
+                                failed,
+                            )
             self.last_success_at = time.time()
             self.last_error = None
         return sent_count
@@ -681,6 +734,14 @@ class DailyReset(commands.Cog):
     @daily_reset_loop.before_loop
     async def before_daily_reset_loop(self) -> None:
         await self.bot.wait_until_ready()
+        for game in self.legacy_games.values():
+            await self.settings.migrate_legacy(
+                self.bot,
+                "daily_reset",
+                game.slug,
+                game.channel_id,
+                game.role_id,
+            )
 
     def _game(self, value: str) -> DailyGame | None:
         normalized = value.strip().casefold().replace("-", "_").replace(" ", "_")
@@ -787,7 +848,8 @@ class DailyReset(commands.Cog):
         rows = []
         for game in self.games.values():
             upcoming = next_reset_at(game, now)
-            destination = f"<#{game.channel_id}>" if game.channel_id else "chưa có kênh"
+            destinations = await self._destinations(game)
+            destination = f"{len(destinations)} server"
             rows.append(
                 f"• **{game.name}** — {game.schedule_label}, "
                 f"lần tới <t:{int(upcoming.timestamp())}:F>, {destination}"
@@ -857,9 +919,15 @@ class DailyReset(commands.Cog):
         selected = self._game(game)
         if selected is None:
             return await interaction.response.send_message("❌ Không tìm thấy game.", ephemeral=True)
-        if selected.channel_id is None:
+        destinations = await self._destinations(selected)
+        if interaction.guild_id:
+            destinations = [
+                item for item in destinations if item.guild_id == interaction.guild_id
+            ]
+        if not destinations:
             return await interaction.response.send_message(
-                f"❌ **{selected.name}** chưa có CHANNEL_ID.", ephemeral=True
+                f"❌ **{selected.name}** chưa có kênh trong server này.",
+                ephemeral=True,
             )
         await interaction.response.defer(ephemeral=True, thinking=True)
         reset_at = next_reset_at(selected, datetime.now(UTC))
@@ -870,7 +938,12 @@ class DailyReset(commands.Cog):
         )
         item = DailyEvent(selected.slug, event.value, scheduled, reset_at)
         try:
-            message = await self._announce_event(selected, item, test=True)
+            message = await self._announce_event(
+                selected,
+                item,
+                destination=destinations[0],
+                test=True,
+            )
         except Exception as error:
             logger.exception("Không gửi thử được Daily Reset %s", selected.slug)
             return await interaction.followup.send(
@@ -899,6 +972,22 @@ class DailyReset(commands.Cog):
             f"✅ Kiểm tra xong, vừa gửi `{count}` thông báo đến hạn.",
             ephemeral=True,
         )
+
+    async def send_settings_preview(self, setting: GuildNotification) -> str:
+        selected = self.games.get(setting.target)
+        if selected is None:
+            raise RuntimeError("Game Daily Reset này chưa được bật toàn cục.")
+        if setting.channel_id is None:
+            raise RuntimeError("Chưa chọn kênh thông báo.")
+        reset_at = next_reset_at(selected, datetime.now(UTC))
+        event = DailyEvent(selected.slug, "reset", reset_at, reset_at)
+        message = await self._announce_event(
+            selected,
+            event,
+            destination=setting,
+            test=True,
+        )
+        return message.jump_url
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -57,6 +57,8 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 
 - Scheduler UTC cho NIKKE, Blue Archive, Trickcal: Chibi Go, Chaos Zero Nightmare, Limbus Company và Brown Dust 2; từng game có thể bật/tắt, đổi giờ, kênh và role riêng trong `.env`.
 - Riêng Limbus chỉ nhắc Mirror Dungeon Reset vào Thứ Năm hằng tuần (06:00 KST), thay vì gửi checklist mỗi ngày.
+- Mỗi server tự chọn kênh/role và bật từng game bằng `/settings notifications`; người cấu hình cần quyền **Manage Server**.
+- Cấu hình channel/role cũ trong `.env` được nhập một lần cho server hiện tại; sau đó chỉnh bằng `/settings`.
 - Gửi cảnh báo trước reset và checklist tiếng Việt khi reset; role chỉ được ping ở thông báo reset thật.
 - Thành viên tự đăng ký/tắt DM bằng `/dailyreset subscribe`, `/dailyreset unsubscribe` hoặc nút dưới card reset.
 - SQLite chống gửi trùng sau restart và có cửa sổ gửi bù ngắn nếu bot vừa mất kết nối đúng giờ reset.
@@ -71,6 +73,7 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 | Blue Archive | ❌ | ✅ |
 
 - Chủ bot thêm/xóa code bằng slash command.
+- Kênh và role thông báo công khai được cấu hình độc lập cho từng server bằng `/settings notifications`.
 - Thành viên có thể lưu nickname/UID trong hồ sơ riêng. Brown Dust 2 hỗ trợ auto-redeem qua endpoint bên thứ ba BD2 Pulse; Bot không cần lưu tài khoản/mật khẩu. NIKKE và Blue Archive vẫn nhập tay vì chưa có API hỗ trợ.
 - Thành viên xem code đang hoạt động, đăng ký DM theo từng game và tùy chọn code mới, cảnh báo hết hạn hoặc bản tổng hợp Chủ nhật.
 - Code redeem thành công, được API báo `AlreadyUsed`, hoặc được đánh dấu `/coupon used` sẽ được ẩn khỏi danh sách của riêng người đó; `/coupon history` xem lại kết quả.
@@ -204,6 +207,7 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 | Limbus Asset | `/limbusasset status`, `/limbusasset preview`; `/limbusasset sync` (chủ bot) |
 | Limbus Gacha | `/gacha [pulls]` — mô phỏng Standard Extraction ×1 hoặc ×10 |
 | Project Moon | `/projectmoon status`, `/projectmoon preview`, `/projectmoon test`, `/projectmoon check` (chủ bot) |
+| Cấu hình server | `/settings notifications` — quản trị viên chọn kênh, role, bật/tắt và gửi thử thông báo |
 | Daily Reset | `/dailyreset next`, `/dailyreset subscribe`, `/dailyreset unsubscribe`, `/dailyreset subscriptions`; `status/preview/test/check` (chủ bot) |
 | Gift Code | `/coupon codes`, `/coupon subscribe`, `/coupon unsubscribe`, `/coupon subscriptions`, `/coupon history`, `/coupon preferences`, `/coupon used`; `add/remove/status` (chủ bot) |
 | Ảnh | `/art`, `/artecchi`, `/artnsfw`, `/wallpaper`, `/artinfo`, `/sticker`, `/emoji`, `/saucy` |
@@ -234,6 +238,7 @@ Gateway cho file vượt giới hạn Discord chạy tại `127.0.0.1:8765`; Clo
 | `youtube_notifications.db` | Video Project Moon đã thấy và trạng thái chống thông báo trùng |
 | `daily_reset_notifications.db` | Lịch đã gửi và đăng ký Daily Reset DM của thành viên |
 | `coupon_codes.db` | Gift code, hồ sơ nickname/UID, lịch sử redeem, đăng ký DM và trạng thái chống gửi trùng |
+| `guild_settings.db` | Kênh, role và trạng thái notification riêng theo `guild_id` |
 | `audio_cache/` | Cache âm thanh đã xử lý |
 | `temp_downloads/` | File tải tạm thời |
 

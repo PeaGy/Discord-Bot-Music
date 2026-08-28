@@ -16,6 +16,7 @@ from features.daily_reset import (
     next_reset_at,
     parse_utc_time,
 )
+from guild_settings import GuildNotification
 
 
 NIKKE = next(game for game in BASE_GAMES if game.slug == "nikke")
@@ -131,6 +132,12 @@ class DailyResetScheduleTests(unittest.TestCase):
 
         self.assertEqual(set(games), {"limbus_company"})
 
+    def test_public_scheduler_can_load_all_games_beyond_legacy_env_filter(self):
+        with patch.dict(os.environ, {"DAILY_RESET_GAMES": "limbus"}):
+            games = load_games_from_env(include_all=True)
+
+        self.assertEqual(set(games), {game.slug for game in BASE_GAMES})
+
 
 class DailyResetStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_same_event_is_announced_only_once(self):
@@ -139,6 +146,18 @@ class DailyResetStateTests(unittest.IsolatedAsyncioTestCase):
             cog.db_path = Path(directory) / "daily-reset.db"
             configured = replace(NIKKE, channel_id=123)
             cog.games = {configured.slug: configured}
+            destination = GuildNotification(
+                guild_id=456,
+                feature="daily_reset",
+                target="nikke",
+                enabled=True,
+                channel_id=123,
+                role_id=None,
+                created_at=1,
+                updated_by=1,
+                updated_at=1,
+            )
+            cog._destinations = AsyncMock(return_value=[destination])
             cog._announce_event = AsyncMock()
             await cog._init_db()
             now = datetime(2026, 8, 27, 20, 1, tzinfo=UTC)

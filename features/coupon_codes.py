@@ -23,6 +23,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from guild_settings import (
+    GuildNotification,
+    GuildSettingsStore,
+    notification_destinations,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +170,7 @@ class CouponCodes(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.settings = GuildSettingsStore()
         self.db_path = Path(
             os.getenv("COUPON_DB", "coupon_codes.db")
         ).resolve()
@@ -181,6 +188,7 @@ class CouponCodes(commands.Cog):
 
     async def cog_load(self) -> None:
         await self._init_db()
+        await self.settings.init()
         self.coupon_loop.start()
 
     async def cog_unload(self) -> None:
@@ -445,6 +453,24 @@ class CouponCodes(commands.Cog):
 
     def _role_id(self, game: CouponGame) -> int:
         return max(0, _env_int(f"COUPON_{game.slug.upper()}_ROLE_ID", 0))
+
+    async def _destinations(self, game: CouponGame) -> list[GuildNotification]:
+        return await notification_destinations(
+            self.bot,
+            self.settings,
+            "coupon",
+            game.slug,
+            legacy_channel_id=self._channel_id(game) or None,
+            legacy_role_id=self._role_id(game) or None,
+        )
+
+    async def _resolve_channel(self, channel_id: int):
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            channel = await self.bot.fetch_channel(channel_id)
+        if not hasattr(channel, "send"):
+            raise RuntimeError("Discord ID đích không phải kênh gửi tin nhắn")
+        return channel
 
     async def _notification_allowed(
         self, user_id: int, game: str, code: str, kind: str
@@ -729,28 +755,56 @@ class CouponCodes(commands.Cog):
             await asyncio.sleep(0.25)
         return success, already, failed
 
-    async def _announce_coupon(self, row: dict, *, force: bool = False) -> tuple[int, int]:
+    async def _announce_coupon_channels(
+        self, row: dict, *, force: bool = False
+    ) -> tuple[int, int]:
         game = GAMES[row["game"]]
         embed = self._coupon_embed(game, row, title=f"Code {game.short_name} mới")
         sent = 0
         failed = 0
-        channel_id = self._channel_id(game)
-        if channel_id and (force or await self._notification_allowed(0, game.slug, row["code"], "channel")):
-            channel = self.bot.get_channel(channel_id)
-            if channel is not None:
-                role_id = self._role_id(game)
-                content = f"<@&{role_id}>" if role_id else None
-                try:
-                    await channel.send(
-                        content=content,
-                        embed=embed,
-                        allowed_mentions=discord.AllowedMentions(
-                            everyone=False, users=False, roles=True
-                        ),
-                    )
-                    await self._record_notification(0, game.slug, row["code"], "channel")
-                except Exception:
-                    logger.warning("Không gửi được coupon vào channel=%s", channel_id, exc_info=True)
+        for setting in await self._destinations(game):
+            if setting.channel_id is None:
+                continue
+            added_at = int(row.get("added_at") or 0)
+            if not force and added_at and setting.created_at > added_at:
+                continue
+            notification_kind = f"channel:{setting.guild_id}"
+            if not force and not await self._notification_allowed(
+                0, game.slug, row["code"], notification_kind
+            ):
+                continue
+            try:
+                channel = await self._resolve_channel(setting.channel_id)
+                content = f"<@&{setting.role_id}>" if setting.role_id else None
+                await channel.send(
+                    content=content,
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions(
+                        everyone=False,
+                        users=False,
+                        roles=setting.role_id is not None,
+                    ),
+                )
+                await self._record_notification(
+                    0, game.slug, row["code"], notification_kind
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+                logger.warning(
+                    "Không gửi được coupon tới guild=%s channel=%s",
+                    setting.guild_id,
+                    setting.channel_id,
+                    exc_info=True,
+                )
+        return sent, failed
+
+    async def _announce_coupon(self, row: dict, *, force: bool = False) -> tuple[int, int]:
+        game = GAMES[row["game"]]
+        embed = self._coupon_embed(game, row, title=f"Code {game.short_name} mới")
+        await self._announce_coupon_channels(row, force=force)
+        sent = 0
+        failed = 0
         for user_id in await self._subscribers(
             game.slug, "new_alerts", mode="notification-only"
         ):
@@ -1089,6 +1143,7 @@ class CouponCodes(commands.Cog):
             return await interaction.response.send_message(
                 "❌ Cần ghi phần thưởng của code.", ephemeral=True
             )
+        added_at = int(time.time())
         db = await self._connect()
         try:
             await db.execute(
@@ -1102,7 +1157,7 @@ class CouponCodes(commands.Cog):
                 """,
                 (
                     selected.slug, normalized, reward_text, expires_at, source_url,
-                    interaction.user.id, int(time.time()),
+                    interaction.user.id, added_at,
                 ),
             )
             await db.commit()
@@ -1111,6 +1166,7 @@ class CouponCodes(commands.Cog):
         row = {
             "game": selected.slug, "code": normalized, "rewards": reward_text,
             "expires_at": expires_at, "source_url": source_url, "active": 1,
+            "added_at": added_at,
         }
         await interaction.response.defer(ephemeral=True, thinking=True)
         sent, failed = await self._announce_coupon(row)
@@ -1172,10 +1228,12 @@ class CouponCodes(commands.Cog):
             )).fetchone())[0])
         finally:
             await db.close()
-        channels = ", ".join(
-            f"{game.short_name}: `{self._channel_id(game) or 'DM only'}`"
-            for game in GAMES.values()
-        )
+        channel_counts = []
+        for game in GAMES.values():
+            channel_counts.append(
+                f"{game.short_name}: `{len(await self._destinations(game))} server`"
+            )
+        channels = ", ".join(channel_counts)
         await interaction.response.send_message(
             "🎟️ **Coupon Health**\n"
             f"• Code hoạt động: `{coupons}`\n"
@@ -1186,6 +1244,28 @@ class CouponCodes(commands.Cog):
             f"• Kênh: {channels}",
             ephemeral=True,
         )
+
+    async def send_settings_preview(self, setting: GuildNotification) -> str:
+        game = GAMES.get(setting.target)
+        if game is None:
+            raise RuntimeError("Game coupon này không được hỗ trợ.")
+        if setting.channel_id is None:
+            raise RuntimeError("Chưa chọn kênh thông báo.")
+        rows = await self._coupon_rows(game.slug)
+        row = rows[0] if rows else {
+            "game": game.slug,
+            "code": "PETO-PREVIEW",
+            "rewards": "Đây là bản xem thử cấu hình thông báo coupon.",
+            "expires_at": None,
+            "source_url": "",
+            "active": 1,
+        }
+        channel = await self._resolve_channel(setting.channel_id)
+        message = await channel.send(
+            embed=self._coupon_embed(game, row, title=f"Bản thử code {game.short_name}"),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return message.jump_url
 
     async def _expire_old_codes(self) -> int:
         db = await self._connect()
@@ -1198,6 +1278,26 @@ class CouponCodes(commands.Cog):
             return max(0, cursor.rowcount)
         finally:
             await db.close()
+
+    async def _retry_public_coupon_notifications(self) -> tuple[int, int]:
+        """Retry recent codes only for guilds that have not received them."""
+        db = await self._connect()
+        try:
+            cursor = await db.execute(
+                "SELECT * FROM coupons WHERE active=1 AND added_at>=?",
+                (int(time.time()) - 7 * 86400,),
+            )
+            rows = [dict(row) for row in await cursor.fetchall()]
+        finally:
+            await db.close()
+        sent = failed = 0
+        for row in rows:
+            if row.get("game") not in GAMES:
+                continue
+            delivered, errors = await self._announce_coupon_channels(row)
+            sent += delivered
+            failed += errors
+        return sent, failed
 
     async def _send_expiry_warnings(self) -> int:
         now = int(time.time())
@@ -1345,16 +1445,31 @@ class CouponCodes(commands.Cog):
         async with self._job_lock:
             try:
                 expired = await self._expire_old_codes()
+                public_sent, public_failed = (
+                    await self._retry_public_coupon_notifications()
+                )
                 warnings = await self._send_expiry_warnings()
                 digest = await self._weekly_digest()
                 auto_success, auto_already, auto_failed = (
                     await self._scheduled_auto_redemptions()
                 )
-                if expired or warnings or digest or auto_success or auto_already or auto_failed:
+                if (
+                    expired
+                    or public_sent
+                    or public_failed
+                    or warnings
+                    or digest
+                    or auto_success
+                    or auto_already
+                    or auto_failed
+                ):
                     logger.info(
-                        "Coupon scheduler: hết hạn=%s, warning DM=%s, digest DM=%s, "
+                        "Coupon scheduler: hết hạn=%s, public=%s/%s, "
+                        "warning DM=%s, digest DM=%s, "
                         "auto thành công=%s, đã nhập=%s, lỗi=%s",
                         expired,
+                        public_sent,
+                        public_failed,
                         warnings,
                         digest,
                         auto_success,
@@ -1367,6 +1482,14 @@ class CouponCodes(commands.Cog):
     @coupon_loop.before_loop
     async def before_coupon_loop(self) -> None:
         await self.bot.wait_until_ready()
+        for game in GAMES.values():
+            await self.settings.migrate_legacy(
+                self.bot,
+                "coupon",
+                game.slug,
+                self._channel_id(game) or None,
+                self._role_id(game) or None,
+            )
 
 
 async def setup(bot: commands.Bot) -> None:

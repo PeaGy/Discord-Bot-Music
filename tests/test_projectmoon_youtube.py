@@ -10,6 +10,7 @@ from features.projectmoon_youtube import (
     matches_limbus_keywords,
     parse_youtube_feed,
 )
+from guild_settings import GuildNotification
 
 
 SAMPLE_FEED = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -95,7 +96,7 @@ class ProjectMoonYouTubeStateTests(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as directory:
             cog = ProjectMoonYouTube(bot=object())
             cog.db_path = Path(directory) / "youtube.db"
-            cog._announce = AsyncMock()
+            cog._announce = AsyncMock(return_value=(1, 0))
             await cog._init_db()
 
             cog._fetch_feed = AsyncMock(return_value=[old_entry])
@@ -104,10 +105,43 @@ class ProjectMoonYouTubeStateTests(unittest.IsolatedAsyncioTestCase):
 
             cog._fetch_feed = AsyncMock(return_value=[new_entry, old_entry])
             self.assertEqual(await cog.poll_once(), ("checked", 1))
-            cog._announce.assert_awaited_once_with(new_entry)
+            cog._announce.assert_awaited_once()
 
             self.assertEqual(await cog.poll_once(), ("checked", 0))
             self.assertEqual(cog._announce.await_count, 1)
+
+    async def test_failed_guild_retries_without_reposting_to_successful_guild(self):
+        entry = parse_youtube_feed(SAMPLE_FEED)[0]
+        first = GuildNotification(
+            1, "projectmoon", "official_youtube", True, 10, None, 0, 1, 1
+        )
+        second = GuildNotification(
+            2, "projectmoon", "official_youtube", True, 20, None, 0, 1, 1
+        )
+        successful_channel = AsyncMock()
+
+        with TemporaryDirectory() as directory:
+            cog = ProjectMoonYouTube(bot=object())
+            cog.db_path = Path(directory) / "youtube.db"
+            await cog._init_db()
+            cog._destinations = AsyncMock(return_value=[first, second])
+
+            async def resolve(channel_id):
+                if channel_id == 20:
+                    raise RuntimeError("missing permissions")
+                return successful_channel
+
+            cog._resolve_destination = AsyncMock(side_effect=resolve)
+
+            self.assertEqual(
+                await cog._announce(entry, first_seen_at=1),
+                (1, 1),
+            )
+            self.assertEqual(
+                await cog._announce(entry, first_seen_at=1),
+                (0, 1),
+            )
+            successful_channel.send.assert_awaited_once()
 
 
 if __name__ == "__main__":

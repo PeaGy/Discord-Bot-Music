@@ -17,6 +17,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from guild_settings import (
+    GuildNotification,
+    GuildSettingsStore,
+    notification_destinations,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +211,7 @@ class ProjectMoonYouTube(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.settings = GuildSettingsStore()
         self.enabled = _env_bool("PROJECT_MOON_YOUTUBE_ENABLED", False)
         self.discord_channel_id = _optional_snowflake(
             "PROJECT_MOON_YOUTUBE_DISCORD_CHANNEL_ID"
@@ -235,22 +242,16 @@ class ProjectMoonYouTube(commands.Cog):
 
     async def cog_load(self) -> None:
         await self._init_db()
+        await self.settings.init()
         if not self.enabled:
             logger.info(
                 "Project Moon YouTube notifier đang tắt; dùng "
                 "PROJECT_MOON_YOUTUBE_ENABLED=true để bật"
             )
             return
-        if self.discord_channel_id is None:
-            self.enabled = False
-            logger.warning(
-                "Project Moon YouTube notifier bị tắt vì thiếu "
-                "PROJECT_MOON_YOUTUBE_DISCORD_CHANNEL_ID"
-            )
-            return
         self.youtube_poll.start()
         logger.info(
-            "Project Moon YouTube notifier sẵn sàng: channel=%s, poll=%s phút, "
+            "Project Moon YouTube notifier sẵn sàng: legacy_channel=%s, poll=%s phút, "
             "keywords=%s",
             self.discord_channel_id,
             self.poll_minutes,
@@ -284,6 +285,42 @@ class ProjectMoonYouTube(commands.Cog):
                 )
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS youtube_guild_announcements (
+                    source_id TEXT NOT NULL,
+                    video_id TEXT NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    announced_at INTEGER NOT NULL,
+                    PRIMARY KEY (source_id, video_id, guild_id)
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS youtube_notifier_schema_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            migrated = await (
+                await db.execute(
+                    "SELECT 1 FROM youtube_notifier_schema_meta "
+                    "WHERE key='guild_delivery_v1'"
+                )
+            ).fetchone()
+            if migrated is None:
+                # Rows from the single-server implementation were already
+                # processed. Do not replay its RSS backlog after this upgrade.
+                await db.execute(
+                    "UPDATE youtube_seen_videos SET announced_at=first_seen_at "
+                    "WHERE announced_at IS NULL"
+                )
+                await db.execute(
+                    "INSERT INTO youtube_notifier_schema_meta(key, value) "
+                    "VALUES('guild_delivery_v1', '1')"
+                )
             await db.commit()
 
     async def _fetch_feed(self) -> list[YouTubeFeedEntry]:
@@ -367,7 +404,7 @@ class ProjectMoonYouTube(commands.Cog):
         entries: list[YouTubeFeedEntry],
     ) -> None:
         for entry in entries:
-            await self._mark_seen(db, entry, announced=False)
+            await self._mark_seen(db, entry, announced=True)
         await db.execute(
             """
             INSERT OR IGNORE INTO youtube_notifier_meta (source_id, initialized_at)
@@ -377,32 +414,86 @@ class ProjectMoonYouTube(commands.Cog):
         )
         await db.commit()
 
-    async def _resolve_destination(self):
-        if self.discord_channel_id is None:
+    async def _resolve_destination(self, channel_id: int | None = None):
+        channel_id = channel_id or self.discord_channel_id
+        if channel_id is None:
             raise RuntimeError("Chưa cấu hình kênh Discord nhận thông báo")
-        channel = self.bot.get_channel(self.discord_channel_id)
+        channel = self.bot.get_channel(channel_id)
         if channel is None:
-            channel = await self.bot.fetch_channel(self.discord_channel_id)
+            channel = await self.bot.fetch_channel(channel_id)
         if not hasattr(channel, "send"):
             raise RuntimeError("Discord ID đích không phải kênh có thể gửi tin nhắn")
         return channel
 
-    async def _announce(self, entry: YouTubeFeedEntry) -> None:
-        destination = await self._resolve_destination()
-        content = (
-            f"<@&{self.mention_role_id}>"
-            if self.mention_role_id is not None
-            else None
+    async def _destinations(self) -> list[GuildNotification]:
+        return await notification_destinations(
+            self.bot,
+            self.settings,
+            "projectmoon",
+            "official_youtube",
+            legacy_channel_id=self.discord_channel_id,
+            legacy_role_id=self.mention_role_id,
         )
-        await destination.send(
-            content=content,
-            embed=build_video_embed(entry),
-            allowed_mentions=discord.AllowedMentions(
-                everyone=False,
-                users=False,
-                roles=self.mention_role_id is not None,
-            ),
-        )
+
+    async def _announce(
+        self,
+        entry: YouTubeFeedEntry,
+        *,
+        first_seen_at: int,
+    ) -> tuple[int, int]:
+        delivered = 0
+        failed = 0
+        for setting in await self._destinations():
+            if setting.channel_id is None:
+                continue
+            # A server configured later must not receive old RSS entries.
+            if setting.created_at and setting.created_at > first_seen_at:
+                continue
+            async with aiosqlite.connect(self.db_path) as db:
+                already = await (
+                    await db.execute(
+                        "SELECT 1 FROM youtube_guild_announcements "
+                        "WHERE source_id=? AND video_id=? AND guild_id=?",
+                        (self.youtube_channel_id, entry.video_id, setting.guild_id),
+                    )
+                ).fetchone()
+            if already:
+                continue
+            try:
+                destination = await self._resolve_destination(setting.channel_id)
+                content = f"<@&{setting.role_id}>" if setting.role_id else None
+                await destination.send(
+                    content=content,
+                    embed=build_video_embed(entry),
+                    allowed_mentions=discord.AllowedMentions(
+                        everyone=False,
+                        users=False,
+                        roles=setting.role_id is not None,
+                    ),
+                )
+                async with aiosqlite.connect(self.db_path) as db:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO youtube_guild_announcements "
+                        "(source_id, video_id, guild_id, announced_at) VALUES(?, ?, ?, ?)",
+                        (
+                            self.youtube_channel_id,
+                            entry.video_id,
+                            setting.guild_id,
+                            int(time.time()),
+                        ),
+                    )
+                    await db.commit()
+                delivered += 1
+            except Exception as error:
+                failed += 1
+                logger.warning(
+                    "Không gửi được Project Moon video=%s tới guild=%s channel=%s: %s",
+                    entry.video_id,
+                    setting.guild_id,
+                    setting.channel_id,
+                    error,
+                )
+        return delivered, failed
 
     async def poll_once(self) -> tuple[str, int]:
         """Kiểm tra một lần; trả trạng thái và số video vừa thông báo."""
@@ -423,14 +514,49 @@ class ProjectMoonYouTube(commands.Cog):
 
                 seen_ids = await self._seen_ids(db, entries)
                 unseen = [entry for entry in reversed(entries) if entry.video_id not in seen_ids]
-                announced_count = 0
                 for entry in unseen:
                     should_announce = matches_limbus_keywords(entry, self.keywords)
-                    if should_announce:
-                        await self._announce(entry)
+                    # Matching videos stay pending until every configured guild
+                    # either receives them or is no longer enabled.
+                    await self._mark_seen(
+                        db,
+                        entry,
+                        announced=not should_announce,
+                    )
+                await db.commit()
+
+                entry_ids = [entry.video_id for entry in entries]
+                placeholders = ",".join("?" for _ in entry_ids)
+                pending: dict[str, int] = {}
+                if entry_ids:
+                    cursor = await db.execute(
+                        f"SELECT video_id, first_seen_at FROM youtube_seen_videos "
+                        f"WHERE source_id=? AND announced_at IS NULL "
+                        f"AND video_id IN ({placeholders})",
+                        (self.youtube_channel_id, *entry_ids),
+                    )
+                    pending = {
+                        str(row[0]): int(row[1]) for row in await cursor.fetchall()
+                    }
+
+                announced_count = 0
+                for entry in reversed(entries):
+                    first_seen_at = pending.get(entry.video_id)
+                    if first_seen_at is None:
+                        continue
+                    delivered, failed = await self._announce(
+                        entry,
+                        first_seen_at=first_seen_at,
+                    )
+                    if delivered:
                         announced_count += 1
-                    await self._mark_seen(db, entry, announced=should_announce)
-                    await db.commit()
+                    if failed == 0:
+                        await db.execute(
+                            "UPDATE youtube_seen_videos SET announced_at=? "
+                            "WHERE source_id=? AND video_id=?",
+                            (int(time.time()), self.youtube_channel_id, entry.video_id),
+                        )
+                        await db.commit()
 
                 await db.execute(
                     """
@@ -440,6 +566,15 @@ class ProjectMoonYouTube(commands.Cog):
                         WHERE source_id = ?
                         ORDER BY first_seen_at DESC
                         LIMIT 500
+                    )
+                    """,
+                    (self.youtube_channel_id, self.youtube_channel_id),
+                )
+                await db.execute(
+                    """
+                    DELETE FROM youtube_guild_announcements
+                    WHERE source_id = ? AND video_id NOT IN (
+                        SELECT video_id FROM youtube_seen_videos WHERE source_id = ?
                     )
                     """,
                     (self.youtube_channel_id, self.youtube_channel_id),
@@ -466,6 +601,13 @@ class ProjectMoonYouTube(commands.Cog):
     @youtube_poll.before_loop
     async def before_youtube_poll(self) -> None:
         await self.bot.wait_until_ready()
+        await self.settings.migrate_legacy(
+            self.bot,
+            "projectmoon",
+            "official_youtube",
+            self.discord_channel_id,
+            self.mention_role_id,
+        )
 
     async def _require_owner(self, interaction: discord.Interaction) -> bool:
         if await self.bot.is_owner(interaction.user):
@@ -483,11 +625,8 @@ class ProjectMoonYouTube(commands.Cog):
     async def projectmoon_status(self, interaction: discord.Interaction) -> None:
         if not await self._require_owner(interaction):
             return
-        destination = (
-            f"<#{self.discord_channel_id}>"
-            if self.discord_channel_id is not None
-            else "chưa cấu hình"
-        )
+        destinations = await self._destinations()
+        destination = f"{len(destinations)} server"
         last_check = (
             f"<t:{int(self.last_success_at)}:R>"
             if self.last_success_at is not None
@@ -602,6 +741,21 @@ class ProjectMoonYouTube(commands.Cog):
             f"[mở tin nhắn]({sent.jump_url}). Không ping role và không đổi dữ liệu chống trùng.",
             ephemeral=True,
         )
+
+    async def send_settings_preview(self, setting: GuildNotification) -> str:
+        if setting.channel_id is None:
+            raise RuntimeError("Chưa chọn kênh thông báo.")
+        entries = await self._fetch_feed()
+        matching = [
+            entry for entry in entries if matches_limbus_keywords(entry, self.keywords)
+        ]
+        entry = matching[0] if matching else entries[0]
+        destination = await self._resolve_destination(setting.channel_id)
+        message = await destination.send(
+            embed=build_video_embed(entry, preview=True),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return message.jump_url
 
 
 async def setup(bot: commands.Bot) -> None:

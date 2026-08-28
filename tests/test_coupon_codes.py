@@ -18,6 +18,7 @@ from features.coupon_codes import (
     parse_expiration,
     valid_source_url,
 )
+from guild_settings import GuildNotification
 
 
 class CouponParsingTests(unittest.TestCase):
@@ -78,6 +79,41 @@ class CouponParsingTests(unittest.TestCase):
 
 
 class CouponDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_coupon_retries_only_failed_guild(self):
+        first = GuildNotification(
+            1, "coupon", "nikke", True, 10, None, 0, 1, 1
+        )
+        second = GuildNotification(
+            2, "coupon", "nikke", True, 20, None, 0, 1, 1
+        )
+        successful_channel = AsyncMock()
+        row = {
+            "game": "nikke",
+            "code": "PETO2026",
+            "rewards": "100 Gems",
+            "expires_at": None,
+            "source_url": "",
+            "active": 1,
+            "added_at": int(time.time()),
+        }
+
+        with TemporaryDirectory() as directory:
+            cog = CouponCodes(bot=object())
+            cog.db_path = Path(directory) / "coupons.db"
+            await cog._init_db()
+            cog._destinations = AsyncMock(return_value=[first, second])
+
+            async def resolve(channel_id):
+                if channel_id == 20:
+                    raise RuntimeError("missing permissions")
+                return successful_channel
+
+            cog._resolve_channel = AsyncMock(side_effect=resolve)
+
+            self.assertEqual(await cog._announce_coupon_channels(row), (1, 1))
+            self.assertEqual(await cog._announce_coupon_channels(row), (0, 1))
+            successful_channel.send.assert_awaited_once()
+
     async def test_existing_notification_database_is_migrated(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "coupons.db"
