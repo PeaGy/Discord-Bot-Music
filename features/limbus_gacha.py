@@ -1,8 +1,9 @@
-"""Limbus Company Standard Extraction simulator.
+"""Limbus Company Standard Extraction renderer and optional economy game.
 
-The simulator deliberately reads the already-synced wiki database instead of
-scraping the live website for every pull.  It does not spend currency or keep
-an ownership inventory; the result is only for fun.
+The feature deliberately reads the already-synced wiki database instead of
+scraping the live website for every pull. It stays a free simulator in servers
+where Peto Economy is disabled; enabled servers spend Peto Points and persist
+their collection in the shared economy database.
 """
 
 from __future__ import annotations
@@ -34,6 +35,15 @@ from PIL import (
     ImageFilter,
     ImageOps,
     UnidentifiedImageError,
+)
+
+from economy_store import (
+    AlreadyOwned,
+    EconomyAccount,
+    EconomyDisabled,
+    InsufficientExtractionPoints,
+    InsufficientPoints,
+    get_economy_store,
 )
 
 
@@ -90,6 +100,17 @@ TENTH_PULL_RATES: tuple[tuple[str, float], ...] = (
     (KIND_ID3, 2.9),
     (KIND_ID2, 95.8),
 )
+STANDARD_RATES_WITHOUT_EGO: tuple[tuple[str, float], ...] = (
+    (KIND_ID3, 3.0),
+    (KIND_ID2, 13.0),
+    (KIND_ID1, 84.0),
+)
+TENTH_PULL_RATES_WITHOUT_EGO: tuple[tuple[str, float], ...] = (
+    (KIND_ID3, 3.0),
+    (KIND_ID2, 97.0),
+)
+GACHA_POINT_COST = {1: 130, 10: 1300}
+EXTRACTION_EXCHANGE_COST = 200
 
 RARITY_EMOJI = {
     KIND_ID1: "<:IDNumber1:1537226566507962449>",
@@ -340,19 +361,31 @@ def pull_entries(
     pool: GachaPool,
     count: int,
     rng: random.Random | None = None,
+    *,
+    owned_egos: set[str] | None = None,
 ) -> tuple[GachaEntry, ...]:
     if count not in {1, 10}:
         raise ValueError("Chỉ hỗ trợ quay 1 hoặc 10 lần.")
     rng = rng or random.SystemRandom()
     results: list[GachaEntry] = []
     used_egos: set[str] = set()
+    owned_egos = set(owned_egos or ())
     for index in range(count):
-        rates = TENTH_PULL_RATES if count == 10 and index == 9 else STANDARD_RATES
+        available_egos = tuple(
+            item
+            for item in pool.entries(KIND_EGO)
+            if item.name not in owned_egos and item.name not in used_egos
+        )
+        if available_egos:
+            rates = TENTH_PULL_RATES if count == 10 and index == 9 else STANDARD_RATES
+        else:
+            rates = (
+                TENTH_PULL_RATES_WITHOUT_EGO
+                if count == 10 and index == 9
+                else STANDARD_RATES_WITHOUT_EGO
+            )
         kind = roll_kind(rng, rates)
-        candidates = pool.entries(kind)
-        if kind == KIND_EGO:
-            remaining = tuple(item for item in candidates if item.name not in used_egos)
-            candidates = remaining or candidates
+        candidates = available_egos if kind == KIND_EGO else pool.entries(kind)
         if not candidates:
             raise RuntimeError(f"Pool {kind} đang trống.")
         result = rng.choice(candidates)
@@ -634,7 +667,7 @@ def build_rates_embed(pool: GachaPool | None = None) -> discord.Embed:
             inline=False,
         )
     embed.set_footer(
-        text="Lượt 10 bảo đảm 2★ trở lên • Không lưu sở hữu"
+        text="Lượt 10 bảo đảm 2★ trở lên • Economy bật thì kết quả được lưu"
     )
     return embed
 
@@ -664,13 +697,22 @@ class LimbusGachaView(discord.ui.View):
         await interaction.response.defer()
         async with self.roll_lock:
             try:
-                payload = await self.cog.make_payload(count)
+                if interaction.guild_id is None:
+                    raise EconomyDisabled("Gacha economy chỉ dùng trong server.")
+                payload = await self.cog.perform_gacha(
+                    interaction.guild_id,
+                    interaction.user.id,
+                    count,
+                    source_id=f"interaction:{interaction.id}",
+                )
                 attachments: list[discord.File] = [payload.file] if payload.file else []
                 await interaction.edit_original_response(
                     embed=payload.embed,
                     attachments=attachments,
                     view=self,
                 )
+            except (InsufficientPoints, EconomyDisabled) as error:
+                await interaction.followup.send(f"❌ {error}", ephemeral=True)
             except Exception as error:
                 logger.exception("Không thể quay lại Limbus gacha")
                 await interaction.followup.send(
@@ -710,14 +752,21 @@ class LimbusGachaView(discord.ui.View):
 
 
 class LimbusGacha(commands.Cog):
+    exchange_group = app_commands.Group(
+        name="exchange",
+        description="Đổi Extraction Points lấy vật phẩm Limbus",
+    )
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.session: aiohttp.ClientSession | None = None
         self.pool: GachaPool | None = None
         self.pool_loaded_at = 0.0
         self.pool_lock = asyncio.Lock()
+        self.account_locks: dict[tuple[int, int], asyncio.Lock] = {}
         self.image_semaphore = asyncio.Semaphore(10)
         self.art_cache_dir: Path | None = None
+        self.economy_store = get_economy_store(bot)
 
     async def cog_load(self) -> None:
         # Chuẩn bị filesystem trước khi mở HTTP session để không rò session nếu
@@ -725,6 +774,7 @@ class LimbusGacha(commands.Cog):
         self.art_cache_dir = await asyncio.to_thread(
             _prepare_art_cache_dir, ART_CACHE_DIR
         )
+        await self.economy_store.init()
         timeout = aiohttp.ClientTimeout(
             total=IMAGE_TIMEOUT_SECONDS,
             connect=min(15, IMAGE_TIMEOUT_SECONDS),
@@ -838,9 +888,16 @@ class LimbusGacha(commands.Cog):
         filename = f"limbus-gacha-{int(time.time() * 1000)}.png"
         return discord.File(io.BytesIO(png), filename=filename)
 
-    async def make_payload(self, count: int) -> GachaPayload:
+    async def make_payload(
+        self,
+        count: int,
+        *,
+        pulls: Sequence[GachaEntry] | None = None,
+        account: EconomyAccount | None = None,
+        point_cost: int = 0,
+    ) -> GachaPayload:
         pool = await self.get_pool()
-        pulls = pull_entries(pool, count)
+        pulls = tuple(pulls or pull_entries(pool, count))
         if count == 1:
             entry = pulls[0]
             embed = discord.Embed(
@@ -855,7 +912,12 @@ class LimbusGacha(commands.Cog):
             if entry.image_url:
                 embed.set_image(url=entry.image_url)
             embed.set_footer(
-                text="Peto Gacha • Mô phỏng • Nguồn: Limbus Company Wiki"
+                text=(
+                    f"Còn {account.balance:,} Peto Points • "
+                    f"Extraction Points {account.extraction_points:,}/200"
+                    if account
+                    else "Peto Gacha • Mô phỏng • Nguồn: Limbus Company Wiki"
+                )
             )
             return GachaPayload(embed, None, pulls)
 
@@ -881,18 +943,149 @@ class LimbusGacha(commands.Cog):
             ),
             inline=False,
         )
+        if account:
+            embed.add_field(
+                name="Peto Economy",
+                value=(
+                    f"Đã dùng `{point_cost:,}` điểm • "
+                    f"Còn `{account.balance:,}` • "
+                    f"Extraction Points `{account.extraction_points:,}/200`"
+                ),
+                inline=False,
+            )
         file = await self._collage_file(pulls)
         if file:
             embed.set_image(url=f"attachment://{file.filename}")
         embed.set_footer(
-            text="Lượt 10 bảo đảm 2★+ • Mô phỏng • Nguồn: Limbus Company Wiki"
+            text=(
+                "Lượt 10 bảo đảm 2★+ • Kết quả đã lưu vào collection"
+                if account
+                else "Lượt 10 bảo đảm 2★+ • Mô phỏng • Nguồn: Limbus Company Wiki"
+            )
         )
         return GachaPayload(embed, file, pulls)
+
+    async def perform_gacha(
+        self,
+        guild_id: int,
+        user_id: int,
+        count: int,
+        *,
+        source_id: str,
+    ) -> GachaPayload:
+        pool = await self.get_pool()
+        setting = await self.economy_store.get_settings(guild_id)
+        if not setting.enabled:
+            return await self.make_payload(count, pulls=pull_entries(pool, count))
+
+        # Serialize paid rolls for one account so two simultaneous slash commands
+        # cannot both select an E.G.O before either transaction records ownership.
+        account_lock = self.account_locks.setdefault(
+            (int(guild_id), int(user_id)), asyncio.Lock()
+        )
+        async with account_lock:
+            owned_egos = await self.economy_store.owned_names(
+                guild_id, user_id, KIND_EGO
+            )
+            pulls = pull_entries(pool, count, owned_egos=owned_egos)
+            point_cost = GACHA_POINT_COST[count]
+            account = await self.economy_store.record_gacha(
+                guild_id,
+                user_id,
+                point_cost=point_cost,
+                results=[(entry.kind, entry.name) for entry in pulls],
+                source_id=source_id,
+            )
+        return await self.make_payload(
+            count,
+            pulls=pulls,
+            account=account,
+            point_cost=point_cost,
+        )
+
+    async def exchange_identity_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        if interaction.guild_id is None:
+            return []
+        try:
+            pool = await self.get_pool()
+            owned = await self.economy_store.owned_names(
+                interaction.guild_id, interaction.user.id, KIND_ID3
+            )
+        except Exception:
+            return []
+        needle = _roster_key(current)
+        return [
+            app_commands.Choice(name=entry.name[:100], value=entry.name[:100])
+            for entry in pool.entries(KIND_ID3)
+            if entry.name not in owned and (not needle or needle in _roster_key(entry.name))
+        ][:25]
+
+    @exchange_group.command(
+        name="identity",
+        description="Đổi 200 Extraction Points lấy một Identity 3★ chưa sở hữu",
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(identity="Identity 3★ cần đổi")
+    @app_commands.autocomplete(identity=exchange_identity_autocomplete)
+    async def exchange_identity(
+        self, interaction: discord.Interaction, identity: str
+    ) -> None:
+        assert interaction.guild_id is not None
+        await interaction.response.defer(thinking=True)
+        try:
+            pool = await self.get_pool()
+            entry = next(
+                (
+                    candidate
+                    for candidate in pool.entries(KIND_ID3)
+                    if _roster_key(candidate.name) == _roster_key(identity)
+                ),
+                None,
+            )
+            if entry is None:
+                return await interaction.followup.send(
+                    "❌ Không tìm thấy Identity 3★ đó trong Standard Extraction.",
+                    ephemeral=True,
+                )
+            account = await self.economy_store.exchange_item(
+                interaction.guild_id,
+                interaction.user.id,
+                item_kind=KIND_ID3,
+                item_name=entry.name,
+                extraction_cost=EXTRACTION_EXCHANGE_COST,
+                source_id=f"interaction:{interaction.id}",
+            )
+        except (EconomyDisabled, InsufficientExtractionPoints, AlreadyOwned) as error:
+            return await interaction.followup.send(f"❌ {error}", ephemeral=True)
+        except Exception as error:
+            logger.exception("Không đổi được Identity 3★")
+            return await interaction.followup.send(
+                f"❌ Không thể đổi Identity lúc này: `{str(error)[:250]}`",
+                ephemeral=True,
+            )
+
+        embed = discord.Embed(
+            title="✅ Đổi Identity thành công",
+            description=(
+                f"{RARITY_EMOJI[KIND_ID3]} **[{discord.utils.escape_markdown(entry.name)}]"
+                f"(<{entry.url}>)** đã được thêm vào collection.\n\n"
+                f"Extraction Points còn lại: **{account.extraction_points:,}**"
+            ),
+            color=discord.Color.from_rgb(*RARITY_COLOR[KIND_ID3]),
+        )
+        if entry.image_url:
+            embed.set_image(url=entry.image_url)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(
         name="gacha",
         description="Standard Extraction của Limbus Company",
     )
+    @app_commands.guild_only()
     @app_commands.describe(pulls="Số lượt quay; mặc định là 10")
     @app_commands.choices(
         pulls=[
@@ -908,7 +1101,15 @@ class LimbusGacha(commands.Cog):
         count = pulls.value if pulls else 10
         await interaction.response.defer(thinking=True)
         try:
-            payload = await self.make_payload(count)
+            assert interaction.guild_id is not None
+            payload = await self.perform_gacha(
+                interaction.guild_id,
+                interaction.user.id,
+                count,
+                source_id=f"interaction:{interaction.id}",
+            )
+        except (InsufficientPoints, EconomyDisabled) as error:
+            return await interaction.followup.send(f"❌ {error}", ephemeral=True)
         except Exception as error:
             logger.exception("Không thể chạy /gacha")
             return await interaction.followup.send(

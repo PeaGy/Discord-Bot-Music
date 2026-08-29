@@ -63,6 +63,9 @@ not part of the normal unit suite.
 - `features/limbus_kit_view.py`: Limbus embed renderer/helper; it has a no-op
   `setup()` because of the automatic extension loader.
 - `features/limbus_gacha.py`: Standard Extraction simulation and collage rendering.
+- `economy_store.py` / `peto_economy.db`: transactional Peto Points, Extraction
+  Points, per-guild collections, and weekly rankings.
+- `features/economy.py`: activity rewards, economy commands, and weekly posts.
 - `features/welcome.py` / `assets/welcome_teto.gif`: member welcome system.
 - `guild_settings.py` / `guild_settings.db`: per-guild notification channels,
   roles, enablement, and legacy `.env` fallback handling.
@@ -145,6 +148,7 @@ These files contain real user or operational state:
 - `daily_reset_notifications.db`: schedules already sent and DM subscriptions;
 - `coupon_codes.db`: codes, voluntary UID/nickname profiles, redeem history;
 - `guild_settings.db`: per-guild public notification destinations and roles;
+- `peto_economy.db`: per-guild balances, earnings, gacha history, and collections;
 - `audio_cache/`: normalized audio files.
 
 Never delete or recreate them as a routine fix. Prefer additive migrations such as
@@ -205,8 +209,12 @@ test.
 - Kit embeds, skill-only embeds, Coin/status emoji placement, rarity colors, and
   Sin Affinity colors have dedicated regression tests. Update tests whenever their
   render rules change.
-- Gacha reads `Extraction/Extraction List` from `limbus_knowledge.db`; it is a
-  simulator only and must not consume currency or invent persistent inventory.
+- Gacha reads `Extraction/Extraction List` from `limbus_knowledge.db`. It remains
+  a free simulator when a guild has not enabled Peto Economy; enabled guilds use
+  atomic Peto Point charges and persistent per-guild collections.
+- Economy is disabled by default. Activity rewards must be cooldown/cap limited,
+  gacha/exchange mutations must remain atomic and idempotent, and disabling a
+  guild must never delete its balances or collection.
 - Gacha must work before `wiki_assets` exists by falling back to MediaWiki artwork
   URLs. The tenth Standard Extraction pull guarantees 2-star or better.
 - Daily Reset, coupon, and Project Moon notifications must be idempotent across

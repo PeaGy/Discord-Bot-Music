@@ -3,6 +3,7 @@ import random
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from PIL import Image
 
@@ -129,9 +130,28 @@ class GachaParsingTests(unittest.TestCase):
             results = pull_entries(pool, 10, random.Random(seed))
             self.assertNotEqual(results[-1].kind, KIND_ID1)
 
+    def test_owned_ego_is_removed_and_identity_rates_are_used(self):
+        pool = GachaPool(
+            {
+                KIND_EGO: (entry("Ego A", KIND_EGO),),
+                KIND_ID3: (entry("Three A", KIND_ID3),),
+                KIND_ID2: (entry("Two A", KIND_ID2),),
+                KIND_ID1: (entry("One A", KIND_ID1),),
+            }
+        )
+        result = pull_entries(
+            pool,
+            1,
+            FixedRandom(0.0),
+            owned_egos={"Ego A"},
+        )
+        self.assertEqual(result[0].kind, KIND_ID3)
+
     def test_slash_command_is_exposed(self):
-        cog = LimbusGacha(bot=object())
+        cog = LimbusGacha(bot=SimpleNamespace())
         self.assertEqual(cog.gacha.name, "gacha")
+        self.assertEqual(cog.exchange_group.name, "exchange")
+        self.assertEqual(cog.exchange_identity.name, "identity")
 
     @unittest.skipUnless(
         Path("limbus_knowledge.db").is_file(), "local synced wiki database is absent"
