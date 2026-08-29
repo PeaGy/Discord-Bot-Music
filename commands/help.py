@@ -329,7 +329,7 @@ class HelpDropdown(discord.ui.View):
                     "`/rank` — Top 5 collection unique trong server\n"
                     "`/exchange identity` — Đổi 200 Extraction Points lấy một 3★ chưa có\n"
                     "Quản trị viên: `/economy status`, `enable`, `disable`, `channel`, "
-                    "`earning` và `grant`. Economy bật mới tính phí 130/1.300 điểm, lưu "
+                    "`earning`, `grant` và `preview`. Economy bật mới tính phí 130/1.300 điểm, lưu "
                     "collection và cộng 1 Extraction Point mỗi lượt.\n\n"
                     "**Project Moon YouTube**\n"
                     "Khi được chủ bot cấu hình, Peto theo dõi kênh YouTube chính thức của "

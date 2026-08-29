@@ -130,7 +130,7 @@ class GachaParsingTests(unittest.TestCase):
             results = pull_entries(pool, 10, random.Random(seed))
             self.assertNotEqual(results[-1].kind, KIND_ID1)
 
-    def test_owned_ego_is_removed_and_identity_rates_are_used(self):
+    def test_ego_can_repeat_like_an_identity(self):
         pool = GachaPool(
             {
                 KIND_EGO: (entry("Ego A", KIND_EGO),),
@@ -139,13 +139,9 @@ class GachaParsingTests(unittest.TestCase):
                 KIND_ID1: (entry("One A", KIND_ID1),),
             }
         )
-        result = pull_entries(
-            pool,
-            1,
-            FixedRandom(0.0),
-            owned_egos={"Ego A"},
-        )
-        self.assertEqual(result[0].kind, KIND_ID3)
+        result = pull_entries(pool, 10, FixedRandom(0.0))
+        self.assertTrue(all(item.kind == KIND_EGO for item in result))
+        self.assertTrue(all(item.name == "Ego A" for item in result))
 
     def test_slash_command_is_exposed(self):
         cog = LimbusGacha(bot=SimpleNamespace())

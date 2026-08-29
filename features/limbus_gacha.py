@@ -88,7 +88,8 @@ KIND_ID3 = "id3"
 KIND_ID2 = "id2"
 KIND_ID1 = "id1"
 
-# Standard Extraction rates while the account does not own every E.G.O.
+# Standard Extraction rates. Identity and E.G.O duplicates are both allowed so
+# the simulator keeps every result in collection and increments its copy count.
 STANDARD_RATES: tuple[tuple[str, float], ...] = (
     (KIND_EGO, 1.3),
     (KIND_ID3, 2.9),
@@ -99,15 +100,6 @@ TENTH_PULL_RATES: tuple[tuple[str, float], ...] = (
     (KIND_EGO, 1.3),
     (KIND_ID3, 2.9),
     (KIND_ID2, 95.8),
-)
-STANDARD_RATES_WITHOUT_EGO: tuple[tuple[str, float], ...] = (
-    (KIND_ID3, 3.0),
-    (KIND_ID2, 13.0),
-    (KIND_ID1, 84.0),
-)
-TENTH_PULL_RATES_WITHOUT_EGO: tuple[tuple[str, float], ...] = (
-    (KIND_ID3, 3.0),
-    (KIND_ID2, 97.0),
 )
 GACHA_POINT_COST = {1: 130, 10: 1300}
 EXTRACTION_EXCHANGE_COST = 200
@@ -361,37 +353,19 @@ def pull_entries(
     pool: GachaPool,
     count: int,
     rng: random.Random | None = None,
-    *,
-    owned_egos: set[str] | None = None,
 ) -> tuple[GachaEntry, ...]:
     if count not in {1, 10}:
         raise ValueError("Chỉ hỗ trợ quay 1 hoặc 10 lần.")
     rng = rng or random.SystemRandom()
     results: list[GachaEntry] = []
-    used_egos: set[str] = set()
-    owned_egos = set(owned_egos or ())
     for index in range(count):
-        available_egos = tuple(
-            item
-            for item in pool.entries(KIND_EGO)
-            if item.name not in owned_egos and item.name not in used_egos
-        )
-        if available_egos:
-            rates = TENTH_PULL_RATES if count == 10 and index == 9 else STANDARD_RATES
-        else:
-            rates = (
-                TENTH_PULL_RATES_WITHOUT_EGO
-                if count == 10 and index == 9
-                else STANDARD_RATES_WITHOUT_EGO
-            )
+        rates = TENTH_PULL_RATES if count == 10 and index == 9 else STANDARD_RATES
         kind = roll_kind(rng, rates)
-        candidates = available_egos if kind == KIND_EGO else pool.entries(kind)
+        candidates = pool.entries(kind)
         if not candidates:
             raise RuntimeError(f"Pool {kind} đang trống.")
         result = rng.choice(candidates)
         results.append(result)
-        if result.kind == KIND_EGO:
-            used_egos.add(result.name)
     return tuple(results)
 
 
@@ -978,16 +952,13 @@ class LimbusGacha(commands.Cog):
         if not setting.enabled:
             return await self.make_payload(count, pulls=pull_entries(pool, count))
 
-        # Serialize paid rolls for one account so two simultaneous slash commands
-        # cannot both select an E.G.O before either transaction records ownership.
+        # Serialize paid rolls for one account so simultaneous slash commands
+        # cannot race the same balance and their transactions stay deterministic.
         account_lock = self.account_locks.setdefault(
             (int(guild_id), int(user_id)), asyncio.Lock()
         )
         async with account_lock:
-            owned_egos = await self.economy_store.owned_names(
-                guild_id, user_id, KIND_EGO
-            )
-            pulls = pull_entries(pool, count, owned_egos=owned_egos)
+            pulls = pull_entries(pool, count)
             point_cost = GACHA_POINT_COST[count]
             account = await self.economy_store.record_gacha(
                 guild_id,

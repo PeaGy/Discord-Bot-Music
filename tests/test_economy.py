@@ -25,6 +25,10 @@ class EconomyPresentationTests(unittest.TestCase):
         self.assertEqual(embed.title, "🏆 Bảng xếp hạng Peto Points tuần")
         self.assertEqual(len((embed.description or "").splitlines()), 5)
         self.assertIn("<@100>", embed.description or "")
+        self.assertEqual(
+            embed.footer.text,
+            "Peto's Server • Xếp theo điểm đang có.",
+        )
 
     def test_slash_command_surface_is_exposed(self):
         cog = Economy(bot=SimpleNamespace())
@@ -35,8 +39,16 @@ class EconomyPresentationTests(unittest.TestCase):
         child_names = {command.name for command in cog.economy.commands}
         self.assertEqual(
             child_names,
-            {"status", "enable", "disable", "channel", "earning", "grant"},
+            {"status", "enable", "disable", "channel", "earning", "grant", "preview"},
         )
+
+    def test_weekly_embed_accepts_preview_labels(self):
+        embed = build_weekly_embed(
+            "Peto's Server",
+            date(2026, 8, 17).isoformat(),
+            [("Thành viên A", 3_840)],
+        )
+        self.assertIn("Thành viên A", embed.description or "")
 
 
 class EconomyStoreTests(unittest.IsolatedAsyncioTestCase):

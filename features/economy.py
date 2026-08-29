@@ -70,15 +70,25 @@ def _clean_message_for_points(content: str) -> str:
 def build_weekly_embed(
     guild_name: str,
     week_key: str,
-    rows: list[tuple[int, int]],
+    rows: list[tuple[int | str, int]],
 ) -> discord.Embed:
     start = date.fromisoformat(week_key)
     end = start + timedelta(days=6)
     medals = ("🥇", "🥈", "🥉", "4️⃣", "5️⃣")
-    lines = [
-        f"{medals[index]} <@{user_id}> — **{points:,}** điểm"
-        for index, (user_id, points) in enumerate(rows)
-    ]
+    lines = []
+    for index, (user, points) in enumerate(rows):
+        label = (
+            f"<@{user}>"
+            if isinstance(user, int)
+            else str(user)
+            .replace("\\", "\\\\")
+            .replace("*", "\\*")
+            .replace("_", "\\_")
+            .replace("`", "\\`")
+            .replace("~", "\\~")
+            .replace("|", "\\|")
+        )
+        lines.append(f"{medals[index]} {label} — **{points:,}** điểm")
     embed = discord.Embed(
         title="🏆 Bảng xếp hạng Peto Points tuần",
         description="\n".join(lines) if lines else "Tuần này chưa có ai kiếm điểm.",
@@ -89,7 +99,7 @@ def build_weekly_embed(
         value=f"`{start.strftime('%d/%m/%Y')}` – `{end.strftime('%d/%m/%Y')}`",
         inline=False,
     )
-    embed.set_footer(text=f"{guild_name} • Xếp theo điểm đã kiếm, không phải số dư")
+    embed.set_footer(text=f"{guild_name} • Xếp theo điểm đang có.")
     return embed
 
 
@@ -560,6 +570,40 @@ class Economy(commands.Cog):
             f"✅ Đã điều chỉnh **{applied:+,}** Peto Points cho {member.mention}. "
             f"Số dư mới: **{account.balance:,}**.",
             allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+
+    @economy.command(name="preview", description="Xem trước bảng xếp hạng điểm tuần")
+    @app_commands.guild_only()
+    async def economy_preview(self, interaction: discord.Interaction) -> None:
+        if not await self._require_manager(interaction):
+            return
+        assert interaction.guild is not None
+        _, week_key = economy_period_keys()
+        rows: list[tuple[int | str, int]] = list(
+            await self.store.weekly_top(interaction.guild.id, week_key, 5)
+        )
+        using_sample = not rows
+        if using_sample:
+            rows = [
+                ("Thành viên A", 3_840),
+                ("Thành viên B", 2_950),
+                ("Thành viên C", 2_410),
+                ("Thành viên D", 1_870),
+                ("Thành viên E", 1_320),
+            ]
+        embed = build_weekly_embed(interaction.guild.name, week_key, rows)
+        embed.title = f"🔎 Preview • {embed.title}"
+        embed.set_footer(
+            text=(
+                "Dữ liệu mẫu vì tuần này chưa có ai nhận điểm • Preview không được lưu"
+                if using_sample
+                else "Dữ liệu tuần hiện tại • Preview không được lưu"
+            )
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
 
