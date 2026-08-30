@@ -16,12 +16,13 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Mapping, Sequence
 
 import aiohttp
 import discord
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,8 @@ ART_CACHE_DIR = Path(
 ).resolve()
 DATA_CACHE_SECONDS = 15 * 60
 IMAGE_MAX_BYTES = 8 * 1024 * 1024
-CANVAS_SIZE = (1280, 720)
+CANVAS_SIZE = (1334, 750)
+UI_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "blue_archive_gacha"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +88,7 @@ class BlueArchiveBanner:
 class BlueArchivePull:
     student: BlueArchiveStudent
     is_pickup: bool = False
+    is_new: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +99,32 @@ class BlueArchivePayload:
     banner: BlueArchiveBanner
     target: BlueArchiveStudent
     recruitment_points: int
+
+
+def mark_new_blue_archive_pulls(
+    pulls: Sequence[BlueArchivePull],
+    owned_by_kind: Mapping[str, set[str]],
+) -> tuple[BlueArchivePull, ...]:
+    """Mark only the first newly collected copy of each student as ``NEW``."""
+
+    seen = {
+        (str(kind), str(name))
+        for kind, names in owned_by_kind.items()
+        for name in names
+    }
+    marked: list[BlueArchivePull] = []
+    for pull in pulls:
+        key = (pull.student.kind, pull.student.name)
+        is_new = key not in seen
+        seen.add(key)
+        marked.append(
+            BlueArchivePull(
+                student=pull.student,
+                is_pickup=pull.is_pickup,
+                is_new=is_new,
+            )
+        )
+    return tuple(marked)
 
 
 def _region_value(value: str | None) -> str:
@@ -276,6 +305,146 @@ def _cover_image(raw: bytes, size: tuple[int, int]) -> Image.Image:
         return fallback
 
 
+@lru_cache(maxsize=8)
+def _ui_asset(filename: str) -> Image.Image:
+    """Load one packaged recruitment UI asset without keeping a file handle open."""
+
+    with Image.open(UI_ASSET_DIR / filename) as source:
+        return source.convert("RGBA").copy()
+
+
+def _card_polygon(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    skew: int,
+) -> tuple[tuple[int, int], ...]:
+    return (
+        (x + skew, y),
+        (x + width, y),
+        (x + width - skew, y + height),
+        (x, y + height),
+    )
+
+
+def _draw_rarity_glow(
+    canvas: Image.Image,
+    *,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    star_grade: int,
+) -> None:
+    if star_grade < 2:
+        return
+    color = (255, 250, 210, 235) if star_grade == 2 else (255, 116, 195, 245)
+    glow = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow, "RGBA")
+    glow_draw.rounded_rectangle(
+        (x - 10, y - height // 2, x + width + 10, y + height * 3 // 2),
+        radius=max(12, width // 8),
+        fill=color,
+    )
+    glow = glow.filter(ImageFilter.GaussianBlur(max(16, width // 5)))
+    canvas.alpha_composite(glow)
+
+
+def _draw_student_card(
+    canvas: Image.Image,
+    pull: BlueArchivePull,
+    raw_artwork: bytes,
+    *,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> None:
+    """Draw the skewed result card used by the reference bot."""
+
+    star_grade = pull.student.star_grade
+    skew = max(9, round(width * 0.077))
+    polygon = _card_polygon(x, y, width, height, skew)
+
+    card_layer = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
+    card_draw = ImageDraw.Draw(card_layer, "RGBA")
+    fill = {
+        1: (228, 235, 241, 255),
+        2: (254, 246, 135, 255),
+        3: (251, 197, 229, 255),
+    }[star_grade]
+    card_draw.polygon(polygon, fill=fill)
+
+    card_mask = Image.new("L", CANVAS_SIZE, 0)
+    ImageDraw.Draw(card_mask).polygon(polygon, fill=255)
+    portrait_size = width + skew
+    portrait = _cover_image(raw_artwork, (portrait_size, portrait_size)).convert("RGBA")
+    portrait_layer = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
+    portrait_layer.alpha_composite(portrait, (x - skew // 2, y))
+    portrait_layer.putalpha(
+        ImageChops.multiply(portrait_layer.getchannel("A"), card_mask)
+    )
+    card_layer.alpha_composite(portrait_layer)
+
+    # The original result card uses a dark strip for rarity stars rather than
+    # writing student names into the image; names remain readable in the embed.
+    bar_height = max(34, round(height * 0.22))
+    bar_top = y + height - bar_height
+    bar_polygon = (
+        (x + 2, bar_top),
+        (x + width - skew + 5, bar_top),
+        (x + width - skew - 1, y + height - 2),
+        (x + 2, y + height - 2),
+    )
+    card_draw.polygon(bar_polygon, fill=(102, 115, 134, 245))
+    card_draw.line((*polygon, polygon[0]), fill=(255, 255, 255, 245), width=max(2, width // 65), joint="curve")
+    canvas.alpha_composite(card_layer)
+
+    star_asset = _ui_asset("Star.png")
+    star_size = max(17, round(width * 0.154))
+    star_asset = star_asset.resize((star_size, star_size), Image.Resampling.LANCZOS)
+    gap = max(3, width // 32)
+    stars_width = star_grade * star_size + (star_grade - 1) * gap
+    stars_x = x + (width - stars_width) // 2 - skew // 4
+    stars_y = bar_top + (bar_height - star_size) // 2
+    for index in range(star_grade):
+        canvas.alpha_composite(star_asset, (stars_x + index * (star_size + gap), stars_y))
+
+    if pull.is_new:
+        new_width = max(48, round(width * 0.423))
+        new_height = max(20, round(new_width * 23 / 55))
+        new_asset = _ui_asset("New.png").resize(
+            (new_width, new_height), Image.Resampling.LANCZOS
+        )
+        canvas.alpha_composite(new_asset, (x + 5, y + 5))
+
+
+def _draw_recruitment_points(canvas: Image.Image, recruitment_points: int) -> None:
+    """Draw the bottom-right Recruitment Point widget from the reference UI."""
+
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    panel_width, panel_height = 200, 60
+    x = CANVAS_SIZE[0] - panel_width - 50
+    y = CANVAS_SIZE[1] - panel_height - 20
+    skew = 10
+    upper = ((x + skew, y), (x + panel_width, y), (x + panel_width - skew, y + 30), (x, y + 30))
+    lower = ((x, y + 30), (x + panel_width - skew, y + 30), (x + panel_width - skew * 2, y + panel_height), (x - skew, y + panel_height))
+    draw.polygon(upper, fill=(255, 255, 255, 248), outline=(53, 145, 204, 255))
+    draw.polygon(lower, fill=(44, 96, 140, 250), outline=(53, 145, 204, 255))
+    draw.text((x + 42, y + 6), "Recruitment Point", font=_font(15, bold=True), fill=(42, 91, 130, 255))
+    value = str(max(0, int(recruitment_points)))
+    bbox = draw.textbbox((0, 0), value, font=_font(20, bold=True))
+    draw.text(
+        (x + panel_width - (bbox[2] - bbox[0]) - 18, y + 33),
+        value,
+        font=_font(20, bold=True),
+        fill=(255, 255, 255, 255),
+    )
+    point_asset = _ui_asset("Point.png").resize((100, 80), Image.Resampling.LANCZOS)
+    canvas.alpha_composite(point_asset, (x - 60, y - 10))
+
+
 def render_blue_archive_result(
     pulls: Sequence[BlueArchivePull],
     image_data: Mapping[str, bytes],
@@ -284,71 +453,53 @@ def render_blue_archive_result(
     target_name: str,
     recruitment_points: int,
 ) -> bytes:
-    """Render a compact BA-inspired 5×2 result board without copied UI assets."""
+    """Render the result board using the layout and packaged UI of the reference bot."""
 
-    width, height = CANVAS_SIZE
-    canvas = Image.new("RGB", CANVAS_SIZE, (231, 245, 252))
-    draw = ImageDraw.Draw(canvas, "RGBA")
-    for y in range(height):
-        ratio = y / max(1, height - 1)
-        color = (
-            int(238 - 30 * ratio),
-            int(249 - 20 * ratio),
-            int(255 - 10 * ratio),
-        )
-        draw.line((0, y, width, y), fill=(*color, 255))
-    # Blue Archive-like geometric sky backdrop, authored in code.
-    draw.polygon(((0, 0), (600, 0), (380, height), (0, height)), fill=(87, 180, 226, 42))
-    draw.polygon(((850, 0), (1280, 0), (1280, 720), (1040, 720)), fill=(255, 255, 255, 95))
-    draw.line((0, 54, width, 54), fill=(75, 151, 191, 150), width=2)
-    draw.text((38, 16), "RECRUITMENT RESULT", font=_font(28, bold=True), fill=(30, 83, 115))
-    draw.text((930, 22), f"{region_label}  •  TARGET: {target_name}", font=_font(18, bold=True), fill=(63, 102, 126))
-
+    canvas = _ui_asset("Background.png").resize(CANVAS_SIZE, Image.Resampling.LANCZOS)
     pulls = tuple(pulls)
-    columns = 5 if len(pulls) > 1 else 1
-    card_w, card_h = (214, 258) if len(pulls) > 1 else (360, 420)
-    gap_x, gap_y = (24, 28) if len(pulls) > 1 else (0, 0)
-    total_w = columns * card_w + max(0, columns - 1) * gap_x
-    rows = 2 if len(pulls) > 5 else 1
-    total_h = rows * card_h + max(0, rows - 1) * gap_y
-    start_x = (width - total_w) // 2
-    start_y = 78 if rows == 2 else (height - total_h) // 2
+    if len(pulls) == 1:
+        columns = rows = 1
+        card_width, card_height = 260, 325
+        gap_x = gap_y = 0
+        start_x = (CANVAS_SIZE[0] - card_width) // 2
+        start_y = 175
+    else:
+        columns = 5
+        rows = (len(pulls) + columns - 1) // columns
+        card_width, card_height = 130, 163
+        gap_x, gap_y = 50, 62
+        total_width = columns * card_width + (columns - 1) * gap_x
+        total_height = rows * card_height + (rows - 1) * gap_y
+        start_x = (CANVAS_SIZE[0] - total_width) // 2
+        start_y = 140 if rows == 2 else (CANVAS_SIZE[1] - total_height) // 2
 
+    positions = []
     for index, pull in enumerate(pulls):
         row, column = divmod(index, columns)
-        x = start_x + column * (card_w + gap_x)
-        y = start_y + row * (card_h + gap_y)
-        star = pull.student.star_grade
-        accent = {1: (91, 180, 225), 2: (246, 190, 50), 3: (238, 100, 161)}[star]
-        shadow = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
-        shadow_draw = ImageDraw.Draw(shadow, "RGBA")
-        shadow_draw.rounded_rectangle((x + 5, y + 8, x + card_w + 5, y + card_h + 8), 18, fill=(20, 52, 72, 55))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(7))
-        canvas.paste(shadow, (0, 0), shadow)
-        draw = ImageDraw.Draw(canvas, "RGBA")
-        draw.rounded_rectangle((x, y, x + card_w, y + card_h), 18, fill=(255, 255, 255, 245), outline=(*accent, 255), width=5)
-        portrait_h = card_h - 72
-        portrait = _cover_image(image_data.get(pull.student.image_url, b""), (card_w - 12, portrait_h))
-        mask = Image.new("L", portrait.size, 0)
-        ImageDraw.Draw(mask).rounded_rectangle((0, 0, portrait.width, portrait.height + 18), 13, fill=255)
-        canvas.paste(portrait, (x + 6, y + 6), mask)
-        draw.rectangle((x + 5, y + portrait_h - 18, x + card_w - 5, y + card_h - 5), fill=(244, 250, 253, 245))
-        stars = "★" * star
-        draw.text((x + 12, y + portrait_h - 8), stars, font=_font(25, bold=True), fill=(*accent, 255))
-        name = pull.student.name
-        if len(name) > 20:
-            name = name[:19] + "…"
-        draw.text((x + 12, y + portrait_h + 23), name, font=_font(18, bold=True), fill=(35, 61, 78, 255))
-        if pull.is_pickup:
-            label = "PICK UP"
-            box = draw.textbbox((0, 0), label, font=_font(13, bold=True))
-            label_w = box[2] - box[0] + 16
-            draw.rounded_rectangle((x + card_w - label_w - 8, y + 10, x + card_w - 8, y + 36), 8, fill=(238, 83, 142, 235))
-            draw.text((x + card_w - label_w, y + 14), label, font=_font(13, bold=True), fill=(255, 255, 255, 255))
+        x = start_x + column * (card_width + gap_x)
+        y = start_y + row * (card_height + gap_y)
+        positions.append((x, y))
+        _draw_rarity_glow(
+            canvas,
+            x=x,
+            y=y,
+            width=card_width,
+            height=card_height,
+            star_grade=pull.student.star_grade,
+        )
 
-    draw = ImageDraw.Draw(canvas, "RGBA")
-    draw.rounded_rectangle((990, 674, 1246, 708), 12, fill=(38, 91, 124, 225))
-    draw.text((1005, 680), f"Recruitment Points  {recruitment_points}/200", font=_font(17, bold=True), fill=(255, 255, 255, 255))
+    for pull, (x, y) in zip(pulls, positions):
+        _draw_student_card(
+            canvas,
+            pull,
+            image_data.get(pull.student.image_url, b""),
+            x=x,
+            y=y,
+            width=card_width,
+            height=card_height,
+        )
+
+    _draw_recruitment_points(canvas, recruitment_points)
     output = io.BytesIO()
     canvas.save(output, format="PNG", optimize=True)
     return output.getvalue()

@@ -1,6 +1,7 @@
 import io
 import random
 import unittest
+from pathlib import Path
 from PIL import Image
 
 from features._blue_archive_gacha import (
@@ -8,6 +9,8 @@ from features._blue_archive_gacha import (
     KIND_STAR1,
     KIND_STAR2,
     KIND_STAR3,
+    BlueArchivePull,
+    mark_new_blue_archive_pulls,
     parse_blue_archive_banner,
     pull_blue_archive,
     render_blue_archive_result,
@@ -88,8 +91,32 @@ class BlueArchiveDataTests(unittest.TestCase):
             )[0]
             self.assertEqual(result.student.kind, kind)
 
+    def test_new_label_is_only_applied_to_first_unowned_copy(self):
+        banner = parse_blue_archive_banner(self.config, self.students, "global")
+        pickup = banner.pickups[0]
+        permanent = banner.three_star[0]
+        marked = mark_new_blue_archive_pulls(
+            (
+                BlueArchivePull(pickup, is_pickup=True),
+                BlueArchivePull(pickup, is_pickup=True),
+                BlueArchivePull(permanent),
+            ),
+            {KIND_STAR3: {permanent.name}},
+        )
+        self.assertTrue(marked[0].is_new)
+        self.assertFalse(marked[1].is_new)
+        self.assertFalse(marked[2].is_new)
+
 
 class BlueArchivePresentationTests(unittest.TestCase):
+    def test_reference_ui_assets_are_packaged(self):
+        asset_dir = Path(__file__).resolve().parent.parent / "assets" / "blue_archive_gacha"
+        for filename in ("Background.png", "New.png", "Point.png", "Star.png"):
+            with self.subTest(filename=filename):
+                with Image.open(asset_dir / filename) as image:
+                    self.assertGreater(image.width, 0)
+                    self.assertGreater(image.height, 0)
+
     def test_result_renderer_builds_a_two_by_five_png(self):
         config = {
             "Regions": [

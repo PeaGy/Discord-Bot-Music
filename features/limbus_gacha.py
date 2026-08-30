@@ -52,6 +52,7 @@ from features._blue_archive_gacha import (
     BlueArchivePull,
     BlueArchiveStudent,
     blue_archive_rates_embed,
+    mark_new_blue_archive_pulls,
     pull_blue_archive,
 )
 
@@ -1288,6 +1289,16 @@ class LimbusGacha(commands.Cog):
         )
         async with account_lock:
             pulls = pull_blue_archive(banner, target, count)
+            owned_by_kind = {
+                kind: await self.economy_store.owned_names(
+                    guild_id,
+                    user_id,
+                    kind,
+                    game_id=BLUE_ARCHIVE_GAME_ID,
+                )
+                for kind in ("ba1", "ba2", "ba3")
+            }
+            pulls = mark_new_blue_archive_pulls(pulls, owned_by_kind)
             point_cost = GACHA_POINT_COST[count]
             account = await self.economy_store.record_gacha(
                 guild_id,
