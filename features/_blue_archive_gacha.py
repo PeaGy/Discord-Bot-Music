@@ -294,14 +294,27 @@ def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFon
     return ImageFont.load_default(size=size)
 
 
-def _cover_image(raw: bytes, size: tuple[int, int]) -> Image.Image:
+def _student_icon(raw: bytes, size: tuple[int, int]) -> Image.Image:
+    """Fit a SchaleDB icon without destroying its transparent background."""
+
     try:
         with Image.open(io.BytesIO(raw)) as source:
-            return ImageOps.fit(source.convert("RGB"), size, method=Image.Resampling.LANCZOS)
+            icon = ImageOps.contain(
+                source.convert("RGBA"), size, method=Image.Resampling.LANCZOS
+            )
+        fitted = Image.new("RGBA", size, (0, 0, 0, 0))
+        fitted.alpha_composite(
+            icon,
+            ((size[0] - icon.width) // 2, (size[1] - icon.height) // 2),
+        )
+        return fitted
     except Exception:
-        fallback = Image.new("RGB", size, (204, 225, 238))
-        draw = ImageDraw.Draw(fallback)
-        draw.ellipse((size[0] // 3, size[1] // 4, size[0] * 2 // 3, size[1] * 3 // 4), fill=(121, 164, 193))
+        fallback = Image.new("RGBA", size, (204, 225, 238, 255))
+        draw = ImageDraw.Draw(fallback, "RGBA")
+        draw.ellipse(
+            (size[0] // 3, size[1] // 4, size[0] * 2 // 3, size[1] * 3 // 4),
+            fill=(121, 164, 193, 255),
+        )
         return fallback
 
 
@@ -322,8 +335,8 @@ def _card_polygon(
 ) -> tuple[tuple[int, int], ...]:
     return (
         (x + skew, y),
-        (x + width, y),
-        (x + width - skew, y + height),
+        (x + width + skew, y),
+        (x + width, y + height),
         (x, y + height),
     )
 
@@ -339,15 +352,30 @@ def _draw_rarity_glow(
 ) -> None:
     if star_grade < 2:
         return
-    color = (255, 250, 210, 235) if star_grade == 2 else (255, 116, 195, 245)
+
+    # The source renderer stretches a bright column through both rows. That
+    # overwhelms the cards on Discord, especially for 2-star pulls. Keep only a
+    # restrained vertical rarity wash behind the card.
+    color = (255, 242, 164) if star_grade == 2 else (248, 190, 232)
+    max_alpha = 58 if star_grade == 2 else 86
+    skew = max(10, round(height * 0.1763))
+    footprint = width + skew
+    glow_height = round(height * 1.55)
+    glow_top = y - (glow_height - height) // 2
+    glow_left = x - 15
+    glow_right = x + footprint + 15
     glow = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow, "RGBA")
-    glow_draw.rounded_rectangle(
-        (x - 10, y - height // 2, x + width + 10, y + height * 3 // 2),
-        radius=max(12, width // 8),
-        fill=color,
-    )
-    glow = glow.filter(ImageFilter.GaussianBlur(max(16, width // 5)))
+    for offset in range(glow_height):
+        distance = abs((offset + 0.5) / glow_height - 0.5) * 2
+        strength = max(0.0, 1.0 - distance) ** 2
+        alpha = round(max_alpha * strength)
+        if alpha:
+            glow_draw.line(
+                (glow_left, glow_top + offset, glow_right, glow_top + offset),
+                fill=(*color, alpha),
+                width=1,
+            )
     canvas.alpha_composite(glow)
 
 
@@ -364,8 +392,15 @@ def _draw_student_card(
     """Draw the skewed result card used by the reference bot."""
 
     star_grade = pull.student.star_grade
-    skew = max(9, round(width * 0.077))
+    skew = max(10, round(height * 0.1763))
+    footprint = width + skew
     polygon = _card_polygon(x, y, width, height, skew)
+
+    shadow = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
+    shadow_polygon = tuple((px + 4, py + 6) for px, py in polygon)
+    ImageDraw.Draw(shadow, "RGBA").polygon(shadow_polygon, fill=(26, 52, 70, 80))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(7))
+    canvas.alpha_composite(shadow)
 
     card_layer = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
     card_draw = ImageDraw.Draw(card_layer, "RGBA")
@@ -378,10 +413,14 @@ def _draw_student_card(
 
     card_mask = Image.new("L", CANVAS_SIZE, 0)
     ImageDraw.Draw(card_mask).polygon(polygon, fill=255)
-    portrait_size = width + skew
-    portrait = _cover_image(raw_artwork, (portrait_size, portrait_size)).convert("RGBA")
+    bar_height = max(40, round(height * 0.23))
+    available_height = height - bar_height
+    portrait_size = round(min(footprint * 0.88, available_height * 1.08))
+    portrait = _student_icon(raw_artwork, (portrait_size, portrait_size))
     portrait_layer = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
-    portrait_layer.alpha_composite(portrait, (x - skew // 2, y))
+    portrait_x = x + (footprint - portrait_size) // 2
+    portrait_y = y + (available_height - portrait_size) // 2
+    portrait_layer.alpha_composite(portrait, (portrait_x, portrait_y))
     portrait_layer.putalpha(
         ImageChops.multiply(portrait_layer.getchannel("A"), card_mask)
     )
@@ -389,12 +428,12 @@ def _draw_student_card(
 
     # The original result card uses a dark strip for rarity stars rather than
     # writing student names into the image; names remain readable in the embed.
-    bar_height = max(34, round(height * 0.22))
     bar_top = y + height - bar_height
+    bar_skew = max(5, round(bar_height * 0.1763))
     bar_polygon = (
-        (x + 2, bar_top),
-        (x + width - skew + 5, bar_top),
-        (x + width - skew - 1, y + height - 2),
+        (x + bar_skew + 2, bar_top),
+        (x + width + bar_skew - 2, bar_top),
+        (x + width - 2, y + height - 2),
         (x + 2, y + height - 2),
     )
     card_draw.polygon(bar_polygon, fill=(102, 115, 134, 245))
@@ -402,22 +441,23 @@ def _draw_student_card(
     canvas.alpha_composite(card_layer)
 
     star_asset = _ui_asset("Star.png")
-    star_size = max(17, round(width * 0.154))
+    star_size = max(19, round(width * 0.13))
     star_asset = star_asset.resize((star_size, star_size), Image.Resampling.LANCZOS)
     gap = max(3, width // 32)
     stars_width = star_grade * star_size + (star_grade - 1) * gap
-    stars_x = x + (width - stars_width) // 2 - skew // 4
+    bar_center = x + width // 2 + bar_skew // 2
+    stars_x = bar_center - stars_width // 2
     stars_y = bar_top + (bar_height - star_size) // 2
     for index in range(star_grade):
         canvas.alpha_composite(star_asset, (stars_x + index * (star_size + gap), stars_y))
 
     if pull.is_new:
-        new_width = max(48, round(width * 0.423))
+        new_width = max(52, round(width * 0.36))
         new_height = max(20, round(new_width * 23 / 55))
         new_asset = _ui_asset("New.png").resize(
             (new_width, new_height), Image.Resampling.LANCZOS
         )
-        canvas.alpha_composite(new_asset, (x + 5, y + 5))
+        canvas.alpha_composite(new_asset, (x + skew + 4, y + 5))
 
 
 def _draw_recruitment_points(canvas: Image.Image, recruitment_points: int) -> None:
@@ -459,24 +499,27 @@ def render_blue_archive_result(
     pulls = tuple(pulls)
     if len(pulls) == 1:
         columns = rows = 1
-        card_width, card_height = 260, 325
+        card_width, card_height = 300, 375
+        card_skew = round(card_height * 0.1763)
         gap_x = gap_y = 0
-        start_x = (CANVAS_SIZE[0] - card_width) // 2
-        start_y = 175
+        start_x = (CANVAS_SIZE[0] - card_width - card_skew) // 2
+        start_y = 145
     else:
         columns = 5
         rows = (len(pulls) + columns - 1) // columns
-        card_width, card_height = 130, 163
-        gap_x, gap_y = 50, 62
-        total_width = columns * card_width + (columns - 1) * gap_x
+        card_width, card_height = 170, 210
+        card_skew = round(card_height * 0.1763)
+        gap_x, gap_y = 26, 56
+        footprint = card_width + card_skew
+        total_width = columns * footprint + (columns - 1) * gap_x
         total_height = rows * card_height + (rows - 1) * gap_y
         start_x = (CANVAS_SIZE[0] - total_width) // 2
-        start_y = 140 if rows == 2 else (CANVAS_SIZE[1] - total_height) // 2
+        start_y = 92 if rows == 2 else (CANVAS_SIZE[1] - total_height) // 2
 
     positions = []
     for index, pull in enumerate(pulls):
         row, column = divmod(index, columns)
-        x = start_x + column * (card_width + gap_x)
+        x = start_x + column * (card_width + card_skew + gap_x)
         y = start_y + row * (card_height + gap_y)
         positions.append((x, y))
         _draw_rarity_glow(

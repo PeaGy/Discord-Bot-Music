@@ -10,6 +10,7 @@ from features._blue_archive_gacha import (
     KIND_STAR2,
     KIND_STAR3,
     BlueArchivePull,
+    _student_icon,
     mark_new_blue_archive_pulls,
     parse_blue_archive_banner,
     pull_blue_archive,
@@ -109,6 +110,18 @@ class BlueArchiveDataTests(unittest.TestCase):
 
 
 class BlueArchivePresentationTests(unittest.TestCase):
+    def test_student_icon_preserves_transparent_corners(self):
+        artwork = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+        artwork.paste((90, 180, 230, 255), (24, 16, 104, 128))
+        raw = io.BytesIO()
+        artwork.save(raw, format="PNG")
+
+        fitted = _student_icon(raw.getvalue(), (160, 160))
+
+        self.assertEqual(fitted.mode, "RGBA")
+        self.assertEqual(fitted.getpixel((0, 0))[3], 0)
+        self.assertGreater(fitted.getpixel((80, 80))[3], 0)
+
     def test_reference_ui_assets_are_packaged(self):
         asset_dir = Path(__file__).resolve().parent.parent / "assets" / "blue_archive_gacha"
         for filename in ("Background.png", "New.png", "Point.png", "Star.png"):
