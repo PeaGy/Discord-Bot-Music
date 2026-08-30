@@ -1,6 +1,8 @@
 import io
 import random
+import sqlite3
 import unittest
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -27,11 +29,13 @@ from features.limbus_gacha import (
     RARITY_COLOR,
     _fallback_asset_url,
     _image_is_decodable,
+    _is_walpurgis_page,
     _prepared_gacha_frame,
     _prepare_art_cache_dir,
     _render_artwork,
     _visible_alpha_bbox,
     load_gacha_pool_sync,
+    load_exchange_catalog_sync,
     parse_extraction_list,
     pull_entries,
     render_gacha_collage,
@@ -148,6 +152,108 @@ class GachaParsingTests(unittest.TestCase):
         self.assertEqual(cog.gacha.name, "gacha")
         self.assertEqual(cog.exchange_group.name, "exchange")
         self.assertEqual(cog.exchange_identity.name, "identity")
+        self.assertEqual(cog.exchange_ego.name, "ego")
+
+    def test_exchange_catalog_includes_event_but_excludes_walpurgis(self):
+        identity_template = """| Info
+| Rarity
+|
+| Season
+| {season}
+| Release
+| 2025.02.06
+Skills
+Skill 1Skill 2Skill 3Defense
+"""
+        ego_template = """| Info
+| Risk Level
+|
+| Season
+| {season}
+| Obtained
+| {obtained}
+| Cost
+| Sanity
+| 20 20
+"""
+        rarity_text = """There are 1Identities that have a 1★ rarity.
+| LCB Sinner Ishmael
+There are 1Identities that have a 2★ rarity.
+| Kurokumo Clan Wakashu Hong Lu
+There are 3Identities that have a 3★ rarity.
+| Standard Captain Ishmael
+| Kurokumo Clan Captain Ishmael
+| Walpurgis Captain Ishmael
+"""
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "wiki.db"
+            with closing(sqlite3.connect(db_path)) as db:
+                db.executescript(
+                    """
+                    CREATE TABLE wiki_pages (
+                        pageid INTEGER PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        url TEXT NOT NULL,
+                        revid INTEGER NOT NULL DEFAULT 1,
+                        timestamp TEXT NOT NULL DEFAULT '',
+                        text TEXT NOT NULL,
+                        indexed_at INTEGER NOT NULL DEFAULT 0
+                    );
+                    CREATE TABLE wiki_assets (
+                        pageid INTEGER PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        revid INTEGER NOT NULL DEFAULT 1,
+                        file_title TEXT NOT NULL DEFAULT '',
+                        original_url TEXT NOT NULL DEFAULT '',
+                        thumbnail_url TEXT NOT NULL DEFAULT '',
+                        synced_at INTEGER NOT NULL DEFAULT 0
+                    );
+                    """
+                )
+                pages = [
+                    (1, "List of Identities/Rarity", rarity_text),
+                    (
+                        2,
+                        "List of E.G.O/Data",
+                        "| Event E.G.O Ishmael\n| Walpurgis E.G.O Ishmael\n"
+                        "| Battle Pass E.G.O Ishmael\n| Base E.G.O Ishmael",
+                    ),
+                    (3, "Standard Captain Ishmael", identity_template.format(season="Standard Fare")),
+                    (4, "Kurokumo Clan Captain Ishmael", identity_template.format(season="Season 5 - Oblivion [Event]")),
+                    (5, "Walpurgis Captain Ishmael", identity_template.format(season="Walpurgisnacht - IX")),
+                    (6, "Event E.G.O Ishmael", ego_template.format(season="Season 5 - Oblivion [Event]", obtained="Event Rewards")),
+                    (7, "Walpurgis E.G.O Ishmael", ego_template.format(season="Walpurgisnacht - IX", obtained="Limited Extraction")),
+                    (8, "Battle Pass E.G.O Ishmael", ego_template.format(season="Season 5 - Oblivion", obtained="Battle Pass - Level 60")),
+                    (9, "Base E.G.O Ishmael", ego_template.format(season="N/A", obtained="Base E.G.O")),
+                ]
+                db.executemany(
+                    "INSERT INTO wiki_pages(pageid, title, url, text) VALUES(?, ?, 'https://example.com', ?)",
+                    pages,
+                )
+                db.commit()
+
+            catalog = load_exchange_catalog_sync(db_path)
+            identity_names = {item.name for item in catalog.entries(KIND_ID3)}
+            ego_names = {item.name for item in catalog.entries(KIND_EGO)}
+            self.assertEqual(
+                identity_names,
+                {"Standard Captain Ishmael", "Kurokumo Clan Captain Ishmael"},
+            )
+            self.assertEqual(
+                ego_names,
+                {"Event E.G.O Ishmael", "Battle Pass E.G.O Ishmael"},
+            )
+            self.assertNotIn("Walpurgis Captain Ishmael", identity_names)
+            self.assertNotIn("Walpurgis E.G.O Ishmael", ego_names)
+            self.assertNotIn("Base E.G.O Ishmael", ego_names)
+
+    def test_walpurgis_filter_reads_only_season_field(self):
+        self.assertTrue(_is_walpurgis_page("| Season\n| Walpurgisnacht - IX\n| Release\n| 2026"))
+        self.assertFalse(
+            _is_walpurgis_page(
+                "| Season\n| Season 5 - Oblivion [Event]\n| Notes\n| Mentions Walpurgis"
+            )
+        )
 
     @unittest.skipUnless(
         Path("limbus_knowledge.db").is_file(), "local synced wiki database is absent"

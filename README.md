@@ -60,7 +60,7 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - Mặc định **tắt** ở mọi server để không làm thay đổi trải nghiệm cũ. Quản trị viên bật bằng `/economy enable`, chọn kênh tổng kết tuần bằng `/economy channel` và có thể tắt riêng điểm chat/voice bằng `/economy earning`.
 - Thành viên nhận ngẫu nhiên 8–12 điểm cho một tin nhắn hợp lệ mỗi 60 giây và 5 điểm mỗi 5 phút voice khi có ít nhất hai người thật trong kênh. Tổng điểm hoạt động bị giới hạn 500/ngày để giảm spam và AFK một mình.
 - `/points` xem số dư, điểm kiếm trong tuần, Extraction Points và tổng lượt quay. `/collection` xem nhân vật đã sở hữu; `/rank` xếp top 5 collection unique trong server.
-- Gacha Economy tốn 130 điểm/lượt hoặc 1.300 điểm/10 lượt. Mỗi lượt sinh 1 Extraction Point; `/exchange identity` dùng 200 điểm này để chọn một Identity 3★ chưa sở hữu. Identity và E.G.O trùng đều được lưu thành số bản sao trong collection.
+- Gacha Economy tốn 130 điểm/lượt hoặc 1.300 điểm/10 lượt. Mỗi lượt sinh 1 Extraction Point; `/exchange identity` và `/exchange ego` dùng 200 điểm này để chọn một Identity 3★ hoặc E.G.O chưa sở hữu. Quầy đổi có cả Standard, Seasonal và Event nhưng không cho đổi Walpurgis. Identity và E.G.O trùng khi quay đều được lưu thành số bản sao trong collection.
 - Bảng top 5 **điểm đã kiếm** của tuần trước được gửi một lần vào kênh đã cấu hình; tiêu điểm cho gacha không làm giảm thành tích tuần.
 - Điểm, collection và lịch sử giao dịch nằm trong `peto_economy.db`, tách riêng theo Discord server và được giữ nguyên khi Economy bị tắt.
 
@@ -216,7 +216,7 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 | Quản trị bộ nhớ | `/resetmemoryall`, `/resetmemoryglobal` |
 | Quản trị Peto | `/blacklist`, `/unblacklist` (chủ bot) |
 | Limbus Asset | `/limbusasset status`, `/limbusasset preview`; `/limbusasset sync` (chủ bot) |
-| Limbus Gacha | `/gacha [pulls]`, `/exchange identity`, `/collection`, `/rank` |
+| Limbus Gacha | `/gacha [pulls]`, `/exchange identity`, `/exchange ego`, `/collection`, `/rank` |
 | Peto Economy | `/points`; `/economy status/enable/disable/channel/earning/grant/preview` |
 | Project Moon | `/projectmoon status`, `/projectmoon preview`, `/projectmoon test`, `/projectmoon check` (chủ bot) |
 | Cấu hình server | `/settings notifications` cho thông báo; `/settings ai [capability]` cho quyền, kênh và chống spam AI |

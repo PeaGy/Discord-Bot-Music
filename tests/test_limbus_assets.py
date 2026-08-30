@@ -5,6 +5,7 @@ from features.limbus_wiki import (
     WikiPage,
     _asset_file_candidates,
     _asset_from_imageinfo_pages,
+    _catalog_page_needs_refresh,
 )
 
 
@@ -12,6 +13,16 @@ ASSET_URL = "https://cdn.example.test/identity-700px.png"
 
 
 class LimbusAssetTests(unittest.TestCase):
+    def test_transcluded_roster_pages_refresh_even_without_revision_change(self):
+        self.assertTrue(
+            _catalog_page_needs_refresh("List of Identities/Rarity", 100, 100)
+        )
+        self.assertTrue(
+            _catalog_page_needs_refresh("Extraction/Extraction List", 100, 100)
+        )
+        self.assertFalse(_catalog_page_needs_refresh("Ordinary Page", 100, 100))
+        self.assertTrue(_catalog_page_needs_refresh("Ordinary Page", 99, 100))
+
     def test_file_candidates_cover_identity_profile_and_ego_icon(self):
         candidates = _asset_file_candidates(
             "The House of Spiders: The Index Nursefather Yi Sang"

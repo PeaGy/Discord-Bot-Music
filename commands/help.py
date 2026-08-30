@@ -328,6 +328,8 @@ class HelpDropdown(discord.ui.View):
                     "`/collection` — Xem Identity/E.G.O đã sở hữu\n"
                     "`/rank` — Top 5 collection unique trong server\n"
                     "`/exchange identity` — Đổi 200 Extraction Points lấy một 3★ chưa có\n"
+                    "`/exchange ego` — Đổi 200 Extraction Points lấy một E.G.O chưa có\n"
+                    "Quầy đổi gồm Standard, Seasonal và Event; Walpurgis không thể đổi.\n"
                     "Quản trị viên: `/economy status`, `enable`, `disable`, `channel`, "
                     "`earning`, `grant` và `preview`. Economy bật mới tính phí 130/1.300 điểm, lưu "
                     "collection và cộng 1 Extraction Point mỗi lượt.\n\n"

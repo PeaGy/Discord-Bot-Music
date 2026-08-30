@@ -212,6 +212,9 @@ test.
 - Gacha reads `Extraction/Extraction List` from `limbus_knowledge.db`. It remains
   a free simulator when a guild has not enabled Peto Economy; enabled guilds use
   atomic Peto Point charges and persistent per-guild collections.
+- Exchange uses a separate wiki-backed catalog: non-Walpurgis 3-star Identities
+  and Extraction E.G.O from Standard, Seasonal, and Event releases are eligible.
+  Do not widen the Standard gacha pool when changing exchange eligibility.
 - Economy is disabled by default. Activity rewards must be cooldown/cap limited,
   gacha/exchange mutations must remain atomic and idempotent, and disabling a
   guild must never delete its balances or collection.

@@ -56,6 +56,24 @@ USER_AGENT = os.getenv(
     "PetoDiscordBot/1.0 (personal Discord knowledge assistant)",
 ).strip()
 
+# These pages transclude large roster templates. Their rendered contents may
+# change even when the wrapper page revision stays the same, so revision-only
+# sync would leave gacha/exchange catalogs stale.
+ALWAYS_REFRESH_RENDERED_TITLES = frozenset(
+    {
+        "Extraction/Extraction List",
+        "List of Identities/Rarity",
+        "List of E.G.O",
+        "List of E.G.O/Data",
+    }
+)
+
+
+def _catalog_page_needs_refresh(
+    title: str, known_revid: int | None, live_revid: int
+) -> bool:
+    return known_revid != live_revid or title in ALWAYS_REFRESH_RENDERED_TITLES
+
 OFFICIAL_NEWS_CACHE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS official_news_image_cache (
     image_hash TEXT PRIMARY KEY,
@@ -2052,8 +2070,9 @@ class LimbusWiki(commands.Cog):
                 if pageid <= 0:
                     continue
                 live_ids.add(pageid)
-                if known.get(pageid) != revid:
-                    changed.append((pageid, str(item.get("title") or ""), revid, timestamp))
+                title = str(item.get("title") or "")
+                if _catalog_page_needs_refresh(title, known.get(pageid), revid):
+                    changed.append((pageid, title, revid, timestamp))
 
             logger.info(
                 "Limbus Wiki sync: %s bài, %s cần cập nhật", len(catalog), len(changed)

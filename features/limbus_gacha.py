@@ -220,6 +220,58 @@ def _fallback_asset_url(name: str, kind: str) -> str:
     return f"{WIKI_ROOT}Special:Redirect/file/{filename}"
 
 
+def _info_block_value(text: str, label: str) -> str:
+    """Read one value from the rendered wiki infobox."""
+    match = re.search(
+        rf"(?im)^\|?\s*{re.escape(label)}\s*$\s*\n+"
+        rf"(?:\s*\|\s*\n+)?\s*\|?\s*([^|\n]+)",
+        str(text or ""),
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _is_walpurgis_page(text: str) -> bool:
+    return "walpurgis" in _info_block_value(text, "Season").casefold()
+
+
+def _is_identity_page(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or "")).casefold()
+    return "skill1skill2skill3defense" in compact
+
+
+def _is_extraction_ego_page(text: str) -> bool:
+    folded = str(text or "").casefold()
+    return (
+        "risk level" in folded
+        and _info_block_value(text, "Obtained").casefold() == "extraction"
+    )
+
+
+def _listed_three_star_keys(text: str) -> set[str]:
+    """Return exact roster keys from the 3-star section of the rarity list."""
+    match = re.search(
+        r"There\s+are\s*\d+\s*Identities\s+that\s+have\s+a\s+3★\s+rarity\.?",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return set()
+    return {
+        _roster_key(line.strip().lstrip("|").strip())
+        for line in str(text)[match.end() :].splitlines()
+        if line.strip().lstrip("|").strip()
+    }
+
+
+def _listed_ego_keys(text: str) -> set[str]:
+    """Return possible exact E.G.O page keys from the wiki data table."""
+    return {
+        _roster_key(line.strip().lstrip("|").strip())
+        for line in str(text or "").splitlines()
+        if line.strip().lstrip("|").strip()
+    }
+
+
 def _prepare_art_cache_dir(path: Path) -> Path | None:
     """Create the optional disk cache without ever preventing bot startup."""
     try:
@@ -334,6 +386,101 @@ def load_gacha_pool_sync(db_path: Path = DB_PATH) -> GachaPool:
     if invalid:
         raise RuntimeError("Pool Extraction chưa đầy đủ: " + ", ".join(invalid))
     return GachaPool(result)
+
+
+def load_exchange_catalog_sync(db_path: Path = DB_PATH) -> GachaPool:
+    """Load exchangeable 3-star Identities and E.G.O outside Standard pool.
+
+    Seasonal and Event entries are intentionally included. Walpurgis entries are
+    intentionally excluded because they can only be dispensed during Walpurgis.
+    """
+    if not db_path.is_file():
+        raise RuntimeError(f"Không tìm thấy database Limbus: {db_path}")
+    connection = sqlite3.connect(db_path, timeout=30)
+    connection.row_factory = sqlite3.Row
+    try:
+        rarity_page = connection.execute(
+            "SELECT text FROM wiki_pages WHERE title = ? COLLATE NOCASE",
+            ("List of Identities/Rarity",),
+        ).fetchone()
+        if not rarity_page or not str(rarity_page["text"] or "").strip():
+            raise RuntimeError(
+                "Database chưa có trang List of Identities/Rarity; "
+                "hãy chờ Limbus Wiki sync xong."
+            )
+        three_star_keys = _listed_three_star_keys(str(rarity_page["text"]))
+        if not three_star_keys:
+            raise RuntimeError("Không đọc được danh sách Identity 3★ từ Limbus Wiki.")
+        ego_data_page = connection.execute(
+            "SELECT text FROM wiki_pages WHERE title = ? COLLATE NOCASE",
+            ("List of E.G.O/Data",),
+        ).fetchone()
+        ego_keys = (
+            _listed_ego_keys(str(ego_data_page["text"] or ""))
+            if ego_data_page
+            else set()
+        )
+
+        has_assets = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'wiki_assets'"
+        ).fetchone()
+        if has_assets:
+            rows = connection.execute(
+                """
+                SELECT p.title, p.url, p.text,
+                       COALESCE(a.thumbnail_url, a.original_url, '') AS image_url
+                FROM wiki_pages AS p
+                LEFT JOIN wiki_assets AS a ON a.pageid = p.pageid
+                """
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT title, url, text, '' AS image_url FROM wiki_pages"
+            ).fetchall()
+    finally:
+        connection.close()
+
+    result: dict[str, list[GachaEntry]] = {KIND_ID3: [], KIND_EGO: []}
+    for row in rows:
+        title = str(row["title"] or "").strip()
+        text = str(row["text"] or "")
+        if not title or "/" in title or _is_walpurgis_page(text):
+            continue
+        key = _roster_key(title)
+        if key in three_star_keys and _is_identity_page(text):
+            kind = KIND_ID3
+        elif key in ego_keys and "risk level" in text.casefold():
+            obtained = _info_block_value(text, "Obtained").casefold()
+            season = _info_block_value(text, "Season").casefold()
+            if obtained == "base e.g.o" or season in {"", "n/a"}:
+                continue
+            kind = KIND_EGO
+        elif not ego_keys and _is_extraction_ego_page(text):
+            # Older databases may predate List of E.G.O/Data. Keep the known
+            # Extraction subset available until the next background wiki sync.
+            kind = KIND_EGO
+        else:
+            continue
+        image_url = str(row["image_url"] or "") or _fallback_asset_url(title, kind)
+        result[kind].append(
+            GachaEntry(
+                name=title,
+                kind=kind,
+                url=str(row["url"] or _wiki_url(title)),
+                image_url=image_url,
+            )
+        )
+
+    catalog = {
+        kind: tuple(sorted(entries, key=lambda entry: entry.name.casefold()))
+        for kind, entries in result.items()
+    }
+    if not catalog[KIND_ID3] or not catalog[KIND_EGO]:
+        raise RuntimeError(
+            "Danh mục đổi chưa đầy đủ: "
+            f"Identity 3★={len(catalog[KIND_ID3])}, E.G.O={len(catalog[KIND_EGO])}"
+        )
+    return GachaPool(catalog)
 
 
 def roll_kind(
@@ -737,6 +884,9 @@ class LimbusGacha(commands.Cog):
         self.pool: GachaPool | None = None
         self.pool_loaded_at = 0.0
         self.pool_lock = asyncio.Lock()
+        self.exchange_catalog: GachaPool | None = None
+        self.exchange_catalog_loaded_at = 0.0
+        self.exchange_catalog_lock = asyncio.Lock()
         self.account_locks: dict[tuple[int, int], asyncio.Lock] = {}
         self.image_semaphore = asyncio.Semaphore(10)
         self.art_cache_dir: Path | None = None
@@ -790,6 +940,31 @@ class LimbusGacha(commands.Cog):
                 len(self.pool.entries(KIND_EGO)),
             )
             return self.pool
+
+    async def get_exchange_catalog(self) -> GachaPool:
+        now = time.monotonic()
+        if (
+            self.exchange_catalog
+            and now - self.exchange_catalog_loaded_at < POOL_REFRESH_SECONDS
+        ):
+            return self.exchange_catalog
+        async with self.exchange_catalog_lock:
+            now = time.monotonic()
+            if (
+                self.exchange_catalog
+                and now - self.exchange_catalog_loaded_at < POOL_REFRESH_SECONDS
+            ):
+                return self.exchange_catalog
+            self.exchange_catalog = await asyncio.to_thread(
+                load_exchange_catalog_sync, DB_PATH
+            )
+            self.exchange_catalog_loaded_at = now
+            logger.info(
+                "Limbus exchange catalog (không Walpurgis): 3★=%s, E.G.O=%s",
+                len(self.exchange_catalog.entries(KIND_ID3)),
+                len(self.exchange_catalog.entries(KIND_EGO)),
+            )
+            return self.exchange_catalog
 
     async def _download_image(self, url: str) -> bytes:
         if not url or not self.session:
@@ -982,7 +1157,7 @@ class LimbusGacha(commands.Cog):
         if interaction.guild_id is None:
             return []
         try:
-            pool = await self.get_pool()
+            pool = await self.get_exchange_catalog()
             owned = await self.economy_store.owned_names(
                 interaction.guild_id, interaction.user.id, KIND_ID3
             )
@@ -1008,7 +1183,7 @@ class LimbusGacha(commands.Cog):
         assert interaction.guild_id is not None
         await interaction.response.defer(thinking=True)
         try:
-            pool = await self.get_pool()
+            pool = await self.get_exchange_catalog()
             entry = next(
                 (
                     candidate
@@ -1019,7 +1194,8 @@ class LimbusGacha(commands.Cog):
             )
             if entry is None:
                 return await interaction.followup.send(
-                    "❌ Không tìm thấy Identity 3★ đó trong Standard Extraction.",
+                    "❌ Identity 3★ này không có trong danh mục đổi. "
+                    "Identity Walpurgis không thể đổi.",
                     ephemeral=True,
                 )
             account = await self.economy_store.exchange_item(
@@ -1047,6 +1223,85 @@ class LimbusGacha(commands.Cog):
                 f"Extraction Points còn lại: **{account.extraction_points:,}**"
             ),
             color=discord.Color.from_rgb(*RARITY_COLOR[KIND_ID3]),
+        )
+        if entry.image_url:
+            embed.set_image(url=entry.image_url)
+        await interaction.followup.send(embed=embed)
+
+    async def exchange_ego_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        if interaction.guild_id is None:
+            return []
+        try:
+            catalog = await self.get_exchange_catalog()
+            owned = await self.economy_store.owned_names(
+                interaction.guild_id, interaction.user.id, KIND_EGO
+            )
+        except Exception:
+            return []
+        needle = _roster_key(current)
+        return [
+            app_commands.Choice(name=entry.name[:100], value=entry.name[:100])
+            for entry in catalog.entries(KIND_EGO)
+            if entry.name not in owned and (not needle or needle in _roster_key(entry.name))
+        ][:25]
+
+    @exchange_group.command(
+        name="ego",
+        description="Đổi 200 Extraction Points lấy một E.G.O chưa sở hữu",
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(ego="E.G.O cần đổi; không hỗ trợ Walpurgis")
+    @app_commands.autocomplete(ego=exchange_ego_autocomplete)
+    async def exchange_ego(
+        self, interaction: discord.Interaction, ego: str
+    ) -> None:
+        assert interaction.guild_id is not None
+        await interaction.response.defer(thinking=True)
+        try:
+            catalog = await self.get_exchange_catalog()
+            entry = next(
+                (
+                    candidate
+                    for candidate in catalog.entries(KIND_EGO)
+                    if _roster_key(candidate.name) == _roster_key(ego)
+                ),
+                None,
+            )
+            if entry is None:
+                return await interaction.followup.send(
+                    "❌ E.G.O này không có trong danh mục đổi. "
+                    "E.G.O Walpurgis không thể đổi.",
+                    ephemeral=True,
+                )
+            account = await self.economy_store.exchange_item(
+                interaction.guild_id,
+                interaction.user.id,
+                item_kind=KIND_EGO,
+                item_name=entry.name,
+                extraction_cost=EXTRACTION_EXCHANGE_COST,
+                source_id=f"interaction:{interaction.id}",
+            )
+        except (EconomyDisabled, InsufficientExtractionPoints, AlreadyOwned) as error:
+            return await interaction.followup.send(f"❌ {error}", ephemeral=True)
+        except Exception as error:
+            logger.exception("Không đổi được E.G.O")
+            return await interaction.followup.send(
+                f"❌ Không thể đổi E.G.O lúc này: `{str(error)[:250]}`",
+                ephemeral=True,
+            )
+
+        embed = discord.Embed(
+            title="✅ Đổi E.G.O thành công",
+            description=(
+                f"{RARITY_EMOJI[KIND_EGO]} **[{discord.utils.escape_markdown(entry.name)}]"
+                f"(<{entry.url}>)** đã được thêm vào collection.\n\n"
+                f"Extraction Points còn lại: **{account.extraction_points:,}**"
+            ),
+            color=discord.Color.from_rgb(*RARITY_COLOR[KIND_EGO]),
         )
         if entry.image_url:
             embed.set_image(url=entry.image_url)
