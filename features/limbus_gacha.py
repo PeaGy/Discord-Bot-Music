@@ -45,6 +45,16 @@ from economy_store import (
     InsufficientPoints,
     get_economy_store,
 )
+from features._blue_archive_gacha import (
+    GAME_ID as BLUE_ARCHIVE_GAME_ID,
+    REGION_LABELS as BA_REGION_LABELS,
+    BlueArchiveBanner,
+    BlueArchiveGachaService,
+    BlueArchivePull,
+    BlueArchiveStudent,
+    blue_archive_rates_embed,
+    pull_blue_archive,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -872,6 +882,108 @@ class LimbusGachaView(discord.ui.View):
                 pass
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedBlueArchiveGacha:
+    banner: BlueArchiveBanner
+    target: BlueArchiveStudent
+    pulls: tuple[BlueArchivePull, ...]
+    recruitment_points: int = 0
+    account_balance: int | None = None
+    point_cost: int = 0
+
+
+class BlueArchiveGachaView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "LimbusGacha",
+        owner_id: int,
+        *,
+        region: str,
+        target_id: int,
+    ) -> None:
+        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
+        self.cog = cog
+        self.owner_id = int(owner_id)
+        self.region = str(region)
+        self.target_id = int(target_id)
+        self.message: discord.Message | None = None
+        self.roll_lock = asyncio.Lock()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message(
+            "🎓 Panel này thuộc lượt tuyển sinh của người khác. Dùng `/gacha` để mở lượt riêng nhé.",
+            ephemeral=True,
+        )
+        return False
+
+    async def _reroll(self, interaction: discord.Interaction, count: int) -> None:
+        if self.roll_lock.locked():
+            return await interaction.response.send_message(
+                "⏳ Animation tuyển sinh trước vẫn đang chạy.", ephemeral=True
+            )
+        await interaction.response.defer()
+        async with self.roll_lock:
+            try:
+                if interaction.guild_id is None:
+                    raise EconomyDisabled("Gacha economy chỉ dùng trong server.")
+                prepared = await self.cog.prepare_blue_archive_gacha(
+                    interaction.guild_id,
+                    interaction.user.id,
+                    count,
+                    region=self.region,
+                    target_value=str(self.target_id),
+                    source_id=f"interaction:{interaction.id}",
+                )
+                await self.cog.present_blue_archive_gacha(
+                    interaction,
+                    prepared,
+                    view=self,
+                    edit_original=True,
+                )
+            except (InsufficientPoints, EconomyDisabled) as error:
+                await interaction.followup.send(f"❌ {error}", ephemeral=True)
+            except Exception as error:
+                logger.exception("Không thể quay lại Blue Archive gacha")
+                await interaction.followup.send(
+                    f"❌ Không thể tuyển sinh lúc này: `{str(error)[:300]}`",
+                    ephemeral=True,
+                )
+
+    @discord.ui.button(label="Quay ×1", emoji="🎟️", style=discord.ButtonStyle.secondary)
+    async def pull_one(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._reroll(interaction, 1)
+
+    @discord.ui.button(label="Quay ×10", emoji="🎓", style=discord.ButtonStyle.primary)
+    async def pull_ten(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._reroll(interaction, 10)
+
+    @discord.ui.button(label="Tỷ lệ", emoji="📊", style=discord.ButtonStyle.secondary)
+    async def show_rates(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        banner = await self.cog.blue_archive.get_banner(self.region)
+        target = banner.target(str(self.target_id))
+        await interaction.response.send_message(
+            embed=blue_archive_rates_embed(banner, target), ephemeral=True
+        )
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.HTTPException, discord.NotFound):
+                pass
+
+
 class LimbusGacha(commands.Cog):
     exchange_group = app_commands.Group(
         name="exchange",
@@ -891,6 +1003,7 @@ class LimbusGacha(commands.Cog):
         self.image_semaphore = asyncio.Semaphore(10)
         self.art_cache_dir: Path | None = None
         self.economy_store = get_economy_store(bot)
+        self.blue_archive = BlueArchiveGachaService()
 
     async def cog_load(self) -> None:
         # Chuẩn bị filesystem trước khi mở HTTP session để không rò session nếu
@@ -916,11 +1029,13 @@ class LimbusGacha(commands.Cog):
                 "Referer": "https://limbuscompany.wiki.gg/",
             },
         )
+        await self.blue_archive.open()
 
     async def cog_unload(self) -> None:
         if self.session:
             await self.session.close()
         self.session = None
+        await self.blue_archive.close()
 
     async def get_pool(self) -> GachaPool:
         now = time.monotonic()
@@ -1149,6 +1264,155 @@ class LimbusGacha(commands.Cog):
             point_cost=point_cost,
         )
 
+    async def prepare_blue_archive_gacha(
+        self,
+        guild_id: int,
+        user_id: int,
+        count: int,
+        *,
+        region: str,
+        target_value: str | None,
+        source_id: str,
+    ) -> PreparedBlueArchiveGacha:
+        banner = await self.blue_archive.get_banner(region)
+        target = banner.target(target_value)
+        setting = await self.economy_store.get_settings(guild_id)
+        if not setting.enabled:
+            return PreparedBlueArchiveGacha(
+                banner=banner,
+                target=target,
+                pulls=pull_blue_archive(banner, target, count),
+            )
+
+        account_lock = self.account_locks.setdefault(
+            (int(guild_id), int(user_id)), asyncio.Lock()
+        )
+        async with account_lock:
+            pulls = pull_blue_archive(banner, target, count)
+            point_cost = GACHA_POINT_COST[count]
+            account = await self.economy_store.record_gacha(
+                guild_id,
+                user_id,
+                point_cost=point_cost,
+                results=[(pull.student.kind, pull.student.name) for pull in pulls],
+                source_id=source_id,
+                game_id=BLUE_ARCHIVE_GAME_ID,
+                banner_id=banner.banner_id,
+                extraction_points_awarded=0,
+                recruitment_points_awarded=count,
+            )
+            recruitment_points = await self.economy_store.gacha_pity_points(
+                guild_id,
+                user_id,
+                game_id=BLUE_ARCHIVE_GAME_ID,
+                banner_id=banner.banner_id,
+            )
+        return PreparedBlueArchiveGacha(
+            banner=banner,
+            target=target,
+            pulls=pulls,
+            recruitment_points=recruitment_points,
+            account_balance=account.balance,
+            point_cost=point_cost,
+        )
+
+    @staticmethod
+    def _blue_archive_animation_embed(
+        prepared: PreparedBlueArchiveGacha,
+    ) -> discord.Embed:
+        special = any(pull.student.star_grade == 3 for pull in prepared.pulls)
+        embed = discord.Embed(
+            title="✉️ Đang mở hồ sơ tuyển sinh đặc biệt…" if special else "✉️ Đang mở hồ sơ tuyển sinh…",
+            description=(
+                f"**{BA_REGION_LABELS[prepared.banner.region]}** • "
+                f"Mục tiêu **{prepared.target.name}**\n"
+                "Animation sẽ chạy đủ một vòng trước khi hiện kết quả."
+            ),
+            color=0xF06EA9 if special else 0x68C7F2,
+        )
+        embed.set_image(url="attachment://blue-archive-recruitment.gif")
+        return embed
+
+    async def present_blue_archive_gacha(
+        self,
+        interaction: discord.Interaction,
+        prepared: PreparedBlueArchiveGacha,
+        *,
+        view: BlueArchiveGachaView,
+        edit_original: bool,
+    ) -> discord.Message | None:
+        special = any(pull.student.star_grade == 3 for pull in prepared.pulls)
+        animation_file, duration = self.blue_archive.animation(special=special)
+        animation_embed = self._blue_archive_animation_embed(prepared)
+        started = time.monotonic()
+
+        if edit_original:
+            await interaction.edit_original_response(
+                embed=animation_embed,
+                attachments=[animation_file],
+                view=None,
+            )
+            message = interaction.message
+        else:
+            message = await interaction.followup.send(
+                embed=animation_embed,
+                file=animation_file,
+                wait=True,
+            )
+
+        render_task = asyncio.create_task(
+            self.blue_archive.make_payload(
+                prepared.banner,
+                prepared.target,
+                prepared.pulls,
+                recruitment_points=prepared.recruitment_points,
+                account_balance=prepared.account_balance,
+                point_cost=prepared.point_cost,
+            )
+        )
+        # Discord starts animating after upload, so a small buffer prevents the
+        # final frame from being replaced a fraction too early.
+        await asyncio.sleep(max(0.0, duration + 0.2 - (time.monotonic() - started)))
+        payload = await render_task
+        if edit_original:
+            await interaction.edit_original_response(
+                embed=payload.embed,
+                attachments=[payload.file],
+                view=view,
+            )
+        elif message:
+            await message.edit(
+                embed=payload.embed,
+                attachments=[payload.file],
+                view=view,
+            )
+        view.message = message
+        return message
+
+    async def blue_archive_target_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        namespace = interaction.namespace
+        game = str(getattr(namespace, "game", "limbus") or "limbus")
+        if game != BLUE_ARCHIVE_GAME_ID:
+            return []
+        region = str(getattr(namespace, "server", "global") or "global")
+        try:
+            banner = await self.blue_archive.get_banner(region)
+        except Exception:
+            return []
+        needle = current.strip().casefold()
+        return [
+            app_commands.Choice(
+                name=f"{student.name} — 3★ Pickup"[:100],
+                value=str(student.student_id),
+            )
+            for student in banner.pickups
+            if not needle or needle in student.name.casefold()
+        ][:25]
+
     async def exchange_identity_autocomplete(
         self,
         interaction: discord.Interaction,
@@ -1309,23 +1573,76 @@ class LimbusGacha(commands.Cog):
 
     @app_commands.command(
         name="gacha",
-        description="Standard Extraction của Limbus Company",
+        description="Gacha Limbus Company hoặc Blue Archive",
     )
     @app_commands.guild_only()
-    @app_commands.describe(pulls="Số lượt quay; mặc định là 10")
+    @app_commands.describe(
+        game="Game cần quay; mặc định giữ nguyên Limbus Company",
+        pulls="Số lượt quay; mặc định là 10",
+        server="Server Blue Archive; bỏ qua khi quay Limbus",
+        target="Học sinh pickup mục tiêu của Blue Archive",
+    )
     @app_commands.choices(
+        game=[
+            app_commands.Choice(name="Limbus Company", value="limbus"),
+            app_commands.Choice(name="Blue Archive", value=BLUE_ARCHIVE_GAME_ID),
+        ],
         pulls=[
             app_commands.Choice(name="Quay ×1", value=1),
             app_commands.Choice(name="Quay ×10", value=10),
-        ]
+        ],
+        server=[
+            app_commands.Choice(name="Global", value="global"),
+            app_commands.Choice(name="JP", value="jp"),
+            app_commands.Choice(name="CN", value="cn"),
+        ],
     )
+    @app_commands.autocomplete(target=blue_archive_target_autocomplete)
     async def gacha(
         self,
         interaction: discord.Interaction,
+        game: app_commands.Choice[str] | None = None,
         pulls: app_commands.Choice[int] | None = None,
+        server: app_commands.Choice[str] | None = None,
+        target: str | None = None,
     ) -> None:
         count = pulls.value if pulls else 10
         await interaction.response.defer(thinking=True)
+        game_id = game.value if game else "limbus"
+        if game_id == BLUE_ARCHIVE_GAME_ID:
+            try:
+                assert interaction.guild_id is not None
+                region = server.value if server else "global"
+                prepared = await self.prepare_blue_archive_gacha(
+                    interaction.guild_id,
+                    interaction.user.id,
+                    count,
+                    region=region,
+                    target_value=target,
+                    source_id=f"interaction:{interaction.id}",
+                )
+                view = BlueArchiveGachaView(
+                    self,
+                    interaction.user.id,
+                    region=prepared.banner.region,
+                    target_id=prepared.target.student_id,
+                )
+                view.message = await self.present_blue_archive_gacha(
+                    interaction,
+                    prepared,
+                    view=view,
+                    edit_original=False,
+                )
+                return
+            except (InsufficientPoints, EconomyDisabled, ValueError) as error:
+                return await interaction.followup.send(f"❌ {error}", ephemeral=True)
+            except Exception as error:
+                logger.exception("Không thể chạy /gacha Blue Archive")
+                return await interaction.followup.send(
+                    "❌ Blue Archive gacha chưa sẵn sàng. "
+                    f"`{str(error)[:350]}`",
+                    ephemeral=True,
+                )
         try:
             assert interaction.guild_id is not None
             payload = await self.perform_gacha(

@@ -1,4 +1,5 @@
 import unittest
+import sqlite3
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -268,6 +269,80 @@ class EconomyStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await self.store.collection_summary(100, 10), {"id3": 1}
         )
+
+    async def test_blue_archive_collection_and_pity_are_separate_from_limbus(self):
+        await self.store.update_settings(100, updated_by=1, enabled=True)
+        await self.store.adjust_points(100, 10, delta=2_600, source_id="seed:multi")
+        await self.store.record_gacha(
+            100,
+            10,
+            point_cost=1_300,
+            results=[("id3", "Limbus Three")] * 10,
+            source_id="pull:limbus",
+        )
+        account = await self.store.record_gacha(
+            100,
+            10,
+            point_cost=1_300,
+            results=[("ba3", "BA Three"), ("ba1", "BA One")],
+            source_id="pull:ba",
+            game_id="blue_archive",
+            banner_id="global:1:2",
+            extraction_points_awarded=0,
+            recruitment_points_awarded=2,
+        )
+        self.assertEqual(account.extraction_points, 10)
+        self.assertEqual(
+            await self.store.collection_summary(100, 10, game_id="limbus"),
+            {"id3": 1},
+        )
+        self.assertEqual(
+            await self.store.collection_summary(
+                100, 10, game_id="blue_archive"
+            ),
+            {"ba1": 1, "ba3": 1},
+        )
+        self.assertEqual(
+            await self.store.gacha_pity_points(
+                100,
+                10,
+                game_id="blue_archive",
+                banner_id="global:1:2",
+            ),
+            2,
+        )
+
+    async def test_old_collection_schema_is_migrated_as_limbus(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "old-economy.db"
+            db = sqlite3.connect(path)
+            try:
+                db.execute(
+                    """
+                    CREATE TABLE economy_collection (
+                        guild_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        item_kind TEXT NOT NULL,
+                        item_name TEXT NOT NULL,
+                        copies INTEGER NOT NULL DEFAULT 1,
+                        first_obtained_at INTEGER NOT NULL,
+                        last_obtained_at INTEGER NOT NULL,
+                        PRIMARY KEY (guild_id, user_id, item_kind, item_name)
+                    )
+                    """
+                )
+                db.execute(
+                    "INSERT INTO economy_collection VALUES(1,2,'id3','Old ID',1,10,10)"
+                )
+                db.commit()
+            finally:
+                db.close()
+            migrated = EconomyStore(path)
+            await migrated.init()
+            items, total = await migrated.collection(1, 2, game_id="limbus")
+            self.assertEqual(total, 1)
+            self.assertEqual(items[0].item_name, "Old ID")
+            self.assertEqual(items[0].game_id, "limbus")
 
 
 if __name__ == "__main__":

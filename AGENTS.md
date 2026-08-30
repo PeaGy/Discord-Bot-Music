@@ -62,7 +62,8 @@ not part of the normal unit suite.
   metadata.
 - `features/limbus_kit_view.py`: Limbus embed renderer/helper; it has a no-op
   `setup()` because of the automatic extension loader.
-- `features/limbus_gacha.py`: Standard Extraction simulation and collage rendering.
+- `features/limbus_gacha.py`: shared `/gacha` command, Limbus Standard Extraction,
+  and Blue Archive delegation; `_blue_archive_gacha.py` owns SchaleDB and BA rendering.
 - `economy_store.py` / `peto_economy.db`: transactional Peto Points, Extraction
   Points, per-guild collections, and weekly rankings.
 - `features/economy.py`: activity rewards, economy commands, and weekly posts.
@@ -209,9 +210,14 @@ test.
 - Kit embeds, skill-only embeds, Coin/status emoji placement, rarity colors, and
   Sin Affinity colors have dedicated regression tests. Update tests whenever their
   render rules change.
-- Gacha reads `Extraction/Extraction List` from `limbus_knowledge.db`. It remains
-  a free simulator when a guild has not enabled Peto Economy; enabled guilds use
-  atomic Peto Point charges and persistent per-guild collections.
+- Limbus gacha reads `Extraction/Extraction List` from `limbus_knowledge.db`.
+  Blue Archive gacha reads the current JP/Global/CN banner from SchaleDB and uses
+  the bundled normal/special GIFs under `assets/blue_archive_gacha/`; play exactly
+  one first cycle before replacing the same message with the result.
+- Gacha remains a free simulator when a guild has not enabled Peto Economy;
+  enabled guilds use atomic Peto Point charges and persistent collections scoped
+  by game. Never merge Limbus Extraction Points with Blue Archive Recruitment
+  Points, which are scoped by banner.
 - Exchange uses a separate wiki-backed catalog: non-Walpurgis 3-star Identities
   and Extraction E.G.O from Standard, Seasonal, and Event releases are eligible.
   Do not widen the Standard gacha pool when changing exchange eligibility.

@@ -1,4 +1,4 @@
-"""Persistent per-guild Peto Points and Limbus collection storage."""
+"""Persistent per-guild Peto Points and multi-game collection storage."""
 
 from __future__ import annotations
 
@@ -77,6 +77,7 @@ class CollectionItem:
     copies: int
     first_obtained_at: int
     last_obtained_at: int
+    game_id: str = "limbus"
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,7 +228,52 @@ class EconomyStore:
                         posted_at INTEGER NOT NULL,
                         PRIMARY KEY (guild_id, week_start)
                     );
+
+                    CREATE TABLE IF NOT EXISTS economy_gacha_pity (
+                        guild_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        game_id TEXT NOT NULL,
+                        banner_id TEXT NOT NULL,
+                        points INTEGER NOT NULL DEFAULT 0 CHECK(points >= 0),
+                        updated_at INTEGER NOT NULL,
+                        PRIMARY KEY (guild_id, user_id, game_id, banner_id)
+                    );
                     """
+                )
+                # Additive migration for databases created before multi-game
+                # gacha.  Existing rows are Limbus by definition.
+                for table, column, declaration in (
+                    (
+                        "economy_gacha_transactions",
+                        "game_id",
+                        "TEXT NOT NULL DEFAULT 'limbus'",
+                    ),
+                    (
+                        "economy_gacha_transactions",
+                        "banner_id",
+                        "TEXT NOT NULL DEFAULT ''",
+                    ),
+                    (
+                        "economy_gacha_results",
+                        "game_id",
+                        "TEXT NOT NULL DEFAULT 'limbus'",
+                    ),
+                    (
+                        "economy_collection",
+                        "game_id",
+                        "TEXT NOT NULL DEFAULT 'limbus'",
+                    ),
+                ):
+                    columns = await (
+                        await db.execute(f"PRAGMA table_info({table})")
+                    ).fetchall()
+                    if column not in {str(row[1]) for row in columns}:
+                        await db.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+                        )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_economy_collection_game_rank "
+                    "ON economy_collection(guild_id, game_id, user_id, item_kind)"
                 )
                 await db.commit()
             finally:
@@ -538,6 +584,10 @@ class EconomyStore:
         point_cost: int,
         results: Sequence[tuple[str, str]],
         source_id: str,
+        game_id: str = "limbus",
+        banner_id: str = "",
+        extraction_points_awarded: int | None = None,
+        recruitment_points_awarded: int = 0,
         timestamp: int | None = None,
     ) -> EconomyAccount:
         await self.init()
@@ -575,10 +625,18 @@ class EconomyStore:
                 if int(account["balance"]) < int(point_cost):
                     raise InsufficientPoints(int(account["balance"]), int(point_cost))
 
+                extraction_award = (
+                    len(results)
+                    if extraction_points_awarded is None
+                    else max(0, int(extraction_points_awarded))
+                )
+                recruitment_award = max(0, int(recruitment_points_awarded))
+                game_id = str(game_id or "limbus")
+                banner_id = str(banner_id or "")
                 cursor = await db.execute(
                     "INSERT INTO economy_gacha_transactions "
-                    "(guild_id,user_id,source_id,pull_count,point_cost,created_at) "
-                    "VALUES(?,?,?,?,?,?)",
+                    "(guild_id,user_id,source_id,pull_count,point_cost,created_at,game_id,banner_id) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
                     (
                         int(guild_id),
                         int(user_id),
@@ -586,14 +644,16 @@ class EconomyStore:
                         len(results),
                         int(point_cost),
                         now,
+                        game_id,
+                        banner_id,
                     ),
                 )
                 transaction_id = int(cursor.lastrowid)
                 await db.executemany(
                     "INSERT INTO economy_gacha_results "
-                    "(transaction_id,position,item_kind,item_name) VALUES(?,?,?,?)",
+                    "(transaction_id,position,item_kind,item_name,game_id) VALUES(?,?,?,?,?)",
                     [
-                        (transaction_id, index, kind, name)
+                        (transaction_id, index, kind, name, game_id)
                         for index, (kind, name) in enumerate(results, start=1)
                     ],
                 )
@@ -601,14 +661,15 @@ class EconomyStore:
                     """
                     INSERT INTO economy_collection (
                         guild_id,user_id,item_kind,item_name,copies,
-                        first_obtained_at,last_obtained_at
-                    ) VALUES(?,?,?,?,1,?,?)
+                        first_obtained_at,last_obtained_at,game_id
+                    ) VALUES(?,?,?,?,1,?,?,?)
                     ON CONFLICT(guild_id,user_id,item_kind,item_name) DO UPDATE SET
                         copies=copies+1,
-                        last_obtained_at=excluded.last_obtained_at
+                        last_obtained_at=excluded.last_obtained_at,
+                        game_id=excluded.game_id
                     """,
                     [
-                        (int(guild_id), int(user_id), kind, name, now, now)
+                        (int(guild_id), int(user_id), kind, name, now, now, game_id)
                         for kind, name in results
                     ],
                 )
@@ -618,7 +679,7 @@ class EconomyStore:
                     "updated_at=? WHERE guild_id=? AND user_id=?",
                     (
                         int(point_cost),
-                        len(results),
+                        extraction_award,
                         len(results),
                         now,
                         int(guild_id),
@@ -631,12 +692,29 @@ class EconomyStore:
                     "VALUES(?,?,'points',?,'gacha',?,?)",
                     (int(guild_id), int(user_id), -int(point_cost), source_id, now),
                 )
-                await db.execute(
-                    "INSERT INTO economy_ledger "
-                    "(guild_id,user_id,currency,delta,reason,source_id,created_at) "
-                    "VALUES(?,?,'extraction',?,'gacha',?,?)",
-                    (int(guild_id), int(user_id), len(results), source_id, now),
-                )
+                if extraction_award:
+                    await db.execute(
+                        "INSERT INTO economy_ledger "
+                        "(guild_id,user_id,currency,delta,reason,source_id,created_at) "
+                        "VALUES(?,?,'extraction',?,'gacha',?,?)",
+                        (int(guild_id), int(user_id), extraction_award, source_id, now),
+                    )
+                if recruitment_award and banner_id:
+                    await db.execute(
+                        "INSERT INTO economy_gacha_pity "
+                        "(guild_id,user_id,game_id,banner_id,points,updated_at) "
+                        "VALUES(?,?,?,?,?,?) "
+                        "ON CONFLICT(guild_id,user_id,game_id,banner_id) DO UPDATE SET "
+                        "points=points+excluded.points, updated_at=excluded.updated_at",
+                        (
+                            int(guild_id),
+                            int(user_id),
+                            game_id,
+                            banner_id,
+                            recruitment_award,
+                            now,
+                        ),
+                    )
                 await db.commit()
                 updated = await (
                     await db.execute(
@@ -661,6 +739,7 @@ class EconomyStore:
         item_name: str,
         extraction_cost: int,
         source_id: str,
+        game_id: str = "limbus",
         timestamp: int | None = None,
     ) -> EconomyAccount:
         await self.init()
@@ -682,8 +761,14 @@ class EconomyStore:
                 existing = await (
                     await db.execute(
                         "SELECT 1 FROM economy_collection WHERE guild_id=? AND user_id=? "
-                        "AND item_kind=? AND item_name=?",
-                        (int(guild_id), int(user_id), item_kind, item_name),
+                        "AND item_kind=? AND item_name=? AND game_id=?",
+                        (
+                            int(guild_id),
+                            int(user_id),
+                            item_kind,
+                            item_name,
+                            str(game_id or "limbus"),
+                        ),
                     )
                 ).fetchone()
                 if existing:
@@ -709,9 +794,17 @@ class EconomyStore:
                     raise InsufficientExtractionPoints(available, int(extraction_cost))
                 await db.execute(
                     "INSERT INTO economy_collection "
-                    "(guild_id,user_id,item_kind,item_name,copies,first_obtained_at,last_obtained_at) "
-                    "VALUES(?,?,?,?,1,?,?)",
-                    (int(guild_id), int(user_id), item_kind, item_name, now, now),
+                    "(guild_id,user_id,item_kind,item_name,copies,first_obtained_at,last_obtained_at,game_id) "
+                    "VALUES(?,?,?,?,1,?,?,?)",
+                    (
+                        int(guild_id),
+                        int(user_id),
+                        item_kind,
+                        item_name,
+                        now,
+                        now,
+                        str(game_id or "limbus"),
+                    ),
                 )
                 await db.execute(
                     "UPDATE economy_accounts SET extraction_points=extraction_points-?, "
@@ -745,15 +838,22 @@ class EconomyStore:
             finally:
                 await db.close()
 
-    async def owned_names(self, guild_id: int, user_id: int, item_kind: str) -> set[str]:
+    async def owned_names(
+        self,
+        guild_id: int,
+        user_id: int,
+        item_kind: str,
+        *,
+        game_id: str = "limbus",
+    ) -> set[str]:
         await self.init()
         db = await self._connect()
         try:
             rows = await (
                 await db.execute(
                     "SELECT item_name FROM economy_collection "
-                    "WHERE guild_id=? AND user_id=? AND item_kind=?",
-                    (int(guild_id), int(user_id), item_kind),
+                    "WHERE guild_id=? AND user_id=? AND item_kind=? AND game_id=?",
+                    (int(guild_id), int(user_id), item_kind, str(game_id)),
                 )
             ).fetchall()
             return {str(row["item_name"]) for row in rows}
@@ -765,6 +865,7 @@ class EconomyStore:
         guild_id: int,
         user_id: int,
         *,
+        game_id: str = "limbus",
         item_kind: str | None = None,
         limit: int = 20,
         offset: int = 0,
@@ -772,8 +873,8 @@ class EconomyStore:
         await self.init()
         db = await self._connect()
         try:
-            where = "guild_id=? AND user_id=?"
-            values: list[object] = [int(guild_id), int(user_id)]
+            where = "guild_id=? AND user_id=? AND game_id=?"
+            values: list[object] = [int(guild_id), int(user_id), str(game_id)]
             if item_kind:
                 where += " AND item_kind=?"
                 values.append(item_kind)
@@ -787,7 +888,8 @@ class EconomyStore:
                 await db.execute(
                     f"SELECT * FROM economy_collection WHERE {where} "
                     "ORDER BY CASE item_kind WHEN 'id3' THEN 0 WHEN 'ego' THEN 1 "
-                    "WHEN 'id2' THEN 2 ELSE 3 END, item_name COLLATE NOCASE "
+                    "WHEN 'ba3' THEN 0 WHEN 'ba2' THEN 1 WHEN 'id2' THEN 2 "
+                    "WHEN 'ba1' THEN 2 ELSE 3 END, item_name COLLATE NOCASE "
                     "LIMIT ? OFFSET ?",
                     (*values, int(limit), int(offset)),
                 )
@@ -800,6 +902,7 @@ class EconomyStore:
                         copies=int(row["copies"]),
                         first_obtained_at=int(row["first_obtained_at"]),
                         last_obtained_at=int(row["last_obtained_at"]),
+                        game_id=str(row["game_id"]),
                     )
                     for row in rows
                 ],
@@ -808,43 +911,57 @@ class EconomyStore:
         finally:
             await db.close()
 
-    async def collection_summary(self, guild_id: int, user_id: int) -> dict[str, int]:
+    async def collection_summary(
+        self, guild_id: int, user_id: int, *, game_id: str | None = None
+    ) -> dict[str, int]:
         await self.init()
         db = await self._connect()
         try:
+            where = "guild_id=? AND user_id=?"
+            values: list[object] = [int(guild_id), int(user_id)]
+            if game_id is not None:
+                where += " AND game_id=?"
+                values.append(str(game_id))
             rows = await (
                 await db.execute(
                     "SELECT item_kind, COUNT(*) AS count FROM economy_collection "
-                    "WHERE guild_id=? AND user_id=? GROUP BY item_kind",
-                    (int(guild_id), int(user_id)),
+                    f"WHERE {where} GROUP BY item_kind",
+                    values,
                 )
             ).fetchall()
             return {str(row["item_kind"]): int(row["count"]) for row in rows}
         finally:
             await db.close()
 
-    async def collection_rank(self, guild_id: int, limit: int = 5) -> list[CollectionRank]:
+    async def collection_rank(
+        self, guild_id: int, limit: int = 5, *, game_id: str = "limbus"
+    ) -> list[CollectionRank]:
         await self.init()
         db = await self._connect()
         try:
+            kinds = (
+                ("ba3", "ba2", "ba1", "__none__")
+                if str(game_id) == "blue_archive"
+                else ("id3", "id2", "id1", "ego")
+            )
             rows = await (
                 await db.execute(
                     """
                     SELECT user_id,
                            COUNT(*) AS unique_total,
-                           SUM(CASE WHEN item_kind='id3' THEN 1 ELSE 0 END) AS id3,
-                           SUM(CASE WHEN item_kind='id2' THEN 1 ELSE 0 END) AS id2,
-                           SUM(CASE WHEN item_kind='id1' THEN 1 ELSE 0 END) AS id1,
-                           SUM(CASE WHEN item_kind='ego' THEN 1 ELSE 0 END) AS ego,
+                           SUM(CASE WHEN item_kind=? THEN 1 ELSE 0 END) AS id3,
+                           SUM(CASE WHEN item_kind=? THEN 1 ELSE 0 END) AS id2,
+                           SUM(CASE WHEN item_kind=? THEN 1 ELSE 0 END) AS id1,
+                           SUM(CASE WHEN item_kind=? THEN 1 ELSE 0 END) AS ego,
                            MAX(first_obtained_at) AS reached_at
                     FROM economy_collection
-                    WHERE guild_id=?
+                    WHERE guild_id=? AND game_id=?
                     GROUP BY user_id
                     ORDER BY unique_total DESC, id3 DESC, ego DESC, id2 DESC,
                              reached_at ASC, user_id ASC
                     LIMIT ?
                     """,
-                    (int(guild_id), int(limit)),
+                    (*kinds, int(guild_id), str(game_id), int(limit)),
                 )
             ).fetchall()
             return [
@@ -859,6 +976,28 @@ class EconomyStore:
                 )
                 for row in rows
             ]
+        finally:
+            await db.close()
+
+    async def gacha_pity_points(
+        self,
+        guild_id: int,
+        user_id: int,
+        *,
+        game_id: str,
+        banner_id: str,
+    ) -> int:
+        await self.init()
+        db = await self._connect()
+        try:
+            row = await (
+                await db.execute(
+                    "SELECT points FROM economy_gacha_pity "
+                    "WHERE guild_id=? AND user_id=? AND game_id=? AND banner_id=?",
+                    (int(guild_id), int(user_id), str(game_id), str(banner_id)),
+                )
+            ).fetchone()
+            return int(row["points"]) if row else 0
         finally:
             await db.close()
 

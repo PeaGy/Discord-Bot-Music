@@ -55,7 +55,12 @@ RARITY_LABEL = {
     "id2": "2★",
     "id1": "1★",
     "ego": "E.G.O",
+    "ba3": "3★",
+    "ba2": "2★",
+    "ba1": "1★",
 }
+
+GAME_LABEL = {"limbus": "Limbus Company", "blue_archive": "Blue Archive"}
 
 
 def _can_manage_guild(interaction: discord.Interaction) -> bool:
@@ -339,14 +344,19 @@ class Economy(commands.Cog):
         embed.set_footer(text="Điểm tuần không giảm khi bạn dùng Peto Points")
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="collection", description="Xem bộ sưu tập Limbus đã quay")
+    @app_commands.command(name="collection", description="Xem bộ sưu tập gacha đã quay")
     @app_commands.guild_only()
     @app_commands.describe(
         member="Thành viên cần xem",
+        game="Game cần xem; mặc định là Limbus Company",
         rarity="Chỉ xem một độ hiếm",
         page="Trang cần xem",
     )
     @app_commands.choices(
+        game=[
+            app_commands.Choice(name="Limbus Company", value="limbus"),
+            app_commands.Choice(name="Blue Archive", value="blue_archive"),
+        ],
         rarity=[
             app_commands.Choice(name="3★ Identity", value="id3"),
             app_commands.Choice(name="2★ Identity", value="id2"),
@@ -358,21 +368,30 @@ class Economy(commands.Cog):
         self,
         interaction: discord.Interaction,
         member: discord.Member | None = None,
+        game: app_commands.Choice[str] | None = None,
         rarity: app_commands.Choice[str] | None = None,
         page: app_commands.Range[int, 1, 100] = 1,
     ) -> None:
         assert interaction.guild is not None
         target = member or interaction.user
+        game_id = game.value if game else "limbus"
         kind = rarity.value if rarity else None
+        if game_id == "blue_archive" and kind:
+            kind = {"id3": "ba3", "id2": "ba2", "id1": "ba1"}.get(
+                kind, "__not_available__"
+            )
         per_page = 15
         items, total = await self.store.collection(
             interaction.guild.id,
             target.id,
+            game_id=game_id,
             item_kind=kind,
             limit=per_page,
             offset=(int(page) - 1) * per_page,
         )
-        summary = await self.store.collection_summary(interaction.guild.id, target.id)
+        summary = await self.store.collection_summary(
+            interaction.guild.id, target.id, game_id=game_id
+        )
         lines = [
             f"{RARITY_LABEL.get(item.item_kind, item.item_kind)} "
             f"**{discord.utils.escape_markdown(item.item_name)}**"
@@ -380,43 +399,64 @@ class Economy(commands.Cog):
             for item in items
         ]
         embed = discord.Embed(
-            title=f"📚 Collection — {target.display_name}",
+            title=f"📚 {GAME_LABEL[game_id]} Collection — {target.display_name}",
             description="\n".join(lines) if lines else "Chưa có nhân vật ở trang này.",
             color=0xA68B5B,
         )
-        embed.add_field(
-            name="Unique",
-            value=(
+        if game_id == "blue_archive":
+            unique_text = (
+                f"3★ `{summary.get('ba3', 0)}` • "
+                f"2★ `{summary.get('ba2', 0)}` • "
+                f"1★ `{summary.get('ba1', 0)}`"
+            )
+        else:
+            unique_text = (
                 f"3★ `{summary.get('id3', 0)}` • "
                 f"2★ `{summary.get('id2', 0)}` • "
                 f"1★ `{summary.get('id1', 0)}` • "
                 f"E.G.O `{summary.get('ego', 0)}`"
-            ),
-            inline=False,
-        )
+            )
+        embed.add_field(name="Unique", value=unique_text, inline=False)
         pages = max(1, (total + per_page - 1) // per_page)
         embed.set_footer(text=f"Trang {min(int(page), pages)}/{pages} • {total} kết quả unique")
         embed.set_thumbnail(url=target.display_avatar.url)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="rank", description="Top 5 collection Limbus của server")
+    @app_commands.command(name="rank", description="Top 5 collection gacha của server")
     @app_commands.guild_only()
-    async def rank(self, interaction: discord.Interaction) -> None:
+    @app_commands.describe(game="Game cần xếp hạng; mặc định là Limbus Company")
+    @app_commands.choices(
+        game=[
+            app_commands.Choice(name="Limbus Company", value="limbus"),
+            app_commands.Choice(name="Blue Archive", value="blue_archive"),
+        ]
+    )
+    async def rank(
+        self,
+        interaction: discord.Interaction,
+        game: app_commands.Choice[str] | None = None,
+    ) -> None:
         assert interaction.guild is not None
         setting = await self._settings(interaction.guild.id)
         if not setting.enabled:
             return await interaction.response.send_message(
                 "💤 Economy chưa được bật trong server này.", ephemeral=True
             )
-        rows = await self.store.collection_rank(interaction.guild.id, 5)
+        game_id = game.value if game else "limbus"
+        rows = await self.store.collection_rank(
+            interaction.guild.id, 5, game_id=game_id
+        )
         medals = ("🥇", "🥈", "🥉", "4️⃣", "5️⃣")
-        lines = [
-            f"{medals[index]} <@{row.user_id}> — **{row.unique_total} unique**\n"
-            f"　3★ `{row.id3}` • 2★ `{row.id2}` • 1★ `{row.id1}` • E.G.O `{row.ego}`"
-            for index, row in enumerate(rows)
-        ]
+        lines = []
+        for index, row in enumerate(rows):
+            detail = f"　3★ `{row.id3}` • 2★ `{row.id2}` • 1★ `{row.id1}`"
+            if game_id == "limbus":
+                detail += f" • E.G.O `{row.ego}`"
+            lines.append(
+                f"{medals[index]} <@{row.user_id}> — **{row.unique_total} unique**\n{detail}"
+            )
         embed = discord.Embed(
-            title="🏆 Top Collection Limbus",
+            title=f"🏆 Top Collection {GAME_LABEL[game_id]}",
             description="\n\n".join(lines) if lines else "Chưa có ai sở hữu nhân vật.",
             color=0xE7B84B,
         )
