@@ -47,7 +47,6 @@ from economy_store import (
 )
 from features._blue_archive_gacha import (
     GAME_ID as BLUE_ARCHIVE_GAME_ID,
-    REGION_LABELS as BA_REGION_LABELS,
     BlueArchiveBanner,
     BlueArchiveGachaService,
     BlueArchivePull,
@@ -921,7 +920,7 @@ class BlueArchiveGachaView(discord.ui.View):
     async def _reroll(self, interaction: discord.Interaction, count: int) -> None:
         if self.roll_lock.locked():
             return await interaction.response.send_message(
-                "⏳ Animation tuyển sinh trước vẫn đang chạy.", ephemeral=True
+                "⏳ Lượt tuyển sinh trước vẫn đang được dựng ảnh.", ephemeral=True
             )
         await interaction.response.defer()
         async with self.roll_lock:
@@ -1316,23 +1315,6 @@ class LimbusGacha(commands.Cog):
             point_cost=point_cost,
         )
 
-    @staticmethod
-    def _blue_archive_animation_embed(
-        prepared: PreparedBlueArchiveGacha,
-    ) -> discord.Embed:
-        special = any(pull.student.star_grade == 3 for pull in prepared.pulls)
-        embed = discord.Embed(
-            title="✉️ Đang mở hồ sơ tuyển sinh đặc biệt…" if special else "✉️ Đang mở hồ sơ tuyển sinh…",
-            description=(
-                f"**{BA_REGION_LABELS[prepared.banner.region]}** • "
-                f"Mục tiêu **{prepared.target.name}**\n"
-                "Animation sẽ chạy đủ một vòng trước khi hiện kết quả."
-            ),
-            color=0xF06EA9 if special else 0x68C7F2,
-        )
-        embed.set_image(url="attachment://blue-archive-recruitment.gif")
-        return embed
-
     async def present_blue_archive_gacha(
         self,
         interaction: discord.Interaction,
@@ -1341,50 +1323,27 @@ class LimbusGacha(commands.Cog):
         view: BlueArchiveGachaView,
         edit_original: bool,
     ) -> discord.Message | None:
-        special = any(pull.student.star_grade == 3 for pull in prepared.pulls)
-        animation_file, duration = self.blue_archive.animation(special=special)
-        animation_embed = self._blue_archive_animation_embed(prepared)
-        started = time.monotonic()
-
+        payload = await self.blue_archive.make_payload(
+            prepared.banner,
+            prepared.target,
+            prepared.pulls,
+            recruitment_points=prepared.recruitment_points,
+            account_balance=prepared.account_balance,
+            point_cost=prepared.point_cost,
+        )
         if edit_original:
             await interaction.edit_original_response(
-                embed=animation_embed,
-                attachments=[animation_file],
-                view=None,
+                embed=payload.embed,
+                attachments=[payload.file],
+                view=view,
             )
             message = interaction.message
         else:
             message = await interaction.followup.send(
-                embed=animation_embed,
-                file=animation_file,
+                embed=payload.embed,
+                file=payload.file,
+                view=view,
                 wait=True,
-            )
-
-        render_task = asyncio.create_task(
-            self.blue_archive.make_payload(
-                prepared.banner,
-                prepared.target,
-                prepared.pulls,
-                recruitment_points=prepared.recruitment_points,
-                account_balance=prepared.account_balance,
-                point_cost=prepared.point_cost,
-            )
-        )
-        # Discord starts animating after upload, so a small buffer prevents the
-        # final frame from being replaced a fraction too early.
-        await asyncio.sleep(max(0.0, duration + 0.2 - (time.monotonic() - started)))
-        payload = await render_task
-        if edit_original:
-            await interaction.edit_original_response(
-                embed=payload.embed,
-                attachments=[payload.file],
-                view=view,
-            )
-        elif message:
-            await message.edit(
-                embed=payload.embed,
-                attachments=[payload.file],
-                view=view,
             )
         view.message = message
         return message

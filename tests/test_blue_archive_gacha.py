@@ -1,17 +1,13 @@
 import io
 import random
 import unittest
-from pathlib import Path
-
 from PIL import Image
 
 from features._blue_archive_gacha import (
-    ASSET_DIR,
     CANVAS_SIZE,
     KIND_STAR1,
     KIND_STAR2,
     KIND_STAR3,
-    gif_cycle_duration_seconds,
     parse_blue_archive_banner,
     pull_blue_archive,
     render_blue_archive_result,
@@ -94,14 +90,6 @@ class BlueArchiveDataTests(unittest.TestCase):
 
 
 class BlueArchivePresentationTests(unittest.TestCase):
-    def test_user_gifs_are_packaged_and_keep_exact_first_cycle_duration(self):
-        normal = ASSET_DIR / "normal.gif"
-        special = ASSET_DIR / "special.gif"
-        self.assertTrue(normal.is_file())
-        self.assertTrue(special.is_file())
-        self.assertAlmostEqual(gif_cycle_duration_seconds(normal), 9.59, places=2)
-        self.assertAlmostEqual(gif_cycle_duration_seconds(special), 8.67, places=2)
-
     def test_result_renderer_builds_a_two_by_five_png(self):
         config = {
             "Regions": [

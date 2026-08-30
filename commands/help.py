@@ -325,7 +325,7 @@ class HelpDropdown(discord.ui.View):
                     "Standard Extraction Limbus ×1/×10 bằng roster và "
                     "artwork đã đồng bộ; lượt thứ 10 bảo đảm 2★ trở lên. Economy tắt "
                     "thì đây là mô phỏng miễn phí. Chọn Blue Archive để quay banner "
-                    "JP/Global/CN hiện tại; animation chạy đủ một vòng rồi hiện kết quả.\n"
+                    "JP/Global/CN hiện tại và nhận thẳng bảng kết quả.\n"
                     "`/points` — Xem Peto Points và Extraction Points\n"
                     "`/collection [game]` — Xem bộ sưu tập riêng của từng game\n"
                     "`/rank [game]` — Top 5 collection unique theo game\n"

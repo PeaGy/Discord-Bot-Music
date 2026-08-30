@@ -1,4 +1,4 @@
-"""Blue Archive recruitment data, rolling, animation and result rendering.
+"""Blue Archive recruitment data, rolling and result rendering.
 
 This is a helper module rather than a Discord extension.  ``features`` is loaded
 automatically by :mod:`bot`, so the leading underscore intentionally keeps it
@@ -37,9 +37,6 @@ KIND_STAR2 = "ba2"
 KIND_STAR3 = "ba3"
 KIND_BY_STAR = {1: KIND_STAR1, 2: KIND_STAR2, 3: KIND_STAR3}
 
-ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "blue_archive_gacha"
-NORMAL_ANIMATION = ASSET_DIR / "normal.gif"
-SPECIAL_ANIMATION = ASSET_DIR / "special.gif"
 ART_CACHE_DIR = Path(
     os.getenv("BLUE_ARCHIVE_GACHA_ART_CACHE_DIR", "blue_archive_gacha_art_cache")
 ).resolve()
@@ -244,17 +241,6 @@ def pull_blue_archive(
     return tuple(results)
 
 
-def gif_cycle_duration_seconds(path: str | Path) -> float:
-    """Return the duration of the first GIF cycle, even when it loops forever."""
-
-    with Image.open(path) as image:
-        duration_ms = 0
-        for frame_index in range(int(getattr(image, "n_frames", 1))):
-            image.seek(frame_index)
-            duration_ms += int(image.info.get("duration", 100) or 100)
-    return max(0.1, duration_ms / 1000.0)
-
-
 def _prepare_cache_dir(path: Path) -> Path | None:
     try:
         path.mkdir(parents=True, exist_ok=True)
@@ -375,13 +361,9 @@ class BlueArchiveGachaService:
         self._banner_lock = asyncio.Lock()
         self._download_semaphore = asyncio.Semaphore(10)
         self.art_cache_dir: Path | None = None
-        self.normal_duration = 9.59
-        self.special_duration = 8.67
 
     async def open(self) -> None:
         self.art_cache_dir = await asyncio.to_thread(_prepare_cache_dir, ART_CACHE_DIR)
-        self.normal_duration = await asyncio.to_thread(gif_cycle_duration_seconds, NORMAL_ANIMATION)
-        self.special_duration = await asyncio.to_thread(gif_cycle_duration_seconds, SPECIAL_ANIMATION)
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=35, connect=12, sock_read=25),
             headers={"User-Agent": "PetoDiscordBot/1.0 (Blue Archive gacha)"},
@@ -503,12 +485,6 @@ class BlueArchiveGachaService:
         embed.set_image(url=f"attachment://{filename}")
         embed.set_footer(text="Tỷ lệ 3★ 3% • 2★ 18,5% • Lượt 10 bảo đảm 2★+")
         return BlueArchivePayload(embed, file, tuple(pulls), banner, target, recruitment_points)
-
-    def animation(self, *, special: bool) -> tuple[discord.File, float]:
-        path = SPECIAL_ANIMATION if special else NORMAL_ANIMATION
-        duration = self.special_duration if special else self.normal_duration
-        return discord.File(path, filename="blue-archive-recruitment.gif"), duration
-
 
 def blue_archive_rates_embed(banner: BlueArchiveBanner, target: BlueArchiveStudent) -> discord.Embed:
     embed = discord.Embed(

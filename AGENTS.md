@@ -211,9 +211,9 @@ test.
   Sin Affinity colors have dedicated regression tests. Update tests whenever their
   render rules change.
 - Limbus gacha reads `Extraction/Extraction List` from `limbus_knowledge.db`.
-  Blue Archive gacha reads the current JP/Global/CN banner from SchaleDB and uses
-  the bundled normal/special GIFs under `assets/blue_archive_gacha/`; play exactly
-  one first cycle before replacing the same message with the result.
+  Blue Archive gacha reads the current JP/Global/CN banner from SchaleDB and
+  returns the rendered result directly. Do not add a pre-result animation unless
+  the product decision changes again.
 - Gacha remains a free simulator when a guild has not enabled Peto Economy;
   enabled guilds use atomic Peto Point charges and persistent collections scoped
   by game. Never merge Limbus Extraction Points with Blue Archive Recruitment
