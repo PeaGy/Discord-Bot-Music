@@ -1,6 +1,7 @@
 import io
 import random
 import unittest
+from pathlib import Path
 
 from PIL import Image
 
@@ -116,6 +117,12 @@ class FGODataAndRollTests(unittest.TestCase):
 
 
 class FGOPresentationTests(unittest.TestCase):
+    def test_summon_background_is_packaged(self):
+        asset = Path(__file__).resolve().parent.parent / "assets" / "fgo_gacha" / "summon_background.jpg"
+        with Image.open(asset) as image:
+            self.assertGreater(image.width, 0)
+            self.assertGreater(image.height, 0)
+
     def test_renderer_builds_eleven_card_png(self):
         pool = complete_pool()
         cards = [

@@ -38,6 +38,7 @@ ATLAS_EXPORT_ROOT = "https://api.atlasacademy.io/export"
 DATA_CACHE_SECONDS = 6 * 60 * 60
 IMAGE_MAX_BYTES = 8 * 1024 * 1024
 CANVAS_SIZE = (1280, 720)
+UI_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "fgo_gacha"
 
 KIND_SERVANT_3 = "fgo_svt3"
 KIND_SERVANT_4 = "fgo_svt4"
@@ -62,6 +63,7 @@ class FGOCard:
     rarity: int
     category: str
     image_url: str
+    class_name: str = ""
 
     @property
     def kind(self) -> str:
@@ -126,7 +128,16 @@ def _card_from_json(raw: Mapping[str, object], category: str) -> FGOCard | None:
     elif str(raw.get("flag") or "") != "normal":
         # Excludes Bond/Event/EXP/Valentine and other non-standard CEs.
         return None
-    return FGOCard(card_id, collection_no, name, rarity, category, image_url)
+    class_name = str(raw.get("className") or "").strip() if category == "servant" else ""
+    return FGOCard(
+        card_id,
+        collection_no,
+        name,
+        rarity,
+        category,
+        image_url,
+        class_name,
+    )
 
 
 def parse_fgo_pool(
@@ -271,7 +282,18 @@ def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFon
 
 
 def _summon_background() -> Image.Image:
-    """Draw an original FGO-inspired summon room without bundling game files."""
+    """Load the packaged summon room, with the original drawn fallback."""
+
+    try:
+        with Image.open(UI_ASSET_DIR / "summon_background.jpg") as source:
+            return ImageOps.fit(
+                source.convert("RGBA"),
+                CANVAS_SIZE,
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.5),
+            )
+    except (OSError, ValueError):
+        logger.warning("Thiếu FGO summon background; dùng nền fallback tự dựng")
 
     width, height = CANVAS_SIZE
     image = Image.new("RGBA", CANVAS_SIZE, (4, 11, 28, 255))
@@ -317,6 +339,51 @@ def _portrait(raw: bytes, size: tuple[int, int]) -> Image.Image:
         return fallback
 
 
+def _star_points(
+    center_x: float,
+    center_y: float,
+    outer_radius: float,
+    inner_radius: float,
+) -> list[tuple[float, float]]:
+    points = []
+    for index in range(10):
+        angle = math.radians(-90 + index * 36)
+        radius = outer_radius if index % 2 == 0 else inner_radius
+        points.append(
+            (
+                center_x + math.cos(angle) * radius,
+                center_y + math.sin(angle) * radius,
+            )
+        )
+    return points
+
+
+def _draw_gold_stars(
+    draw: ImageDraw.ImageDraw,
+    *,
+    center_x: int,
+    center_y: int,
+    rarity: int,
+    radius: int,
+) -> None:
+    gap = max(1, radius // 3)
+    total_width = rarity * radius * 2 + (rarity - 1) * gap
+    start_x = center_x - total_width / 2 + radius
+    for index in range(rarity):
+        x = start_x + index * (radius * 2 + gap)
+        points = _star_points(x, center_y, radius, radius * 0.46)
+        shadow = [(px + 1, py + 1) for px, py in points]
+        draw.polygon(shadow, fill=(39, 26, 4, 230))
+        draw.polygon(points, fill=(255, 222, 39, 255), outline=(255, 250, 177, 255))
+
+
+def _class_badge(card: FGOCard) -> str:
+    if card.category != "servant":
+        return ""
+    compact = "".join(part[:1] for part in card.class_name.replace("-", " ").split())
+    return (compact or "S")[:2].upper()
+
+
 def _draw_card(
     canvas: Image.Image,
     pull: FGOPull,
@@ -328,33 +395,91 @@ def _draw_card(
     height: int,
 ) -> None:
     colors = {
-        3: ((82, 99, 121), (201, 219, 232)),
-        4: ((151, 110, 31), (255, 223, 118)),
-        5: ((190, 147, 36), (255, 246, 177)),
+        3: ((105, 118, 130), (226, 237, 242), (210, 218, 221)),
+        4: ((153, 112, 22), (255, 225, 82), (232, 190, 46)),
+        5: ((176, 126, 13), (255, 246, 137), (250, 205, 40)),
     }
-    dark, bright = colors[pull.card.rarity]
+    dark, bright, footer = colors[pull.card.rarity]
     glow = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow, "RGBA")
-    gd.rounded_rectangle((x - 7, y - 7, x + width + 7, y + height + 7), 14, fill=(*bright, 70))
-    canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(12)))
+    glow_alpha = 45 if pull.card.rarity == 3 else 78 if pull.card.rarity == 4 else 118
+    gd.rectangle((x - 5, y - 5, x + width + 5, y + height + 5), fill=(*bright, glow_alpha))
+    canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(9)))
 
     draw = ImageDraw.Draw(canvas, "RGBA")
-    draw.rounded_rectangle((x, y, x + width, y + height), 10, fill=(*dark, 248), outline=(*bright, 255), width=3)
-    art_margin = 8
-    footer_height = 52
+    draw.rectangle(
+        (x, y, x + width, y + height),
+        fill=(*dark, 255),
+        outline=(25, 27, 33, 255),
+        width=max(2, width // 55),
+    )
+    inset = max(3, width // 40)
+    draw.rectangle(
+        (x + inset, y + inset, x + width - inset, y + height - inset),
+        outline=(*bright, 255),
+        width=max(2, width // 65),
+    )
+    art_margin = max(5, width // 25)
+    footer_height = max(20, round(height * 0.14))
     art = _portrait(raw, (width - art_margin * 2, height - footer_height - art_margin * 2))
     canvas.alpha_composite(art, (x + art_margin, y + art_margin))
-    draw.rectangle((x + 5, y + height - footer_height, x + width - 5, y + height - 5), fill=(4, 10, 22, 232))
-    category = "SERVANT" if pull.card.category == "servant" else "CRAFT ESSENCE"
-    draw.text((x + 9, y + height - 48), category, font=_font(12, bold=True), fill=(203, 225, 241, 255))
-    stars = "★" * pull.card.rarity
-    draw.text((x + 9, y + height - 29), stars, font=_font(17, bold=True), fill=(*bright, 255))
+    footer_top = y + height - footer_height
+    draw.rectangle(
+        (x + art_margin, footer_top, x + width - art_margin, y + height - art_margin),
+        fill=(*footer, 255),
+    )
+    category = "Servant" if pull.card.category == "servant" else "Craft Essence"
+    font_size = max(9, round(width * 0.077))
+    font = _font(font_size, bold=True)
+    bbox = draw.textbbox((0, 0), category, font=font)
+    draw.text(
+        (x + (width - (bbox[2] - bbox[0])) // 2, footer_top + max(2, (footer_height - (bbox[3] - bbox[1])) // 2 - 1)),
+        category,
+        font=font,
+        fill=(28, 25, 18, 255),
+    )
+
+    star_radius = max(6, round(width * 0.052))
+    _draw_gold_stars(
+        draw,
+        center_x=x + width // 2,
+        center_y=footer_top - star_radius - 1,
+        rarity=pull.card.rarity,
+        radius=star_radius,
+    )
+
+    badge = _class_badge(pull.card)
+    if badge:
+        badge_size = max(22, round(width * 0.19))
+        cx = x + art_margin + badge_size // 2
+        cy = y + art_margin + badge_size // 2
+        diamond = ((cx, cy - badge_size // 2), (cx + badge_size // 2, cy), (cx, cy + badge_size // 2), (cx - badge_size // 2, cy))
+        draw.polygon(diamond, fill=(43, 49, 57, 238), outline=(*bright, 255))
+        badge_font = _font(max(8, badge_size // 3), bold=True)
+        badge_box = draw.textbbox((0, 0), badge, font=badge_font)
+        draw.text(
+            (cx - (badge_box[2] - badge_box[0]) // 2, cy - (badge_box[3] - badge_box[1]) // 2 - 1),
+            badge,
+            font=badge_font,
+            fill=(248, 248, 244, 255),
+        )
     if pull.is_new:
         label = "NEW"
-        bbox = draw.textbbox((0, 0), label, font=_font(12, bold=True))
-        label_width = bbox[2] - bbox[0] + 14
-        draw.rounded_rectangle((x + width - label_width - 5, y + 5, x + width - 5, y + 28), 5, fill=(176, 38, 46, 245))
-        draw.text((x + width - label_width + 2, y + 8), label, font=_font(12, bold=True), fill=(255, 244, 218, 255))
+        new_font = _font(max(9, round(width * 0.075)), bold=True)
+        bbox = draw.textbbox((0, 0), label, font=new_font)
+        label_width = bbox[2] - bbox[0] + 12
+        label_height = bbox[3] - bbox[1] + 7
+        draw.rectangle(
+            (x + width - label_width - 4, y + 4, x + width - 4, y + 4 + label_height),
+            fill=(177, 31, 42, 244),
+            outline=(255, 214, 91, 255),
+        )
+        draw.text(
+            (x + width - label_width + 2, y + 6),
+            label,
+            font=new_font,
+            fill=(255, 246, 208, 255),
+        )
 
 
 def render_fgo_result(
@@ -366,24 +491,20 @@ def render_fgo_result(
     canvas = _summon_background()
     pulls = tuple(pulls)
     if len(pulls) == 1:
-        width, height = 245, 355
-        positions = [((CANVAS_SIZE[0] - width) // 2, 150)]
+        width, height = 264, 300
+        positions = [((CANVAS_SIZE[0] - width) // 2, 210)]
     else:
-        width, height = 158, 225
-        gap = 24
-        row_gap = 42
+        width, height = 132, 150
+        gap = 14
+        row_gap = 24
         positions: list[tuple[int, int]] = []
         for row, count in enumerate((6, 5)):
             total_width = count * width + (count - 1) * gap
             start_x = (CANVAS_SIZE[0] - total_width) // 2
-            y = 92 + row * (height + row_gap)
+            y = 220 + row * (height + row_gap)
             positions.extend((start_x + index * (width + gap), y) for index in range(count))
     for pull, (x, y) in zip(pulls, positions):
         _draw_card(canvas, pull, image_data.get(pull.card.image_url, b""), x=x, y=y, width=width, height=height)
-    draw = ImageDraw.Draw(canvas, "RGBA")
-    title = f"CHALDEA ARCHIVE SUMMON • {region_label}"
-    bbox = draw.textbbox((0, 0), title, font=_font(20, bold=True))
-    draw.text(((CANVAS_SIZE[0] - (bbox[2] - bbox[0])) // 2, 26), title, font=_font(20, bold=True), fill=(202, 231, 249, 235))
     output = io.BytesIO()
     canvas.convert("RGB").save(output, format="PNG", optimize=True)
     return output.getvalue()
