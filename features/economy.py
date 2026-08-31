@@ -9,7 +9,8 @@ import os
 import random
 import re
 import time
-from datetime import date, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 
 import discord
 from discord import app_commands
@@ -19,6 +20,7 @@ from economy_store import (
     EconomyDisabled,
     EconomyStore,
     GuildEconomySettings,
+    VIETNAM_TZ,
     economy_period_keys,
     get_economy_store,
     previous_week_key,
@@ -48,6 +50,12 @@ VOICE_INTERVAL_SECONDS = _env_int(
     "PETO_ECONOMY_VOICE_INTERVAL_SECONDS", 300, 60, 86_400
 )
 DAILY_EARNING_CAP = _env_int("PETO_ECONOMY_DAILY_CAP", 500, 1, 1_000_000)
+NORMAL_REWARD_MULTIPLIER = _env_int(
+    "PETO_ECONOMY_NORMAL_MULTIPLIER", 2, 1, 100
+)
+WEEKEND_REWARD_MULTIPLIER = _env_int(
+    "PETO_ECONOMY_WEEKEND_MULTIPLIER", 5, NORMAL_REWARD_MULTIPLIER, 100
+)
 SETTINGS_CACHE_SECONDS = 30
 
 RARITY_LABEL = {
@@ -61,6 +69,69 @@ RARITY_LABEL = {
 }
 
 GAME_LABEL = {"limbus": "Limbus Company", "blue_archive": "Blue Archive"}
+
+
+def weekend_event_status(
+    timestamp: int | float | None = None,
+) -> tuple[bool, str]:
+    """Return whether the UTC+7 weekend event is active and its Saturday key."""
+
+    value = time.time() if timestamp is None else float(timestamp)
+    moment = datetime.fromtimestamp(value, VIETNAM_TZ)
+    active = moment.weekday() >= 5
+    days_since_saturday = (moment.weekday() - 5) % 7
+    saturday = moment.date() - timedelta(days=days_since_saturday)
+    return active, saturday.isoformat()
+
+
+def reward_multiplier(timestamp: int | float | None = None) -> int:
+    active, _ = weekend_event_status(timestamp)
+    return WEEKEND_REWARD_MULTIPLIER if active else NORMAL_REWARD_MULTIPLIER
+
+
+@dataclass(frozen=True, slots=True)
+class RewardProfile:
+    multiplier: int
+    chat_min: int
+    chat_max: int
+    voice_points: int
+    daily_cap: int
+
+
+def reward_profile(timestamp: int | float | None = None) -> RewardProfile:
+    multiplier = reward_multiplier(timestamp)
+    return RewardProfile(
+        multiplier=multiplier,
+        chat_min=CHAT_MIN_POINTS * multiplier,
+        chat_max=CHAT_MAX_POINTS * multiplier,
+        voice_points=VOICE_POINTS * multiplier,
+        daily_cap=DAILY_EARNING_CAP * multiplier,
+    )
+
+
+def build_weekend_event_embed(active: bool) -> discord.Embed:
+    if active:
+        embed = discord.Embed(
+            title="📢 Event cuối tuần đang diễn ra",
+            description=(
+                f"**×{WEEKEND_REWARD_MULTIPLIER} số lượng Peto Points kiếm được** "
+                "từ chat và voice.\n"
+                f"Giới hạn kiếm điểm mỗi ngày cũng được tăng **×{WEEKEND_REWARD_MULTIPLIER}**."
+            ),
+            color=0xF2C94C,
+        )
+        embed.set_footer(text="Áp dụng trong Thứ Bảy và Chủ Nhật • Múi giờ UTC+7")
+        return embed
+    embed = discord.Embed(
+        title="📢 Event cuối tuần đã kết thúc",
+        description=(
+            "Peto Points đã trở về mức ngày thường "
+            f"**×{NORMAL_REWARD_MULTIPLIER}**. Hẹn gặp lại vào cuối tuần sau!"
+        ),
+        color=0x6C8EBF,
+    )
+    embed.set_footer(text="Event tiếp theo bắt đầu vào Thứ Bảy • Múi giờ UTC+7")
+    return embed
 
 
 def _can_manage_guild(interaction: discord.Interaction) -> bool:
@@ -126,10 +197,12 @@ class Economy(commands.Cog):
         await self.store.init()
         self.voice_rewards.start()
         self.weekly_leaderboard.start()
+        self.weekend_event_announcements.start()
 
     async def cog_unload(self) -> None:
         self.voice_rewards.cancel()
         self.weekly_leaderboard.cancel()
+        self.weekend_event_announcements.cancel()
 
     async def _settings(self, guild_id: int, *, fresh: bool = False) -> GuildEconomySettings:
         now = time.monotonic()
@@ -176,14 +249,17 @@ class Economy(commands.Cog):
         if len(cleaned) < 4 or cleaned.startswith(("!", "/")):
             return
         content_hash = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+        now_epoch = int(time.time())
+        profile = reward_profile(now_epoch)
         try:
             await self.store.award_activity(
                 message.guild.id,
                 message.author.id,
-                amount=self._rng.randint(CHAT_MIN_POINTS, CHAT_MAX_POINTS),
+                amount=self._rng.randint(profile.chat_min, profile.chat_max),
                 reason="chat",
                 source_id=f"message:{message.id}",
-                daily_cap=DAILY_EARNING_CAP,
+                daily_cap=profile.daily_cap,
+                timestamp=now_epoch,
                 chat_cooldown=CHAT_COOLDOWN_SECONDS,
                 content_hash=content_hash,
             )
@@ -201,6 +277,7 @@ class Economy(commands.Cog):
         async with self._voice_award_lock:
             now_mono = time.monotonic()
             now_epoch = int(time.time())
+            profile = reward_profile(now_epoch)
             eligible: set[tuple[int, int]] = set()
             for guild in self.bot.guilds:
                 try:
@@ -227,10 +304,11 @@ class Economy(commands.Cog):
                             await self.store.award_activity(
                                 guild.id,
                                 member.id,
-                                amount=VOICE_POINTS,
+                                amount=profile.voice_points,
                                 reason="voice",
                                 source_id=f"voice:{bucket}",
-                                daily_cap=DAILY_EARNING_CAP,
+                                daily_cap=profile.daily_cap,
+                                timestamp=now_epoch,
                             )
                         except EconomyDisabled:
                             self._invalidate_settings(guild.id)
@@ -305,6 +383,62 @@ class Economy(commands.Cog):
     async def before_weekly_leaderboard(self) -> None:
         await self.bot.wait_until_ready()
 
+    @tasks.loop(minutes=5)
+    async def weekend_event_announcements(self) -> None:
+        active, weekend_key = weekend_event_status()
+        try:
+            settings = await self.store.enabled_leaderboards()
+        except Exception:
+            logger.exception("Không đọc được kênh thông báo Economy cuối tuần")
+            return
+        for setting in settings:
+            channel_id = setting.leaderboard_channel_id
+            if channel_id is None:
+                continue
+            try:
+                previous = await self.store.weekend_event_state(setting.guild_id)
+                if previous is None and not active:
+                    # First deployment on a weekday establishes a baseline
+                    # without posting a misleading "event ended" message.
+                    await self.store.set_weekend_event_state(
+                        setting.guild_id,
+                        active=False,
+                        weekend_key=weekend_key,
+                    )
+                    continue
+                if (
+                    previous is not None
+                    and previous.active == active
+                    and (not active or previous.weekend_key == weekend_key)
+                ):
+                    continue
+                destination = await self._resolve_channel(channel_id)
+                await destination.send(
+                    embed=build_weekend_event_embed(active),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                await self.store.set_weekend_event_state(
+                    setting.guild_id,
+                    active=active,
+                    weekend_key=weekend_key,
+                )
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound) as error:
+                logger.warning(
+                    "Không gửi được event Economy cuối tuần guild=%s channel=%s: %s",
+                    setting.guild_id,
+                    channel_id,
+                    error,
+                )
+            except Exception:
+                logger.exception(
+                    "Không xử lý được event Economy cuối tuần guild=%s",
+                    setting.guild_id,
+                )
+
+    @weekend_event_announcements.before_loop
+    async def before_weekend_event_announcements(self) -> None:
+        await self.bot.wait_until_ready()
+
     @app_commands.command(name="points", description="Xem Peto Points của thành viên")
     @app_commands.guild_only()
     @app_commands.describe(member="Thành viên cần xem; bỏ trống để xem của bạn")
@@ -339,6 +473,17 @@ class Economy(commands.Cog):
         embed.add_field(
             name="Tiến độ quay ×10",
             value=f"`{min(account.balance, 1300):,}/1,300`",
+        )
+        weekend_active, _ = weekend_event_status()
+        multiplier = reward_multiplier()
+        embed.add_field(
+            name="Hệ số kiếm điểm",
+            value=(
+                f"**×{multiplier}** • Event cuối tuần đang diễn ra"
+                if weekend_active
+                else f"**×{multiplier}** • Mức ngày thường"
+            ),
+            inline=False,
         )
         embed.set_thumbnail(url=target.display_avatar.url)
         embed.set_footer(text="Điểm tuần không giảm khi bạn dùng Peto Points")
@@ -478,16 +623,19 @@ class Economy(commands.Cog):
             if setting.leaderboard_channel_id
             else "chưa đặt"
         )
+        profile = reward_profile()
         await interaction.response.send_message(
             "**Peto Economy**\n"
             f"• Trạng thái: **{'Bật' if setting.enabled else 'Tắt'}**\n"
             f"• Điểm chat: **{'Bật' if setting.chat_enabled else 'Tắt'}**\n"
             f"• Điểm voice: **{'Bật' if setting.voice_enabled else 'Tắt'}**\n"
-            f"• Kênh leaderboard: {channel}\n"
-            f"• Chat: `{CHAT_MIN_POINTS}–{CHAT_MAX_POINTS}` điểm / "
+            f"• Kênh leaderboard và event: {channel}\n"
+            f"• Hệ số hiện tại: **×{profile.multiplier}** "
+            f"(ngày thường ×{NORMAL_REWARD_MULTIPLIER}, cuối tuần ×{WEEKEND_REWARD_MULTIPLIER})\n"
+            f"• Chat: `{profile.chat_min}–{profile.chat_max}` điểm / "
             f"`{CHAT_COOLDOWN_SECONDS}s`\n"
-            f"• Voice: `{VOICE_POINTS}` điểm / `{VOICE_INTERVAL_SECONDS // 60}` phút\n"
-            f"• Giới hạn ngày: `{DAILY_EARNING_CAP:,}` điểm",
+            f"• Voice: `{profile.voice_points}` điểm / `{VOICE_INTERVAL_SECONDS // 60}` phút\n"
+            f"• Giới hạn ngày: `{profile.daily_cap:,}` điểm",
             ephemeral=True,
         )
 
@@ -525,9 +673,14 @@ class Economy(commands.Cog):
             ephemeral=True,
         )
 
-    @economy.command(name="channel", description="Đặt kênh đăng top điểm mỗi tuần")
+    @economy.command(
+        name="channel",
+        description="Đặt kênh đăng top tuần và thông báo event Economy",
+    )
     @app_commands.guild_only()
-    @app_commands.describe(channel="Kênh leaderboard; bỏ trống để xóa cấu hình")
+    @app_commands.describe(
+        channel="Kênh leaderboard và event; bỏ trống để xóa cấu hình"
+    )
     async def economy_channel(
         self,
         interaction: discord.Interaction,
@@ -543,7 +696,8 @@ class Economy(commands.Cog):
         )
         self._invalidate_settings(interaction.guild.id)
         await interaction.response.send_message(
-            f"✅ Kênh leaderboard tuần: {channel.mention if channel else '**đã tắt**'}.",
+            "✅ Kênh leaderboard tuần và thông báo event: "
+            f"{channel.mention if channel else '**đã tắt**'}.",
             ephemeral=True,
         )
 

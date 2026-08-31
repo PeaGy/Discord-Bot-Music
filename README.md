@@ -58,8 +58,9 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 
 ### 💰Peto Economy
 
-- Mặc định **tắt** ở mọi server để không làm thay đổi trải nghiệm cũ. Quản trị viên bật bằng `/economy enable`, chọn kênh tổng kết tuần bằng `/economy channel` và có thể tắt riêng điểm chat/voice bằng `/economy earning`.
-- Thành viên nhận ngẫu nhiên 8–12 điểm cho một tin nhắn hợp lệ mỗi 60 giây và 5 điểm mỗi 5 phút voice khi có ít nhất hai người thật trong kênh. Tổng điểm hoạt động bị giới hạn 500/ngày để giảm spam và AFK một mình.
+- Mặc định **tắt** ở mọi server để không làm thay đổi trải nghiệm cũ. Quản trị viên bật bằng `/economy enable`, chọn kênh tổng kết tuần và thông báo event bằng `/economy channel`, đồng thời có thể tắt riêng điểm chat/voice bằng `/economy earning`.
+- Ngày thường áp dụng hệ số **×2**: thành viên nhận ngẫu nhiên 16–24 điểm cho một tin nhắn hợp lệ mỗi 60 giây, 10 điểm mỗi 5 phút voice khi có ít nhất hai người thật trong kênh và tối đa 1.000 điểm/ngày. Thứ Bảy–Chủ Nhật (UTC+7) mở event **×5**, tương ứng 40–60 điểm chat, 25 điểm voice và giới hạn 2.500 điểm/ngày.
+- Peto tự đăng card khi event cuối tuần bắt đầu và kết thúc vào kênh Economy đã chọn. Trạng thái được lưu trong SQLite nên restart bot không gửi thông báo trùng.
 - `/points` xem số dư, điểm kiếm trong tuần, Extraction Points và tổng lượt quay. `/collection [game]` xem nhân vật đã sở hữu; `/rank [game]` xếp top 5 collection unique trong server.
 - Gacha Economy tốn 130 điểm/lượt hoặc 1.300 điểm/10 lượt. Mỗi lượt sinh 1 Extraction Point; `/exchange identity` và `/exchange ego` dùng 200 điểm này để chọn một Identity 3★ hoặc E.G.O chưa sở hữu. Quầy đổi có cả Standard, Seasonal và Event nhưng không cho đổi Walpurgis. Identity và E.G.O trùng khi quay đều được lưu thành số bản sao trong collection.
 - Bảng top 5 **điểm đã kiếm** của tuần trước được gửi một lần vào kênh đã cấu hình; tiêu điểm cho gacha không làm giảm thành tích tuần.

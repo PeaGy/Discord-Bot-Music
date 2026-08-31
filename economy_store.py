@@ -71,6 +71,14 @@ class EconomyAccount:
 
 
 @dataclass(frozen=True, slots=True)
+class WeekendEventState:
+    guild_id: int
+    active: bool
+    weekend_key: str
+    updated_at: int
+
+
+@dataclass(frozen=True, slots=True)
 class CollectionItem:
     item_kind: str
     item_name: str
@@ -227,6 +235,13 @@ class EconomyStore:
                         week_start TEXT NOT NULL,
                         posted_at INTEGER NOT NULL,
                         PRIMARY KEY (guild_id, week_start)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS economy_weekend_event_state (
+                        guild_id INTEGER PRIMARY KEY,
+                        active INTEGER NOT NULL DEFAULT 0,
+                        weekend_key TEXT NOT NULL DEFAULT '',
+                        updated_at INTEGER NOT NULL
                     );
 
                     CREATE TABLE IF NOT EXISTS economy_gacha_pity (
@@ -422,6 +437,63 @@ class EconomyStore:
             return [self._settings_from_row(row) for row in rows]
         finally:
             await db.close()
+
+    async def weekend_event_state(
+        self, guild_id: int
+    ) -> WeekendEventState | None:
+        await self.init()
+        db = await self._connect()
+        try:
+            row = await (
+                await db.execute(
+                    "SELECT * FROM economy_weekend_event_state WHERE guild_id=?",
+                    (int(guild_id),),
+                )
+            ).fetchone()
+            if row is None:
+                return None
+            return WeekendEventState(
+                guild_id=int(row["guild_id"]),
+                active=bool(row["active"]),
+                weekend_key=str(row["weekend_key"]),
+                updated_at=int(row["updated_at"]),
+            )
+        finally:
+            await db.close()
+
+    async def set_weekend_event_state(
+        self,
+        guild_id: int,
+        *,
+        active: bool,
+        weekend_key: str,
+        timestamp: int | None = None,
+    ) -> WeekendEventState:
+        await self.init()
+        now = int(timestamp if timestamp is not None else time.time())
+        async with self._write_lock:
+            db = await self._connect()
+            try:
+                await db.execute(
+                    "INSERT INTO economy_weekend_event_state "
+                    "(guild_id,active,weekend_key,updated_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(guild_id) DO UPDATE SET "
+                    "active=excluded.active, weekend_key=excluded.weekend_key, "
+                    "updated_at=excluded.updated_at",
+                    (int(guild_id), int(bool(active)), str(weekend_key), now),
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+            finally:
+                await db.close()
+        return WeekendEventState(
+            guild_id=int(guild_id),
+            active=bool(active),
+            weekend_key=str(weekend_key),
+            updated_at=now,
+        )
 
     async def get_account(self, guild_id: int, user_id: int) -> EconomyAccount:
         await self.init()

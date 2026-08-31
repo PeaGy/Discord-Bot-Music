@@ -1,6 +1,6 @@
 import unittest
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -11,12 +11,57 @@ from economy_store import (
     EconomyStore,
     InsufficientExtractionPoints,
     InsufficientPoints,
+    VIETNAM_TZ,
     economy_period_keys,
 )
-from features.economy import Economy, build_weekly_embed
+from features.economy import (
+    Economy,
+    build_weekend_event_embed,
+    build_weekly_embed,
+    reward_multiplier,
+    reward_profile,
+    weekend_event_status,
+)
 
 
 class EconomyPresentationTests(unittest.TestCase):
+    def test_weekday_and_weekend_reward_multipliers_use_utc_plus_7(self):
+        monday = datetime(2026, 8, 31, 12, 0, tzinfo=VIETNAM_TZ).timestamp()
+        saturday = datetime(2026, 9, 5, 0, 0, tzinfo=VIETNAM_TZ).timestamp()
+        sunday = datetime(2026, 9, 6, 23, 59, tzinfo=VIETNAM_TZ).timestamp()
+
+        self.assertEqual(reward_multiplier(monday), 2)
+        self.assertEqual(reward_multiplier(saturday), 5)
+        self.assertEqual(reward_multiplier(sunday), 5)
+        self.assertEqual(
+            (
+                reward_profile(monday).chat_min,
+                reward_profile(monday).chat_max,
+                reward_profile(monday).voice_points,
+                reward_profile(monday).daily_cap,
+            ),
+            (16, 24, 10, 1_000),
+        )
+        self.assertEqual(
+            (
+                reward_profile(saturday).chat_min,
+                reward_profile(saturday).chat_max,
+                reward_profile(saturday).voice_points,
+                reward_profile(saturday).daily_cap,
+            ),
+            (40, 60, 25, 2_500),
+        )
+        self.assertEqual(weekend_event_status(saturday), (True, "2026-09-05"))
+        self.assertEqual(weekend_event_status(monday), (False, "2026-08-29"))
+
+    def test_weekend_event_embeds_explain_start_and_end(self):
+        started = build_weekend_event_embed(True)
+        ended = build_weekend_event_embed(False)
+        self.assertEqual(started.title, "📢 Event cuối tuần đang diễn ra")
+        self.assertIn("×5 số lượng Peto Points", started.description or "")
+        self.assertEqual(ended.title, "📢 Event cuối tuần đã kết thúc")
+        self.assertIn("×2", ended.description or "")
+
     def test_weekly_embed_has_five_safe_rank_lines(self):
         embed = build_weekly_embed(
             "Peto's Server",
@@ -253,6 +298,32 @@ class EconomyStoreTests(unittest.IsolatedAsyncioTestCase):
         await self.store.mark_weekly_posted(100, week_key)
         await self.store.mark_weekly_posted(100, week_key)
         self.assertTrue(await self.store.weekly_posted(100, week_key))
+
+    async def test_weekend_event_state_survives_restart_without_duplicates(self):
+        self.assertIsNone(await self.store.weekend_event_state(100))
+        started = await self.store.set_weekend_event_state(
+            100,
+            active=True,
+            weekend_key="2026-09-05",
+            timestamp=1_800_000_000,
+        )
+        self.assertTrue(started.active)
+        reloaded = EconomyStore(self.store.path)
+        await reloaded.init()
+        persisted = await reloaded.weekend_event_state(100)
+        self.assertIsNotNone(persisted)
+        assert persisted is not None
+        self.assertTrue(persisted.active)
+        self.assertEqual(persisted.weekend_key, "2026-09-05")
+
+        ended = await reloaded.set_weekend_event_state(
+            100,
+            active=False,
+            weekend_key="2026-09-05",
+            timestamp=1_800_100_000,
+        )
+        self.assertFalse(ended.active)
+        self.assertFalse((await reloaded.weekend_event_state(100)).active)
 
     async def test_disabling_economy_preserves_balance_and_collection(self):
         await self.store.update_settings(100, updated_by=1, enabled=True)
