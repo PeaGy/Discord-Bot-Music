@@ -49,8 +49,8 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - Hiểu nhiều alias cộng đồng; hỗ trợ roster, Identity, E.G.O., skill/passive, status, lore và team building.
 - Full kit và từng Skill/Defense được trình bày bằng embed có màu Sin Affinity, Coin, damage type, status và resistance.
 - Artwork Identity/E.G.O được đồng bộ tăng dần theo revision wiki và dùng làm thumbnail của full kit hoặc card skill riêng. Metadata nằm cùng `limbus_knowledge.db`; lỗi CDN không làm hỏng câu trả lời và cache cũ vẫn được giữ.
-- `/gacha` mặc định dùng đúng pool 3★, 2★, 1★ và E.G.O trong wiki đã đồng bộ. Quay ×10 được dựng thành màn hình kết quả theo giao diện Limbus. Chọn `game:Blue Archive` để dùng banner JP/Global/CN hiện tại từ SchaleDB; chọn `game:Fate/Grand Order` để quay ×1/×11 trong Chaldea Archive NA/JP lấy dữ liệu và ảnh từ Atlas Academy.
-- Server chưa bật Economy vẫn dùng gacha mô phỏng miễn phí. Server đã bật sẽ tốn Peto Points và lưu collection tách riêng theo game; Blue Archive có Recruitment Points riêng theo banner. FGO Archive là pool simulator tổng hợp, không giả làm banner pickup đang chạy trong game.
+- `/gacha` mặc định dùng đúng pool 3★, 2★, 1★ và E.G.O trong wiki đã đồng bộ. Quay ×10 được dựng thành màn hình kết quả theo giao diện Limbus. Chọn `game:Blue Archive` để dùng banner JP/Global/CN hiện tại từ SchaleDB; chọn `game:Fate/Grand Order` để quay ×1/×11 trong FGO Summon Simulator NA/JP lấy dữ liệu và ảnh từ Atlas Academy.
+- Server chưa bật Economy vẫn dùng gacha mô phỏng miễn phí. Server đã bật sẽ tốn Peto Points và lưu collection tách riêng theo game; Blue Archive có Recruitment Points riêng theo banner. FGO Summon Simulator dùng pool tổng hợp, không giả làm banner pickup đang chạy trong game.
 - Tin về game được kiểm tra qua X Limbus chính thức, Steam News API và ảnh notice.
 - Kết quả đọc ảnh Steam được cache theo hash; câu hỏi cùng chủ đề dùng cache ngắn hạn để tránh lặp lại lượt Vision chậm.
 - Có thể theo dõi RSS của kênh YouTube ProjectMoon Official và thông báo video Limbus mới vào một kênh Discord đã chọn. Trạng thái SQLite chống gửi trùng sau restart; lần chạy đầu chỉ ghi nhận mốc hiện tại.

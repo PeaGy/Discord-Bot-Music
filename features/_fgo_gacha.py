@@ -5,7 +5,7 @@ scraping a wiki.  ``features.limbus_gacha`` owns the public ``/gacha`` command;
 the leading underscore prevents this module from being auto-loaded as a Discord
 extension.
 
-The initial banner is clearly labelled ``Chaldea Archive``.  It is a simulator
+The initial banner is clearly labelled ``FGO Summon Simulator``.  It is a simulator
 pool made from released NA/JP metadata, not a claim that it mirrors a currently
 running in-game pickup banner.
 """
@@ -174,7 +174,7 @@ def parse_fgo_pool(
     }
     return FGOPool(
         region=region,
-        banner_id=f"chaldea-archive:{region}",
+        banner_id=f"fgo-summon-simulator:{region}",
         servants=servants,
         craft_essences=craft_essences,
     )
@@ -649,7 +649,7 @@ class FGOGachaService:
                 f"`{index:02d}` {'★' * pull.card.rarity} **{discord.utils.escape_markdown(pull.card.name)}** ({label}){new}"
             )
         embed = discord.Embed(
-            title=f"🔷 FGO Chaldea Archive — {len(pulls)} lượt",
+            title=f"🔷 FGO Summon Simulator — {len(pulls)} lượt",
             description="\n".join(lines),
             color=0x4FA6D8,
         )
@@ -676,7 +676,7 @@ class FGOGachaService:
 
 def fgo_rates_embed(pool: FGOPool) -> discord.Embed:
     embed = discord.Embed(
-        title="📊 Tỷ lệ FGO Chaldea Archive",
+        title="📊 Tỷ lệ FGO Summon Simulator",
         description=(
             "• 5★ Servant: `1%`\n"
             "• 5★ Craft Essence: `4%`\n"
