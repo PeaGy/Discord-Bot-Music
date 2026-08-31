@@ -55,6 +55,21 @@ from features._blue_archive_gacha import (
     mark_new_blue_archive_pulls,
     pull_blue_archive,
 )
+from features._fgo_gacha import (
+    GAME_ID as FGO_GAME_ID,
+    KIND_CE_3,
+    KIND_CE_4,
+    KIND_CE_5,
+    KIND_SERVANT_3,
+    KIND_SERVANT_4,
+    KIND_SERVANT_5,
+    FGOGachaService,
+    FGOPool,
+    FGOPull,
+    fgo_rates_embed,
+    mark_new_fgo_pulls,
+    pull_fgo,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -111,7 +126,7 @@ TENTH_PULL_RATES: tuple[tuple[str, float], ...] = (
     (KIND_ID3, 2.9),
     (KIND_ID2, 95.8),
 )
-GACHA_POINT_COST = {1: 130, 10: 1300}
+GACHA_POINT_COST = {1: 130, 10: 1300, 11: 1300}
 EXTRACTION_EXCHANGE_COST = 200
 
 RARITY_EMOJI = {
@@ -984,6 +999,96 @@ class BlueArchiveGachaView(discord.ui.View):
                 pass
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedFGOGacha:
+    pool: FGOPool
+    pulls: tuple[FGOPull, ...]
+    account_balance: int | None = None
+    point_cost: int = 0
+
+
+class FGOGachaView(discord.ui.View):
+    def __init__(self, cog: "LimbusGacha", owner_id: int, *, region: str) -> None:
+        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
+        self.cog = cog
+        self.owner_id = int(owner_id)
+        self.region = str(region)
+        self.message: discord.Message | None = None
+        self.roll_lock = asyncio.Lock()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message(
+            "🔷 Panel triệu hồi này thuộc người khác. Dùng `/gacha` để mở lượt riêng nhé.",
+            ephemeral=True,
+        )
+        return False
+
+    async def _reroll(self, interaction: discord.Interaction, count: int) -> None:
+        if self.roll_lock.locked():
+            return await interaction.response.send_message(
+                "⏳ Lượt triệu hồi trước vẫn đang được dựng ảnh.", ephemeral=True
+            )
+        await interaction.response.defer()
+        async with self.roll_lock:
+            try:
+                if interaction.guild_id is None:
+                    raise EconomyDisabled("Gacha economy chỉ dùng trong server.")
+                prepared = await self.cog.prepare_fgo_gacha(
+                    interaction.guild_id,
+                    interaction.user.id,
+                    count,
+                    region=self.region,
+                    source_id=f"interaction:{interaction.id}",
+                )
+                await self.cog.present_fgo_gacha(
+                    interaction,
+                    prepared,
+                    view=self,
+                    edit_original=True,
+                )
+            except (InsufficientPoints, EconomyDisabled, ValueError) as error:
+                await interaction.followup.send(f"❌ {error}", ephemeral=True)
+            except Exception as error:
+                logger.exception("Không thể quay lại FGO gacha")
+                await interaction.followup.send(
+                    f"❌ Không thể triệu hồi lúc này: `{str(error)[:300]}`",
+                    ephemeral=True,
+                )
+
+    @discord.ui.button(label="Quay ×1", emoji="🎟️", style=discord.ButtonStyle.secondary)
+    async def pull_one(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._reroll(interaction, 1)
+
+    @discord.ui.button(label="Quay ×11", emoji="🔷", style=discord.ButtonStyle.primary)
+    async def pull_eleven(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._reroll(interaction, 11)
+
+    @discord.ui.button(label="Tỷ lệ", emoji="📊", style=discord.ButtonStyle.secondary)
+    async def show_rates(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        pool = await self.cog.fgo.get_pool(self.region)
+        await interaction.response.send_message(
+            embed=fgo_rates_embed(pool), ephemeral=True
+        )
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.HTTPException, discord.NotFound):
+                pass
+
+
 class LimbusGacha(commands.Cog):
     exchange_group = app_commands.Group(
         name="exchange",
@@ -1004,6 +1109,7 @@ class LimbusGacha(commands.Cog):
         self.art_cache_dir: Path | None = None
         self.economy_store = get_economy_store(bot)
         self.blue_archive = BlueArchiveGachaService()
+        self.fgo = FGOGachaService()
 
     async def cog_load(self) -> None:
         # Chuẩn bị filesystem trước khi mở HTTP session để không rò session nếu
@@ -1030,12 +1136,14 @@ class LimbusGacha(commands.Cog):
             },
         )
         await self.blue_archive.open()
+        await self.fgo.open()
 
     async def cog_unload(self) -> None:
         if self.session:
             await self.session.close()
         self.session = None
         await self.blue_archive.close()
+        await self.fgo.close()
 
     async def get_pool(self) -> GachaPool:
         now = time.monotonic()
@@ -1359,6 +1467,93 @@ class LimbusGacha(commands.Cog):
         view.message = message
         return message
 
+    async def prepare_fgo_gacha(
+        self,
+        guild_id: int,
+        user_id: int,
+        count: int,
+        *,
+        region: str,
+        source_id: str,
+    ) -> PreparedFGOGacha:
+        pool = await self.fgo.get_pool(region)
+        setting = await self.economy_store.get_settings(guild_id)
+        if not setting.enabled:
+            return PreparedFGOGacha(pool=pool, pulls=pull_fgo(pool, count))
+
+        account_lock = self.account_locks.setdefault(
+            (int(guild_id), int(user_id)), asyncio.Lock()
+        )
+        async with account_lock:
+            pulls = pull_fgo(pool, count)
+            fgo_kinds = (
+                KIND_SERVANT_3,
+                KIND_SERVANT_4,
+                KIND_SERVANT_5,
+                KIND_CE_3,
+                KIND_CE_4,
+                KIND_CE_5,
+            )
+            owned_by_kind = {
+                kind: await self.economy_store.owned_names(
+                    guild_id,
+                    user_id,
+                    kind,
+                    game_id=FGO_GAME_ID,
+                )
+                for kind in fgo_kinds
+            }
+            pulls = mark_new_fgo_pulls(pulls, owned_by_kind)
+            point_cost = GACHA_POINT_COST[count]
+            account = await self.economy_store.record_gacha(
+                guild_id,
+                user_id,
+                point_cost=point_cost,
+                results=[(pull.card.kind, pull.card.name) for pull in pulls],
+                source_id=source_id,
+                game_id=FGO_GAME_ID,
+                banner_id=pool.banner_id,
+                extraction_points_awarded=0,
+                recruitment_points_awarded=0,
+            )
+        return PreparedFGOGacha(
+            pool=pool,
+            pulls=pulls,
+            account_balance=account.balance,
+            point_cost=point_cost,
+        )
+
+    async def present_fgo_gacha(
+        self,
+        interaction: discord.Interaction,
+        prepared: PreparedFGOGacha,
+        *,
+        view: FGOGachaView,
+        edit_original: bool,
+    ) -> discord.Message | None:
+        payload = await self.fgo.make_payload(
+            prepared.pool,
+            prepared.pulls,
+            account_balance=prepared.account_balance,
+            point_cost=prepared.point_cost,
+        )
+        if edit_original:
+            await interaction.edit_original_response(
+                embed=payload.embed,
+                attachments=[payload.file],
+                view=view,
+            )
+            message = interaction.message
+        else:
+            message = await interaction.followup.send(
+                embed=payload.embed,
+                file=payload.file,
+                view=view,
+                wait=True,
+            )
+        view.message = message
+        return message
+
     async def blue_archive_target_autocomplete(
         self,
         interaction: discord.Interaction,
@@ -1543,23 +1738,25 @@ class LimbusGacha(commands.Cog):
 
     @app_commands.command(
         name="gacha",
-        description="Gacha Limbus Company hoặc Blue Archive",
+        description="Gacha Limbus Company, Blue Archive hoặc Fate/Grand Order",
     )
     @app_commands.guild_only()
     @app_commands.describe(
         game="Game cần quay; mặc định giữ nguyên Limbus Company",
-        pulls="Số lượt quay; mặc định là 10",
-        server="Server Blue Archive; bỏ qua khi quay Limbus",
+        pulls="Số lượt quay; FGO dùng ×1/×11, game khác dùng ×1/×10",
+        server="Server Blue Archive/FGO; bỏ qua khi quay Limbus",
         target="Học sinh pickup mục tiêu của Blue Archive",
     )
     @app_commands.choices(
         game=[
             app_commands.Choice(name="Limbus Company", value="limbus"),
             app_commands.Choice(name="Blue Archive", value=BLUE_ARCHIVE_GAME_ID),
+            app_commands.Choice(name="Fate/Grand Order", value=FGO_GAME_ID),
         ],
         pulls=[
             app_commands.Choice(name="Quay ×1", value=1),
             app_commands.Choice(name="Quay ×10", value=10),
+            app_commands.Choice(name="Quay ×11 (FGO)", value=11),
         ],
         server=[
             app_commands.Choice(name="Global", value="global"),
@@ -1576,11 +1773,13 @@ class LimbusGacha(commands.Cog):
         server: app_commands.Choice[str] | None = None,
         target: str | None = None,
     ) -> None:
-        count = pulls.value if pulls else 10
-        await interaction.response.defer(thinking=True)
         game_id = game.value if game else "limbus"
+        count = pulls.value if pulls else (11 if game_id == FGO_GAME_ID else 10)
+        await interaction.response.defer(thinking=True)
         if game_id == BLUE_ARCHIVE_GAME_ID:
             try:
+                if count not in {1, 10}:
+                    raise ValueError("Blue Archive chỉ hỗ trợ quay ×1 hoặc ×10.")
                 assert interaction.guild_id is not None
                 region = server.value if server else "global"
                 prepared = await self.prepare_blue_archive_gacha(
@@ -1613,7 +1812,45 @@ class LimbusGacha(commands.Cog):
                     f"`{str(error)[:350]}`",
                     ephemeral=True,
                 )
+        if game_id == FGO_GAME_ID:
+            try:
+                if count not in {1, 11}:
+                    raise ValueError("FGO chỉ hỗ trợ quay ×1 hoặc ×11.")
+                assert interaction.guild_id is not None
+                region = server.value if server else "global"
+                if region == "cn":
+                    raise ValueError("FGO hiện hỗ trợ server NA/Global hoặc JP.")
+                prepared = await self.prepare_fgo_gacha(
+                    interaction.guild_id,
+                    interaction.user.id,
+                    count,
+                    region=region,
+                    source_id=f"interaction:{interaction.id}",
+                )
+                view = FGOGachaView(
+                    self,
+                    interaction.user.id,
+                    region=prepared.pool.region,
+                )
+                view.message = await self.present_fgo_gacha(
+                    interaction,
+                    prepared,
+                    view=view,
+                    edit_original=False,
+                )
+                return
+            except (InsufficientPoints, EconomyDisabled, ValueError) as error:
+                return await interaction.followup.send(f"❌ {error}", ephemeral=True)
+            except Exception as error:
+                logger.exception("Không thể chạy /gacha FGO")
+                return await interaction.followup.send(
+                    "❌ FGO gacha chưa sẵn sàng. "
+                    f"`{str(error)[:350]}`",
+                    ephemeral=True,
+                )
         try:
+            if count not in {1, 10}:
+                raise ValueError("Limbus Company chỉ hỗ trợ quay ×1 hoặc ×10.")
             assert interaction.guild_id is not None
             payload = await self.perform_gacha(
                 interaction.guild_id,
@@ -1621,7 +1858,7 @@ class LimbusGacha(commands.Cog):
                 count,
                 source_id=f"interaction:{interaction.id}",
             )
-        except (InsufficientPoints, EconomyDisabled) as error:
+        except (InsufficientPoints, EconomyDisabled, ValueError) as error:
             return await interaction.followup.send(f"❌ {error}", ephemeral=True)
         except Exception as error:
             logger.exception("Không thể chạy /gacha")

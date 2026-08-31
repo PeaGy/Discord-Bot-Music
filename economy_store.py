@@ -960,8 +960,10 @@ class EconomyStore:
                 await db.execute(
                     f"SELECT * FROM economy_collection WHERE {where} "
                     "ORDER BY CASE item_kind WHEN 'id3' THEN 0 WHEN 'ego' THEN 1 "
-                    "WHEN 'ba3' THEN 0 WHEN 'ba2' THEN 1 WHEN 'id2' THEN 2 "
-                    "WHEN 'ba1' THEN 2 ELSE 3 END, item_name COLLATE NOCASE "
+                    "WHEN 'ba3' THEN 0 WHEN 'fgo_svt5' THEN 0 WHEN 'fgo_ce5' THEN 1 "
+                    "WHEN 'ba2' THEN 1 WHEN 'fgo_svt4' THEN 2 WHEN 'fgo_ce4' THEN 3 "
+                    "WHEN 'id2' THEN 2 WHEN 'ba1' THEN 2 WHEN 'fgo_svt3' THEN 4 "
+                    "WHEN 'fgo_ce3' THEN 5 ELSE 6 END, item_name COLLATE NOCASE "
                     "LIMIT ? OFFSET ?",
                     (*values, int(limit), int(offset)),
                 )
