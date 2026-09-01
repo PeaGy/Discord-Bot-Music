@@ -72,12 +72,16 @@ RARITY_LABEL = {
     "fgo_ce5": "5★ CE",
     "fgo_ce4": "4★ CE",
     "fgo_ce3": "3★ CE",
+    "bd2_5": "5★ Costume",
+    "bd2_4": "4★ Costume",
+    "bd2_3": "3★ Costume",
 }
 
 GAME_LABEL = {
     "limbus": "Limbus Company",
     "blue_archive": "Blue Archive",
     "fgo": "Fate/Grand Order",
+    "brown_dust_2": "Brown Dust 2",
 }
 
 
@@ -512,6 +516,7 @@ class Economy(commands.Cog):
             app_commands.Choice(name="Limbus Company", value="limbus"),
             app_commands.Choice(name="Blue Archive", value="blue_archive"),
             app_commands.Choice(name="Fate/Grand Order", value="fgo"),
+            app_commands.Choice(name="Brown Dust 2", value="brown_dust_2"),
         ],
         rarity=[
             app_commands.Choice(name="3★ Identity", value="id3"),
@@ -524,6 +529,9 @@ class Economy(commands.Cog):
             app_commands.Choice(name="FGO 5★ Craft Essence", value="fgo_ce5"),
             app_commands.Choice(name="FGO 4★ Craft Essence", value="fgo_ce4"),
             app_commands.Choice(name="FGO 3★ Craft Essence", value="fgo_ce3"),
+            app_commands.Choice(name="BD2 5★ Costume", value="bd2_5"),
+            app_commands.Choice(name="BD2 4★ Costume", value="bd2_4"),
+            app_commands.Choice(name="BD2 3★ Costume", value="bd2_3"),
         ]
     )
     async def collection(
@@ -544,6 +552,11 @@ class Economy(commands.Cog):
             )
         elif game_id == "fgo" and kind and not kind.startswith("fgo_"):
             kind = "__not_available__"
+        elif game_id == "brown_dust_2" and kind:
+            kind = {"id3": "bd2_5", "id2": "bd2_4", "id1": "bd2_3"}.get(
+                kind,
+                kind if kind.startswith("bd2_") else "__not_available__",
+            )
         per_page = 15
         items, total = await self.store.collection(
             interaction.guild.id,
@@ -582,6 +595,12 @@ class Economy(commands.Cog):
                 f"4★ `{summary.get('fgo_ce4', 0)}` • "
                 f"3★ `{summary.get('fgo_ce3', 0)}`"
             )
+        elif game_id == "brown_dust_2":
+            unique_text = (
+                f"5★ `{summary.get('bd2_5', 0)}` • "
+                f"4★ `{summary.get('bd2_4', 0)}` • "
+                f"3★ `{summary.get('bd2_3', 0)}`"
+            )
         else:
             unique_text = (
                 f"3★ `{summary.get('id3', 0)}` • "
@@ -603,6 +622,7 @@ class Economy(commands.Cog):
             app_commands.Choice(name="Limbus Company", value="limbus"),
             app_commands.Choice(name="Blue Archive", value="blue_archive"),
             app_commands.Choice(name="Fate/Grand Order", value="fgo"),
+            app_commands.Choice(name="Brown Dust 2", value="brown_dust_2"),
         ]
     )
     async def rank(
@@ -630,6 +650,10 @@ class Economy(commands.Cog):
                 detail = (
                     f"　Servant `{sum(summary.get(f'fgo_svt{rarity}', 0) for rarity in (3, 4, 5))}` • "
                     f"CE `{sum(summary.get(f'fgo_ce{rarity}', 0) for rarity in (3, 4, 5))}`"
+                )
+            elif game_id == "brown_dust_2":
+                detail = (
+                    f"　5★ `{row.id3}` • 4★ `{row.id2}` • 3★ `{row.id1}`"
                 )
             else:
                 detail = f"　3★ `{row.id3}` • 2★ `{row.id2}` • 1★ `{row.id1}`"

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import aiosqlite
 
@@ -252,6 +252,19 @@ class EconomyStore:
                         points INTEGER NOT NULL DEFAULT 0 CHECK(points >= 0),
                         updated_at INTEGER NOT NULL,
                         PRIMARY KEY (guild_id, user_id, game_id, banner_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS economy_gacha_counters (
+                        guild_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        game_id TEXT NOT NULL,
+                        banner_id TEXT NOT NULL,
+                        counter_name TEXT NOT NULL,
+                        value INTEGER NOT NULL DEFAULT 0 CHECK(value >= 0),
+                        updated_at INTEGER NOT NULL,
+                        PRIMARY KEY (
+                            guild_id, user_id, game_id, banner_id, counter_name
+                        )
                     );
                     """
                 )
@@ -660,6 +673,7 @@ class EconomyStore:
         banner_id: str = "",
         extraction_points_awarded: int | None = None,
         recruitment_points_awarded: int = 0,
+        counter_updates: Mapping[str, int] | None = None,
         timestamp: int | None = None,
     ) -> EconomyAccount:
         await self.init()
@@ -786,6 +800,26 @@ class EconomyStore:
                             recruitment_award,
                             now,
                         ),
+                    )
+                if counter_updates and banner_id:
+                    await db.executemany(
+                        "INSERT INTO economy_gacha_counters "
+                        "(guild_id,user_id,game_id,banner_id,counter_name,value,updated_at) "
+                        "VALUES(?,?,?,?,?,?,?) "
+                        "ON CONFLICT(guild_id,user_id,game_id,banner_id,counter_name) "
+                        "DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                        [
+                            (
+                                int(guild_id),
+                                int(user_id),
+                                game_id,
+                                banner_id,
+                                str(name),
+                                max(0, int(value)),
+                                now,
+                            )
+                            for name, value in counter_updates.items()
+                        ],
                     )
                 await db.commit()
                 updated = await (
@@ -961,6 +995,7 @@ class EconomyStore:
                     f"SELECT * FROM economy_collection WHERE {where} "
                     "ORDER BY CASE item_kind WHEN 'id3' THEN 0 WHEN 'ego' THEN 1 "
                     "WHEN 'ba3' THEN 0 WHEN 'fgo_svt5' THEN 0 WHEN 'fgo_ce5' THEN 1 "
+                    "WHEN 'bd2_5' THEN 0 WHEN 'bd2_4' THEN 1 WHEN 'bd2_3' THEN 2 "
                     "WHEN 'ba2' THEN 1 WHEN 'fgo_svt4' THEN 2 WHEN 'fgo_ce4' THEN 3 "
                     "WHEN 'id2' THEN 2 WHEN 'ba1' THEN 2 WHEN 'fgo_svt3' THEN 4 "
                     "WHEN 'fgo_ce3' THEN 5 ELSE 6 END, item_name COLLATE NOCASE "
@@ -1013,11 +1048,12 @@ class EconomyStore:
         await self.init()
         db = await self._connect()
         try:
-            kinds = (
-                ("ba3", "ba2", "ba1", "__none__")
-                if str(game_id) == "blue_archive"
-                else ("id3", "id2", "id1", "ego")
-            )
+            if str(game_id) == "blue_archive":
+                kinds = ("ba3", "ba2", "ba1", "__none__")
+            elif str(game_id) == "brown_dust_2":
+                kinds = ("bd2_5", "bd2_4", "bd2_3", "__none__")
+            else:
+                kinds = ("id3", "id2", "id1", "ego")
             rows = await (
                 await db.execute(
                     """
@@ -1072,6 +1108,30 @@ class EconomyStore:
                 )
             ).fetchone()
             return int(row["points"]) if row else 0
+        finally:
+            await db.close()
+
+    async def gacha_counter_values(
+        self,
+        guild_id: int,
+        user_id: int,
+        *,
+        game_id: str,
+        banner_id: str,
+    ) -> dict[str, int]:
+        """Read named persistent pity counters for one game banner."""
+
+        await self.init()
+        db = await self._connect()
+        try:
+            rows = await (
+                await db.execute(
+                    "SELECT counter_name,value FROM economy_gacha_counters "
+                    "WHERE guild_id=? AND user_id=? AND game_id=? AND banner_id=?",
+                    (int(guild_id), int(user_id), str(game_id), str(banner_id)),
+                )
+            ).fetchall()
+            return {str(row["counter_name"]): int(row["value"]) for row in rows}
         finally:
             await db.close()
 

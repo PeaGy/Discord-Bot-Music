@@ -383,6 +383,36 @@ class EconomyStoreTests(unittest.IsolatedAsyncioTestCase):
             2,
         )
 
+    async def test_brown_dust_2_pity_counters_commit_with_the_gacha(self):
+        await self.store.update_settings(100, updated_by=1, enabled=True)
+        await self.store.adjust_points(100, 10, delta=1_300, source_id="seed:bd2")
+        await self.store.record_gacha(
+            100,
+            10,
+            point_cost=1_300,
+            results=[("bd2_3", "Justia — Knight of Blood")] * 10,
+            source_id="pull:bd2",
+            game_id="brown_dust_2",
+            banner_id="bd2-costume-draw-simulator",
+            extraction_points_awarded=0,
+            counter_updates={"since_four_star": 4, "since_five_star": 10},
+        )
+        self.assertEqual(
+            await self.store.gacha_counter_values(
+                100,
+                10,
+                game_id="brown_dust_2",
+                banner_id="bd2-costume-draw-simulator",
+            ),
+            {"since_four_star": 4, "since_five_star": 10},
+        )
+        self.assertEqual(
+            await self.store.collection_summary(
+                100, 10, game_id="brown_dust_2"
+            ),
+            {"bd2_3": 1},
+        )
+
     async def test_old_collection_schema_is_migrated_as_limbus(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "old-economy.db"

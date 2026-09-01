@@ -55,6 +55,19 @@ from features._blue_archive_gacha import (
     mark_new_blue_archive_pulls,
     pull_blue_archive,
 )
+from features._brown_dust_2_gacha import (
+    GAME_ID as BROWN_DUST_2_GAME_ID,
+    KIND_STAR3 as BD2_KIND_STAR3,
+    KIND_STAR4 as BD2_KIND_STAR4,
+    KIND_STAR5 as BD2_KIND_STAR5,
+    BrownDust2GachaService,
+    BrownDust2Pity,
+    BrownDust2Pool,
+    BrownDust2Pull,
+    brown_dust_2_rates_embed,
+    mark_new_brown_dust_2_pulls,
+    pull_brown_dust_2,
+)
 from features._fgo_gacha import (
     GAME_ID as FGO_GAME_ID,
     KIND_CE_3,
@@ -1089,6 +1102,103 @@ class FGOGachaView(discord.ui.View):
                 pass
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedBrownDust2Gacha:
+    pool: BrownDust2Pool
+    pulls: tuple[BrownDust2Pull, ...]
+    pity: BrownDust2Pity
+    account_balance: int | None = None
+    point_cost: int = 0
+
+
+class BrownDust2GachaView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "LimbusGacha",
+        owner_id: int,
+        *,
+        pity: BrownDust2Pity,
+    ) -> None:
+        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
+        self.cog = cog
+        self.owner_id = int(owner_id)
+        self.pity = pity
+        self.message: discord.Message | None = None
+        self.roll_lock = asyncio.Lock()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message(
+            "✨ Panel Costume Draw này thuộc người khác. Dùng `/gacha` để mở lượt riêng nhé.",
+            ephemeral=True,
+        )
+        return False
+
+    async def _reroll(self, interaction: discord.Interaction, count: int) -> None:
+        if self.roll_lock.locked():
+            return await interaction.response.send_message(
+                "⏳ Lượt Draw trước vẫn đang được dựng ảnh.", ephemeral=True
+            )
+        await interaction.response.defer()
+        async with self.roll_lock:
+            try:
+                if interaction.guild_id is None:
+                    raise EconomyDisabled("Gacha economy chỉ dùng trong server.")
+                prepared = await self.cog.prepare_brown_dust_2_gacha(
+                    interaction.guild_id,
+                    interaction.user.id,
+                    count,
+                    source_id=f"interaction:{interaction.id}",
+                    free_pity=self.pity,
+                )
+                await self.cog.present_brown_dust_2_gacha(
+                    interaction,
+                    prepared,
+                    view=self,
+                    edit_original=True,
+                )
+            except (InsufficientPoints, EconomyDisabled, ValueError) as error:
+                await interaction.followup.send(f"❌ {error}", ephemeral=True)
+            except Exception as error:
+                logger.exception("Không thể quay lại Brown Dust 2 gacha")
+                await interaction.followup.send(
+                    f"❌ Không thể Costume Draw lúc này: `{str(error)[:300]}`",
+                    ephemeral=True,
+                )
+
+    @discord.ui.button(label="Quay ×1", emoji="🎟️", style=discord.ButtonStyle.secondary)
+    async def pull_one(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._reroll(interaction, 1)
+
+    @discord.ui.button(label="Quay ×10", emoji="✨", style=discord.ButtonStyle.primary)
+    async def pull_ten(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._reroll(interaction, 10)
+
+    @discord.ui.button(label="Tỷ lệ", emoji="📊", style=discord.ButtonStyle.secondary)
+    async def show_rates(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        pool = await self.cog.brown_dust_2.get_pool()
+        await interaction.response.send_message(
+            embed=brown_dust_2_rates_embed(pool), ephemeral=True
+        )
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.HTTPException, discord.NotFound):
+                pass
+
+
 class LimbusGacha(commands.Cog):
     exchange_group = app_commands.Group(
         name="exchange",
@@ -1110,6 +1220,7 @@ class LimbusGacha(commands.Cog):
         self.economy_store = get_economy_store(bot)
         self.blue_archive = BlueArchiveGachaService()
         self.fgo = FGOGachaService()
+        self.brown_dust_2 = BrownDust2GachaService()
 
     async def cog_load(self) -> None:
         # Chuẩn bị filesystem trước khi mở HTTP session để không rò session nếu
@@ -1137,6 +1248,7 @@ class LimbusGacha(commands.Cog):
         )
         await self.blue_archive.open()
         await self.fgo.open()
+        await self.brown_dust_2.open()
 
     async def cog_unload(self) -> None:
         if self.session:
@@ -1144,6 +1256,7 @@ class LimbusGacha(commands.Cog):
         self.session = None
         await self.blue_archive.close()
         await self.fgo.close()
+        await self.brown_dust_2.close()
 
     async def get_pool(self) -> GachaPool:
         now = time.monotonic()
@@ -1554,6 +1667,103 @@ class LimbusGacha(commands.Cog):
         view.message = message
         return message
 
+    async def prepare_brown_dust_2_gacha(
+        self,
+        guild_id: int,
+        user_id: int,
+        count: int,
+        *,
+        source_id: str,
+        free_pity: BrownDust2Pity | None = None,
+    ) -> PreparedBrownDust2Gacha:
+        pool = await self.brown_dust_2.get_pool()
+        setting = await self.economy_store.get_settings(guild_id)
+        if not setting.enabled:
+            pulls, pity = pull_brown_dust_2(pool, count, pity=free_pity)
+            return PreparedBrownDust2Gacha(pool=pool, pulls=pulls, pity=pity)
+
+        account_lock = self.account_locks.setdefault(
+            (int(guild_id), int(user_id)), asyncio.Lock()
+        )
+        async with account_lock:
+            counters = await self.economy_store.gacha_counter_values(
+                guild_id,
+                user_id,
+                game_id=BROWN_DUST_2_GAME_ID,
+                banner_id=pool.banner_id,
+            )
+            previous_pity = BrownDust2Pity(
+                since_four_star=counters.get("since_four_star", 0),
+                since_five_star=counters.get("since_five_star", 0),
+            )
+            pulls, pity = pull_brown_dust_2(pool, count, pity=previous_pity)
+            owned_by_kind = {
+                kind: await self.economy_store.owned_names(
+                    guild_id,
+                    user_id,
+                    kind,
+                    game_id=BROWN_DUST_2_GAME_ID,
+                )
+                for kind in (BD2_KIND_STAR3, BD2_KIND_STAR4, BD2_KIND_STAR5)
+            }
+            pulls = mark_new_brown_dust_2_pulls(pulls, owned_by_kind)
+            point_cost = GACHA_POINT_COST[count]
+            account = await self.economy_store.record_gacha(
+                guild_id,
+                user_id,
+                point_cost=point_cost,
+                results=[(pull.costume.kind, pull.costume.name) for pull in pulls],
+                source_id=source_id,
+                game_id=BROWN_DUST_2_GAME_ID,
+                banner_id=pool.banner_id,
+                extraction_points_awarded=0,
+                recruitment_points_awarded=0,
+                counter_updates={
+                    "since_four_star": pity.since_four_star,
+                    "since_five_star": pity.since_five_star,
+                },
+            )
+        return PreparedBrownDust2Gacha(
+            pool=pool,
+            pulls=pulls,
+            pity=pity,
+            account_balance=account.balance,
+            point_cost=point_cost,
+        )
+
+    async def present_brown_dust_2_gacha(
+        self,
+        interaction: discord.Interaction,
+        prepared: PreparedBrownDust2Gacha,
+        *,
+        view: BrownDust2GachaView,
+        edit_original: bool,
+    ) -> discord.Message | None:
+        payload = await self.brown_dust_2.make_payload(
+            prepared.pool,
+            prepared.pulls,
+            pity=prepared.pity,
+            account_balance=prepared.account_balance,
+            point_cost=prepared.point_cost,
+        )
+        view.pity = prepared.pity
+        if edit_original:
+            await interaction.edit_original_response(
+                embed=payload.embed,
+                attachments=[payload.file],
+                view=view,
+            )
+            message = interaction.message
+        else:
+            message = await interaction.followup.send(
+                embed=payload.embed,
+                file=payload.file,
+                view=view,
+                wait=True,
+            )
+        view.message = message
+        return message
+
     async def blue_archive_target_autocomplete(
         self,
         interaction: discord.Interaction,
@@ -1738,13 +1948,13 @@ class LimbusGacha(commands.Cog):
 
     @app_commands.command(
         name="gacha",
-        description="Gacha Limbus Company, Blue Archive hoặc Fate/Grand Order",
+        description="Gacha Limbus, Blue Archive, FGO hoặc Brown Dust 2",
     )
     @app_commands.guild_only()
     @app_commands.describe(
         game="Game cần quay; mặc định giữ nguyên Limbus Company",
         pulls="Số lượt quay; FGO dùng ×1/×11, game khác dùng ×1/×10",
-        server="Server Blue Archive/FGO; bỏ qua khi quay Limbus",
+        server="Server Blue Archive/FGO; game khác sẽ bỏ qua",
         target="Học sinh pickup mục tiêu của Blue Archive",
     )
     @app_commands.choices(
@@ -1752,6 +1962,7 @@ class LimbusGacha(commands.Cog):
             app_commands.Choice(name="Limbus Company", value="limbus"),
             app_commands.Choice(name="Blue Archive", value=BLUE_ARCHIVE_GAME_ID),
             app_commands.Choice(name="Fate/Grand Order", value=FGO_GAME_ID),
+            app_commands.Choice(name="Brown Dust 2", value=BROWN_DUST_2_GAME_ID),
         ],
         pulls=[
             app_commands.Choice(name="Quay ×1", value=1),
@@ -1845,6 +2056,38 @@ class LimbusGacha(commands.Cog):
                 logger.exception("Không thể chạy /gacha FGO")
                 return await interaction.followup.send(
                     "❌ FGO gacha chưa sẵn sàng. "
+                    f"`{str(error)[:350]}`",
+                    ephemeral=True,
+                )
+        if game_id == BROWN_DUST_2_GAME_ID:
+            try:
+                if count not in {1, 10}:
+                    raise ValueError("Brown Dust 2 chỉ hỗ trợ quay ×1 hoặc ×10.")
+                assert interaction.guild_id is not None
+                prepared = await self.prepare_brown_dust_2_gacha(
+                    interaction.guild_id,
+                    interaction.user.id,
+                    count,
+                    source_id=f"interaction:{interaction.id}",
+                )
+                view = BrownDust2GachaView(
+                    self,
+                    interaction.user.id,
+                    pity=prepared.pity,
+                )
+                view.message = await self.present_brown_dust_2_gacha(
+                    interaction,
+                    prepared,
+                    view=view,
+                    edit_original=False,
+                )
+                return
+            except (InsufficientPoints, EconomyDisabled, ValueError) as error:
+                return await interaction.followup.send(f"❌ {error}", ephemeral=True)
+            except Exception as error:
+                logger.exception("Không thể chạy /gacha Brown Dust 2")
+                return await interaction.followup.send(
+                    "❌ Brown Dust 2 gacha chưa sẵn sàng. "
                     f"`{str(error)[:350]}`",
                     ephemeral=True,
                 )
