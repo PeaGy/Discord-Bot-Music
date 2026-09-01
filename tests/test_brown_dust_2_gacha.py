@@ -80,7 +80,9 @@ class BrownDust2ParsingTests(unittest.TestCase):
         self.assertEqual([len(pool.costumes(rarity)) for rarity in (3, 4, 5)], [5, 5, 5])
         self.assertNotIn("C5-0 — Limited", names)
         self.assertNotIn("C5-0 — Unavailable", names)
-        self.assertIn("Costume_300000.png", pool.costumes(3)[0].image_url)
+        first = pool.costumes(3)[0]
+        self.assertIn("Illust_inven_char300000.png", first.image_url)
+        self.assertIn("Costume_300000.png", first.fallback_image_url)
 
     def test_rates_and_four_star_pity_are_applied_on_the_tenth_pull(self):
         pool = complete_pool()

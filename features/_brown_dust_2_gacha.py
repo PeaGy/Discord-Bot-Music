@@ -146,8 +146,12 @@ def parse_brown_dust_2_pool(
             continue
         seen_ids.add(costume_id)
         encoded_page = quote((page or f"{character}/{costume}").replace(" ", "_"), safe="/'()-,.")
-        image_name = quote(f"Costume_{costume_id}.png", safe="._-")
-        fallback_name = quote(f"Illust_inven_char{costume_id}.png", safe="._-")
+        # The inventory illustration is the square, upper-body portrait used by
+        # Brown Dust 2's collection/result UI.  ``Costume_*.png`` is a tall
+        # full-body splash and only makes a useful fallback when the wiki has
+        # not uploaded the inventory crop yet.
+        image_name = quote(f"Illust_inven_char{costume_id}.png", safe="._-")
+        fallback_name = quote(f"Costume_{costume_id}.png", safe="._-")
         groups[rarity].append(
             BrownDust2Costume(
                 costume_id=costume_id,
@@ -302,7 +306,7 @@ def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFon
     return ImageFont.load_default(size=size)
 
 
-def _pearl_background() -> Image.Image:
+def _pearl_background(featured_raw: bytes = b"") -> Image.Image:
     width, height = CANVAS_SIZE
     image = Image.new("RGBA", CANVAS_SIZE, (247, 246, 249, 255))
     pixels = image.load()
@@ -318,6 +322,25 @@ def _pearl_background() -> Image.Image:
     draw.polygon(((780, 0), (1280, 85), (1280, 620), (1000, 720)), fill=(255, 235, 246, 32))
     draw.ellipse((360, 80, 930, 650), fill=(255, 255, 255, 70))
     image.alpha_composite(veil.filter(ImageFilter.GaussianBlur(42)))
+
+    # The real result screen leaves a very faint enlarged costume illustration
+    # behind the cards.  Reusing the selected collection art keeps this dynamic
+    # without requiring a bundled game background.
+    if featured_raw:
+        try:
+            with Image.open(io.BytesIO(featured_raw)) as source:
+                source.load()
+                featured = ImageOps.fit(
+                    source.convert("RGBA"),
+                    CANVAS_SIZE,
+                    method=Image.Resampling.LANCZOS,
+                    centering=(0.5, 0.42),
+                )
+            featured.putalpha(featured.getchannel("A").point(lambda alpha: alpha * 52 // 255))
+            image.alpha_composite(featured.filter(ImageFilter.GaussianBlur(12)))
+            image.alpha_composite(Image.new("RGBA", CANVAS_SIZE, (255, 255, 255, 72)))
+        except (OSError, ValueError):
+            pass
     return image
 
 
@@ -330,7 +353,7 @@ def _portrait(raw: bytes, size: tuple[int, int]) -> Image.Image:
                 rgba,
                 size,
                 method=Image.Resampling.LANCZOS,
-                centering=(0.5, 0.30),
+                centering=(0.5, 0.5),
             )
     except (OSError, ValueError):
         fallback = Image.new("RGBA", size, (224, 224, 230, 255))
@@ -345,23 +368,17 @@ def _portrait(raw: bytes, size: tuple[int, int]) -> Image.Image:
 
 def _card_polygon(x: int, y: int, width: int, height: int, inset: int = 0) -> list[tuple[int, int]]:
     half = width // 2
+    side = 7 + inset
+    cap = 22 + inset
+    tail = 36 + inset
     return [
         (x + half, y + inset),
-        (x + width - 14 - inset, y + 22 + inset),
-        (x + width - 7 - inset, y + height - 42 - inset),
+        (x + width - side, y + cap),
+        (x + width - side, y + height - tail),
         (x + half, y + height - inset),
-        (x + 7 + inset, y + height - 42 - inset),
-        (x + 14 + inset, y + 22 + inset),
+        (x + side, y + height - tail),
+        (x + side, y + cap),
     ]
-
-
-def _rainbow_color(position: float) -> tuple[int, int, int]:
-    colors = ((255, 104, 164), (255, 210, 92), (114, 235, 204), (115, 178, 255), (195, 122, 255))
-    scaled = max(0.0, min(0.999, position)) * (len(colors) - 1)
-    index = int(scaled)
-    ratio = scaled - index
-    left, right = colors[index], colors[index + 1]
-    return tuple(int(left[i] + (right[i] - left[i]) * ratio) for i in range(3))
 
 
 def _draw_stars(draw: ImageDraw.ImageDraw, x: int, y: int, width: int, rarity: int) -> None:
@@ -400,48 +417,57 @@ def _draw_card(
     glow = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow, "RGBA")
     alpha = 40 if rarity == 3 else 105 if rarity == 4 else 145
+    if rarity >= 4:
+        beam_color = (203, 97, 235) if rarity == 4 else (133, 234, 255)
+        glow_draw.rounded_rectangle(
+            (x - 9, y - 42, x + width + 9, y + height + 42),
+            radius=width // 2,
+            fill=(*beam_color, 28 if rarity == 4 else 36),
+        )
     glow_draw.polygon(_card_polygon(x - 4, y - 4, width + 8, height + 8), fill=(*glow_colors[rarity], alpha))
     canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(13)))
 
-    mask = Image.new("L", (width, height), 0)
-    ImageDraw.Draw(mask).polygon(_card_polygon(0, 0, width, height, 4), fill=255)
-    art = _portrait(raw, (width, height))
-    card_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    card_layer.paste(art, (0, 0), mask)
-    canvas.alpha_composite(card_layer, (x, y))
-
     draw = ImageDraw.Draw(canvas, "RGBA")
     outer = _card_polygon(x, y, width, height)
-    if rarity == 5:
-        for index in range(5):
-            color = _rainbow_color(index / 4)
-            segment_start = outer[index]
-            segment_end = outer[index + 1]
-            draw.line((segment_start, segment_end), fill=(*color, 255), width=5)
-        draw.line((outer[-1], outer[0]), fill=(255, 143, 217, 255), width=5)
-    else:
-        border = (238, 239, 243) if rarity == 3 else (224, 139, 244)
-        draw.line((*outer, outer[0]), fill=(*border, 255), width=5, joint="curve")
-    inner = _card_polygon(x, y, width, height, 7)
-    draw.line((*inner, inner[0]), fill=(255, 255, 255, 185), width=2, joint="curve")
+    draw.polygon(outer, fill=(241, 242, 246, 218))
 
-    # Game-like dotted caps and pale footer keep the result readable without
-    # reproducing or shipping proprietary UI textures.
-    for row_y in (y + 16, y + height - 42):
-        for dot in range(5):
-            dot_x = x + width // 2 - 18 + dot * 9
+    # Only the central portrait window is rectangular.  The pointed header and
+    # footer are separate decorations, so every card remains vertically aligned
+    # like the in-game Costume Draw result instead of becoming a tall hexagon.
+    art_left = 9
+    art_top = 39
+    art_width = width - art_left * 2
+    art_height = height - art_top - 52
+    art = _portrait(raw, (art_width, art_height))
+    card_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    card_layer.paste(art, (art_left, art_top), art)
+    canvas.alpha_composite(card_layer, (x, y))
+
+    # Keep the frame itself clean and white.  Rarity is conveyed by the soft
+    # glow and star count; extra inner, purple, or rainbow strokes made the
+    # narrow cards look doubled and uneven.
+    draw.line((*outer, outer[0]), fill=(238, 239, 243, 255), width=5, joint="curve")
+
+    # Dotted caps and a translucent diamond footer mirror the in-game result
+    # cards while leaving out Golden Thread and reward icons.
+    for dot_row in range(3):
+        row_y = y + 12 + dot_row * 8
+        dot_count = 3 + dot_row * 2
+        first_x = x + width // 2 - (dot_count - 1) * 5
+        for dot in range(dot_count):
+            dot_x = first_x + dot * 10
             draw.ellipse((dot_x - 2, row_y - 2, dot_x + 2, row_y + 2), fill=(255, 255, 255, 205))
     draw.polygon(
         (
-            (x + 10, y + height - 58),
-            (x + width - 10, y + height - 58),
-            (x + width - 7, y + height - 42),
+            (x + 10, y + height - 48),
+            (x + width - 10, y + height - 48),
+            (x + width - 7, y + height - 35),
             (x + width // 2, y + height - 3),
-            (x + 7, y + height - 42),
+            (x + 7, y + height - 35),
         ),
-        fill=(245, 244, 248, 205),
+        fill=(245, 244, 248, 188),
     )
-    _draw_stars(draw, x, y + height - 50, width, rarity)
+    _draw_stars(draw, x, y + height - 43, width, rarity)
 
     if pull.is_new:
         font = _font(13, bold=True)
@@ -479,20 +505,24 @@ def render_brown_dust_2_result(
     pulls = tuple(pulls)
     if len(pulls) not in {1, 10}:
         raise ValueError("Brown Dust 2 renderer chỉ hỗ trợ 1 hoặc 10 kết quả.")
-    canvas = _pearl_background()
-    if len(pulls) == 1:
-        width, height = 270, 480
-        positions = [((CANVAS_SIZE[0] - width) // 2, 120)]
-    else:
-        width, height = 108, 330
-        gap = 14
-        total_width = len(pulls) * width + (len(pulls) - 1) * gap
-        start_x = (CANVAS_SIZE[0] - total_width) // 2
-        positions = [(start_x + index * (width + gap), 184) for index in range(10)]
-    for pull, (x, y) in zip(pulls, positions):
-        raw = image_data.get(pull.costume.image_url, b"") or image_data.get(
+    def raw_for(pull: BrownDust2Pull) -> bytes:
+        return image_data.get(pull.costume.image_url, b"") or image_data.get(
             pull.costume.fallback_image_url, b""
         )
+
+    featured_pull = max(pulls, key=lambda pull: pull.costume.rarity)
+    canvas = _pearl_background(raw_for(featured_pull))
+    if len(pulls) == 1:
+        width, height = 250, 420
+        positions = [((CANVAS_SIZE[0] - width) // 2, 142)]
+    else:
+        width, height = 98, 296
+        gap = 13
+        total_width = len(pulls) * width + (len(pulls) - 1) * gap
+        start_x = (CANVAS_SIZE[0] - total_width) // 2
+        positions = [(start_x + index * (width + gap), 178) for index in range(10)]
+    for pull, (x, y) in zip(pulls, positions):
+        raw = raw_for(pull)
         _draw_card(canvas, pull, raw, x=x, y=y, width=width, height=height)
     output = io.BytesIO()
     canvas.convert("RGB").save(output, format="PNG", optimize=True)
