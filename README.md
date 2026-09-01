@@ -43,14 +43,15 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - Câu trả lời quá dài được chia hợp lý hoặc gửi bằng file UTF-8 để đọc trên điện thoại.
 - Tạo sticker/emoji từ ảnh đính kèm hoặc ảnh được reply mà không cần gọi AI tạo ảnh.
 
-### 🚂Limbus Company
+### 🎮Gacha Game
 
 - RAG tự đồng bộ Limbus Company Wiki vào `limbus_knowledge.db`.
 - Hiểu nhiều alias cộng đồng; hỗ trợ roster, Identity, E.G.O., skill/passive, status, lore và team building.
 - Full kit và từng Skill/Defense được trình bày bằng embed có màu Sin Affinity, Coin, damage type, status và resistance.
 - Artwork Identity/E.G.O được đồng bộ tăng dần theo revision wiki và dùng làm thumbnail của full kit hoặc card skill riêng. Metadata nằm cùng `limbus_knowledge.db`; lỗi CDN không làm hỏng câu trả lời và cache cũ vẫn được giữ.
-- `/gacha` mặc định dùng đúng pool 3★, 2★, 1★ và E.G.O trong wiki đã đồng bộ. Quay ×10 được dựng thành màn hình kết quả theo giao diện Limbus. Chọn `game:Blue Archive` để dùng banner JP/Global/CN hiện tại từ SchaleDB; chọn `game:Fate/Grand Order` để quay ×1/×11 trong FGO Summon Simulator NA/JP lấy dữ liệu và ảnh từ Atlas Academy.
-- Server chưa bật Economy vẫn dùng gacha mô phỏng miễn phí. Server đã bật sẽ tốn Peto Points và lưu collection tách riêng theo game; Blue Archive có Recruitment Points riêng theo banner. FGO Summon Simulator dùng pool tổng hợp, không giả làm banner pickup đang chạy trong game.
+- `/gacha` mặc định dùng đúng pool 3★, 2★, 1★ và E.G.O trong wiki đã đồng bộ.
+  Chọn `game:Blue Archive` để dùng banner JP/Global/CN hiện tại từ SchaleDB. 
+  chọn `game:Fate/Grand Order` để quay ×1/×11 trong FGO Summon Simulator NA/JP lấy dữ liệu và ảnh từ Atlas Academy.
 - Tin về game được kiểm tra qua X Limbus chính thức, Steam News API và ảnh notice.
 - Kết quả đọc ảnh Steam được cache theo hash; câu hỏi cùng chủ đề dùng cache ngắn hạn để tránh lặp lại lượt Vision chậm.
 - Có thể theo dõi RSS của kênh YouTube ProjectMoon Official và thông báo video Limbus mới vào một kênh Discord đã chọn. Trạng thái SQLite chống gửi trùng sau restart; lần chạy đầu chỉ ghi nhận mốc hiện tại.
@@ -58,8 +59,8 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 
 ### 💰Peto Economy
 
-- Mặc định **tắt** ở mọi server để không làm thay đổi trải nghiệm cũ. Quản trị viên bật bằng `/economy enable`, chọn kênh tổng kết tuần và thông báo event bằng `/economy channel`, đồng thời có thể tắt riêng điểm chat/voice bằng `/economy earning`.
-- Ngày thường áp dụng hệ số **×2**: thành viên nhận ngẫu nhiên 16–24 điểm cho một tin nhắn hợp lệ mỗi 60 giây, 10 điểm mỗi 5 phút voice khi có ít nhất hai người thật trong kênh và tối đa 1.000 điểm/ngày. Thứ Bảy–Chủ Nhật (UTC+7) mở event **×5**, tương ứng 40–60 điểm chat, 25 điểm voice và giới hạn 2.500 điểm/ngày.
+- Mặc định **tắt** ở mọi server. Quản trị viên bật bằng `/economy enable`, chọn kênh tổng kết tuần và thông báo event bằng `/economy channel`, đồng thời có thể tắt riêng điểm chat/voice bằng `/economy earning`.
+- Thành viên nhận ngẫu nhiên 16–24 điểm cho một tin nhắn hợp lệ mỗi 60 giây, 10 điểm mỗi 5 phút voice khi có ít nhất hai người thật trong kênh và tối đa 1.000 điểm/ngày. Thứ Bảy–Chủ Nhật (UTC+7) mở event **×5**, tương ứng 40–60 điểm chat, 25 điểm voice và giới hạn 2.500 điểm/ngày.
 - Peto tự đăng card khi event cuối tuần bắt đầu và kết thúc vào kênh Economy đã chọn. Trạng thái được lưu trong SQLite nên restart bot không gửi thông báo trùng.
 - `/points` xem số dư, điểm kiếm trong tuần, Extraction Points và tổng lượt quay. `/collection [game]` xem nhân vật đã sở hữu; `/rank [game]` xếp top 5 collection unique trong server.
 - Gacha Economy tốn 130 điểm/lượt hoặc 1.300 điểm cho một gói ×10 (FGO là ×11). Mỗi lượt Limbus sinh 1 Extraction Point; `/exchange identity` và `/exchange ego` dùng 200 điểm này để chọn một Identity 3★ hoặc E.G.O chưa sở hữu. Quầy đổi có cả Standard, Seasonal và Event nhưng không cho đổi Walpurgis. Kết quả trùng vẫn được lưu thành số bản sao trong collection.
