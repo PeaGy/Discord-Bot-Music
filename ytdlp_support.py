@@ -67,9 +67,65 @@ def should_use_long_audio_temp(
 
 
 def is_transient_ytdlp_error(error: BaseException) -> bool:
-    """Recognize network/proxy failures worth one fresh metadata attempt."""
-    message = str(error or "").casefold()
-    return any(marker in message for marker in _TRANSIENT_YTDLP_ERROR_MARKERS)
+    """Recognize network/proxy failures worth one fresh metadata attempt.
+
+    Download helpers wrap the original yt-dlp exception so callers can present a
+    friendlier error.  Walk that exception chain as well; otherwise a bot-check
+    hidden behind ``AudioDownloadError`` would never reach the source fallback.
+    """
+    current = error
+    seen = set()
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        message = str(current or "").casefold()
+        if any(marker in message for marker in _TRANSIENT_YTDLP_ERROR_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def soundcloud_fallback_enabled() -> bool:
+    """Return whether automatic YouTube -> SoundCloud rescue is enabled."""
+    return os.getenv("YTDLP_SOUNDCLOUD_FALLBACK", "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def soundcloud_fallback_ttl_seconds() -> int:
+    """Return the bounded lifetime of an in-memory matched-track hint."""
+    raw_value = os.getenv("YTDLP_SOUNDCLOUD_FALLBACK_TTL_SECONDS", "1800")
+    try:
+        return max(60, min(int(raw_value), 6 * 60 * 60))
+    except (TypeError, ValueError):
+        return 1800
+
+
+def soundcloud_fallback_timeout_seconds() -> float:
+    """Return the maximum time playback may wait for a fallback match."""
+    raw_value = os.getenv("YTDLP_SOUNDCLOUD_FALLBACK_TIMEOUT_SECONDS", "20")
+    try:
+        return max(5.0, min(float(raw_value), 60.0))
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def soundcloud_ydl_options(base: dict | None = None) -> dict:
+    """Build yt-dlp options for a directly streamed SoundCloud fallback.
+
+    This path intentionally does not inherit ``YTDLP_PROXY`` or YouTube-only
+    extractor arguments.  FFmpeg consumes the returned CDN URL directly, so
+    resolving it through a different proxy egress could make the URL unusable.
+    """
+    options = dict(base or {})
+    options.pop("proxy", None)
+    options.pop("extractor_args", None)
+    options.pop("cookiefile", None)
+    return options
 
 
 def ydl_options_for_player_client(options: dict, player_client: str | None) -> dict:

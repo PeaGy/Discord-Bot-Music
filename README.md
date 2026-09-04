@@ -15,6 +15,7 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 - Queue nâng cao, lịch sử nghe, favorites, playlist cá nhân/chia sẻ, `/stats` và `/wrapped` được lưu bằng SQLite.
 - Lyrics từ LRCLIB, radio internet, chế độ 24/7, sleep timer và tự rời voice khi không hoạt động.
 - Preload bài kế tiếp, cache âm thanh và chuẩn hóa khoảng `-16 LUFS`; radio hoặc bài dài được stream trực tiếp.
+- Có thể bật SoundCloud fallback cho bot-check/403/429 của YouTube. Peto đối chiếu tên bài, nghệ sĩ và thời lượng rồi stream trực tiếp nguồn dự phòng, không tạo thêm cache SoundCloud.
 
 ### ⬇️Tải media
 
@@ -267,7 +268,7 @@ Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không 
 - **Không nhận `ffmpeg`:** mở terminal mới và chạy `ffmpeg -version`.
 - **AI chưa đăng nhập:** chạy `python -m xai_oauth login` rồi `python -m xai_oauth status`.
 - **OAuth 403/429:** kiểm tra gói/quota SuperGrok hoặc dùng `XAI_API_KEY` dự phòng.
-- **YouTube lỗi:** bot tự thử lại bằng client kế tiếp trong `YTDLP_YOUTUBE_CLIENT`; nếu cả hai lần đều lỗi, kiểm tra WARP/BgUtils rồi chạy lại `pip install -r requirements.txt` và làm mới `cookies.txt` khi thật sự dùng cookie.
+- **YouTube lỗi:** bot tự thử lại bằng client kế tiếp trong `YTDLP_YOUTUBE_CLIENT`; có thể đặt `YTDLP_SOUNDCLOUD_FALLBACK=true` để stream bản SoundCloud đủ khớp khi cả hai lượt vẫn gặp bot-check/403/429. Nếu không có bản phù hợp, kiểm tra WARP/BgUtils rồi chạy lại `pip install -r requirements.txt` và làm mới `cookies.txt` khi thật sự dùng cookie.
 - **TikTok extractor lỗi:** cập nhật `yt-dlp`; bot tự thử TikWM khi nguồn chính thất bại.
 - **Không thấy slash command:** kiểm tra scope `applications.commands`, quyền bot và log đồng bộ lệnh.
 - **Discord báo reconnect rồi `RESUMED`:** thường là lỗi mạng tạm thời, không phải bot crash.

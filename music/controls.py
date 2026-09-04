@@ -647,6 +647,13 @@ class MusicControl(discord.ui.LayoutView):
         source_type = str(self.track.get("source") or "").lower()
         track_url = self.track.get("url")
 
+        if self.track.get("stream_only"):
+            return await interaction.response.send_message(
+                "ℹ️ Bài này đang phát trực tiếp từ nguồn dự phòng nên Peto "
+                "không tạo cache hoặc file MP3.",
+                ephemeral=True,
+            )
+
         try:
             duration = int(self.track.get("duration") or 0)
         except (TypeError, ValueError):
@@ -756,8 +763,13 @@ class MusicControl(discord.ui.LayoutView):
         if requester_mention is not None:
             self.requester_mention = requester_mention
 
-        platform = self.track.get('source', 'youtube').lower()
-        platform_name = platform.capitalize()
+        fallback_platform = str(self.track.get("fallback_source") or "").lower()
+        platform = fallback_platform or self.track.get('source', 'youtube').lower()
+        platform_name = (
+            "SoundCloud dự phòng"
+            if fallback_platform == "soundcloud"
+            else platform.capitalize()
+        )
         emoji = self.get_platform_emoji(platform)
         author = _safe_text(self.track.get("author"), "Unknown Artist")
         duration = self.track.get('duration', 0)

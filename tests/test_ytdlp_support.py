@@ -8,6 +8,10 @@ from ytdlp_support import (
     extract_info_with_retry,
     is_transient_ytdlp_error,
     should_use_long_audio_temp,
+    soundcloud_fallback_enabled,
+    soundcloud_fallback_timeout_seconds,
+    soundcloud_fallback_ttl_seconds,
+    soundcloud_ydl_options,
     ydl_options_for_player_client,
     youtube_player_clients,
     youtube_proxy_enabled,
@@ -170,6 +174,58 @@ class YoutubeMetadataRetryTests(unittest.TestCase):
                 RuntimeError("Sign in to confirm you’re not a bot")
             )
         )
+
+    def test_wrapped_transient_error_is_recognized(self):
+        try:
+            try:
+                raise RuntimeError("HTTP Error 403: Forbidden")
+            except RuntimeError as original:
+                raise ValueError("Không tải được audio") from original
+        except ValueError as wrapped:
+            self.assertTrue(is_transient_ytdlp_error(wrapped))
+
+
+class SoundCloudFallbackOptionsTests(unittest.TestCase):
+    def test_fallback_is_opt_in(self):
+        with patch.dict(os.environ, {"YTDLP_SOUNDCLOUD_FALLBACK": ""}):
+            self.assertFalse(soundcloud_fallback_enabled())
+        with patch.dict(os.environ, {"YTDLP_SOUNDCLOUD_FALLBACK": "true"}):
+            self.assertTrue(soundcloud_fallback_enabled())
+
+    def test_ttl_is_bounded(self):
+        with patch.dict(
+            os.environ,
+            {"YTDLP_SOUNDCLOUD_FALLBACK_TTL_SECONDS": "10"},
+        ):
+            self.assertEqual(soundcloud_fallback_ttl_seconds(), 60)
+        with patch.dict(
+            os.environ,
+            {"YTDLP_SOUNDCLOUD_FALLBACK_TTL_SECONDS": "invalid"},
+        ):
+            self.assertEqual(soundcloud_fallback_ttl_seconds(), 1800)
+
+    def test_timeout_is_bounded(self):
+        with patch.dict(
+            os.environ,
+            {"YTDLP_SOUNDCLOUD_FALLBACK_TIMEOUT_SECONDS": "2"},
+        ):
+            self.assertEqual(soundcloud_fallback_timeout_seconds(), 5.0)
+        with patch.dict(
+            os.environ,
+            {"YTDLP_SOUNDCLOUD_FALLBACK_TIMEOUT_SECONDS": "invalid"},
+        ):
+            self.assertEqual(soundcloud_fallback_timeout_seconds(), 20.0)
+
+    def test_soundcloud_stream_does_not_inherit_youtube_proxy(self):
+        result = soundcloud_ydl_options(
+            {
+                "quiet": True,
+                "proxy": "socks5://127.0.0.1:40000",
+                "cookiefile": "cookies.txt",
+                "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+            }
+        )
+        self.assertEqual(result, {"quiet": True})
 
 
 if __name__ == "__main__":
