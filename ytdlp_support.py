@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import os
 from pathlib import Path
@@ -71,6 +72,19 @@ def is_transient_ytdlp_error(error: BaseException) -> bool:
     return any(marker in message for marker in _TRANSIENT_YTDLP_ERROR_MARKERS)
 
 
+def ydl_options_for_player_client(options: dict, player_client: str | None) -> dict:
+    """Return an isolated option set that forces one YouTube client."""
+    attempt_options = copy.deepcopy(options)
+    if not player_client:
+        return attempt_options
+    extractor_args = dict(attempt_options.get("extractor_args") or {})
+    youtube_args = dict(extractor_args.get("youtube") or {})
+    youtube_args["player_client"] = [str(player_client)]
+    extractor_args["youtube"] = youtube_args
+    attempt_options["extractor_args"] = extractor_args
+    return attempt_options
+
+
 def extract_info_with_retry(
     query: str,
     options: dict,
@@ -79,24 +93,45 @@ def extract_info_with_retry(
     attempts: int = 2,
     retry_delay: float = 5.0,
 ):
-    """Extract metadata using a fresh YoutubeDL session after transient failures."""
+    """Extract metadata in fresh sessions and rotate configured YouTube clients."""
     import yt_dlp
 
     attempts = max(1, int(attempts))
+    clients = youtube_player_clients()
     last_error = None
     for attempt in range(1, attempts + 1):
+        client = clients[min(attempt - 1, len(clients) - 1)] if clients else None
+        attempt_options = ydl_options_for_player_client(options, client)
         try:
-            with yt_dlp.YoutubeDL(dict(options)) as ydl:
+            logger.debug(
+                "yt-dlp phase=metadata attempt=%s/%s client=%s",
+                attempt,
+                attempts,
+                client or "auto",
+            )
+            with yt_dlp.YoutubeDL(attempt_options) as ydl:
                 return ydl.extract_info(query, download=download)
         except Exception as error:
             last_error = error
-            if attempt >= attempts or not is_transient_ytdlp_error(error):
+            next_client = (
+                clients[min(attempt, len(clients) - 1)]
+                if clients and attempt < attempts
+                else None
+            )
+            switching_client = bool(next_client and next_client != client)
+            if (
+                attempt >= attempts
+                or (not switching_client and not is_transient_ytdlp_error(error))
+            ):
                 raise
             logger.warning(
-                "yt-dlp metadata lỗi tạm thời (lần %s/%s): %s — thử lại sau %.1fs",
+                "yt-dlp phase=metadata lỗi (lần %s/%s, client=%s): %s "
+                "— thử lại client=%s sau %.1fs",
                 attempt,
                 attempts,
+                client or "auto",
                 error,
+                next_client or client or "auto",
                 retry_delay,
             )
             time.sleep(max(0.0, float(retry_delay)))

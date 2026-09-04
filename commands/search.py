@@ -57,6 +57,7 @@ class SearchSelect(discord.ui.Select):
 
         selected_index = int(self.values[0])
         selected_track = self.entries[selected_index]
+        from music.player import _youtube_entry_url, play_next
         
         # Cố gắng lấy thumbnail nếu có
         thumb = None
@@ -66,7 +67,7 @@ class SearchSelect(discord.ui.Select):
         song = {
             "title": selected_track.get("title"),
             "author": selected_track.get("uploader", "Unknown"),
-            "url": selected_track.get("url") or selected_track.get("webpage_url"),
+            "url": _youtube_entry_url(selected_track),
             "duration": selected_track.get("duration"),
             "thumbnail": thumb, 
             "requester": interaction.user,
@@ -79,7 +80,6 @@ class SearchSelect(discord.ui.Select):
         except discord.HTTPException:
             pass
 
-        from music.player import play_next
         from music.state import get_guild_state
 
         queue = get_guild_state(interaction.guild).queue

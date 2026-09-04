@@ -60,5 +60,75 @@ class LongAudioDurationTests(unittest.IsolatedAsyncioTestCase):
             )
 
 
+class ShortAudioDownloadRetryTests(unittest.TestCase):
+    def test_transient_failure_rotates_to_next_client(self):
+        state = {"calls": 0, "clients": []}
+
+        class FakeYoutubeDL:
+            def __init__(self, options):
+                state["clients"].append(
+                    options["extractor_args"]["youtube"]["player_client"]
+                )
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def extract_info(self, _url, *, download):
+                self.assert_download = download
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    raise RuntimeError("HTTP Error 403: Forbidden")
+                return {"id": "video-id"}
+
+            @staticmethod
+            def prepare_filename(_info):
+                return "audio.webm"
+
+        with patch.object(
+            cache_manager, "youtube_player_clients", return_value=("web_embedded", "mweb")
+        ):
+            with patch.object(cache_manager.yt_dlp, "YoutubeDL", FakeYoutubeDL):
+                with patch.object(cache_manager.time, "sleep") as mocked_sleep:
+                    path = cache_manager.download_raw_sync(
+                        "https://www.youtube.com/watch?v=video-id",
+                        "audio.%(ext)s",
+                    )
+
+        self.assertEqual(path, "audio.webm")
+        self.assertEqual(state["calls"], 2)
+        self.assertEqual(state["clients"], [["web_embedded"], ["mweb"]])
+        mocked_sleep.assert_called_once_with(3)
+
+    def test_home_route_keeps_one_automatic_attempt(self):
+        state = {"calls": 0}
+
+        class FailingYoutubeDL:
+            def __init__(self, _options):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def extract_info(self, _url, *, download):
+                state["calls"] += 1
+                raise RuntimeError("HTTP Error 403: Forbidden")
+
+        with patch.object(cache_manager, "youtube_player_clients", return_value=()):
+            with patch.object(cache_manager.yt_dlp, "YoutubeDL", FailingYoutubeDL):
+                with self.assertRaises(RuntimeError):
+                    cache_manager.download_raw_sync(
+                        "https://www.youtube.com/watch?v=video-id",
+                        "audio.%(ext)s",
+                    )
+
+        self.assertEqual(state["calls"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

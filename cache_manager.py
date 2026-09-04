@@ -12,7 +12,12 @@ from contextlib import asynccontextmanager
 
 import yt_dlp
 import discord
-from ytdlp_support import youtube_player_clients, youtube_ydl_options
+from ytdlp_support import (
+    is_transient_ytdlp_error,
+    ydl_options_for_player_client,
+    youtube_player_clients,
+    youtube_ydl_options,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -167,12 +172,7 @@ def _download_long_audio_sync(url, player_client=None):
         "fragment_retries": 2,
         "max_filesize": LONG_AUDIO_TEMP_MAX_BYTES,
     })
-    if player_client:
-        extractor_args = dict(ydl_opts.get("extractor_args") or {})
-        youtube_args = dict(extractor_args.get("youtube") or {})
-        youtube_args["player_client"] = [player_client]
-        extractor_args["youtube"] = youtube_args
-        ydl_opts["extractor_args"] = extractor_args
+    ydl_opts = ydl_options_for_player_client(ydl_opts, player_client)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -285,20 +285,68 @@ def download_raw_sync(url, raw_outtmpl):
     FFmpegExtractAudio để ép ngay về MP3 128k lúc tải -> bị encode lossy chồng
     lossy 2 lần. Giờ chỉ transcode ĐÚNG MỘT LẦN ở normalize_and_encode_sync().
     """
-    ydl_opts = youtube_ydl_options({
+    base_options = youtube_ydl_options({
         "format": "bestaudio/best",
         "outtmpl": raw_outtmpl,
         "quiet": True,
+        "noprogress": True,
         "noplaylist": True,
         "nocheckcertificate": True,
+        "continuedl": True,
+        "retries": 2,
+        "fragment_retries": 2,
     })
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        if "entries" in info:
-            info = info["entries"][0]
-        # yt-dlp có thể chọn extension thật khác với %(ext)s dự kiến ban đầu
-        # -> luôn lấy tên file thật qua prepare_filename()
-        return ydl.prepare_filename(info)
+    clients = youtube_player_clients()
+    if clients:
+        attempt_clients = clients[:2]
+        if len(attempt_clients) == 1:
+            attempt_clients = (attempt_clients[0], attempt_clients[0])
+    else:
+        # Preserve the old home-PC behavior: one automatic-client download.
+        attempt_clients = (None,)
+
+    last_error = None
+    for attempt, client in enumerate(attempt_clients, start=1):
+        options = ydl_options_for_player_client(base_options, client)
+        try:
+            logger.info(
+                "yt-dlp phase=short-download attempt=%s/%s client=%s url=%s",
+                attempt,
+                len(attempt_clients),
+                client or "auto",
+                url,
+            )
+            with yt_dlp.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if "entries" in info:
+                    info = next((entry for entry in info["entries"] if entry), None)
+                if not info:
+                    raise AudioDownloadError("yt-dlp không trả về thông tin audio.")
+                # yt-dlp có thể chọn extension thật khác với %(ext)s dự kiến
+                # -> luôn lấy tên file thật qua prepare_filename().
+                return ydl.prepare_filename(info)
+        except Exception as error:
+            last_error = error
+            prefix = raw_outtmpl.split("%", 1)[0]
+            _remove_long_audio_bundle(prefix)
+            if attempt >= len(attempt_clients):
+                raise
+            next_client = attempt_clients[attempt]
+            switching_client = next_client != client
+            if not switching_client and not is_transient_ytdlp_error(error):
+                raise
+            logger.warning(
+                "yt-dlp phase=short-download lỗi (lần %s/%s, client=%s): %s "
+                "— thử lại client=%s sau 3s",
+                attempt,
+                len(attempt_clients),
+                client or "auto",
+                error,
+                next_client or "auto",
+            )
+            time.sleep(3)
+
+    raise AudioDownloadError("Không tải được audio để tạo cache.") from last_error
 
 
 def measure_loudness_sync(filepath):

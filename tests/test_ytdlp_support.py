@@ -8,6 +8,7 @@ from ytdlp_support import (
     extract_info_with_retry,
     is_transient_ytdlp_error,
     should_use_long_audio_temp,
+    ydl_options_for_player_client,
     youtube_player_clients,
     youtube_proxy_enabled,
     youtube_ydl_options,
@@ -96,14 +97,36 @@ class YoutubeYdlOptionsTests(unittest.TestCase):
             {"player_client": ["web_embedded", "mweb"]},
         )
 
+    def test_single_client_option_does_not_mutate_base_options(self):
+        base = {
+            "quiet": True,
+            "extractor_args": {
+                "youtube": {"player_client": ["web_embedded", "mweb"]},
+                "provider": {"url": ["http://127.0.0.1"]},
+            },
+        }
+        result = ydl_options_for_player_client(base, "mweb")
+
+        self.assertEqual(
+            result["extractor_args"]["youtube"]["player_client"],
+            ["mweb"],
+        )
+        self.assertEqual(
+            base["extractor_args"]["youtube"]["player_client"],
+            ["web_embedded", "mweb"],
+        )
+
 
 class YoutubeMetadataRetryTests(unittest.TestCase):
     def test_transient_403_uses_a_fresh_session(self):
-        state = {"sessions": 0, "calls": 0}
+        state = {"sessions": 0, "calls": 0, "clients": []}
 
         class FakeYoutubeDL:
-            def __init__(self, _options):
+            def __init__(self, options):
                 state["sessions"] += 1
+                state["clients"].append(
+                    options["extractor_args"]["youtube"]["player_client"]
+                )
 
             def __enter__(self):
                 return self
@@ -118,16 +141,23 @@ class YoutubeMetadataRetryTests(unittest.TestCase):
                 return {"query": query, "download": download}
 
         fake_module = types.SimpleNamespace(YoutubeDL=FakeYoutubeDL)
-        with patch.dict(sys.modules, {"yt_dlp": fake_module}):
-            with patch("ytdlp_support.time.sleep") as mocked_sleep:
-                result = extract_info_with_retry(
-                    "ytsearch1:Heat Waves",
-                    {"quiet": True},
-                    retry_delay=2,
-                )
+        env = {
+            "YTDLP_BGUTIL_URL": "http://127.0.0.1:4416",
+            "YTDLP_YOUTUBE_CLIENT": "web_embedded,mweb",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch.dict(sys.modules, {"yt_dlp": fake_module}):
+                with patch("ytdlp_support.time.sleep") as mocked_sleep:
+                    result = extract_info_with_retry(
+                        "ytsearch1:Heat Waves",
+                        {"quiet": True},
+                        retry_delay=2,
+                    )
 
         self.assertEqual(result["query"], "ytsearch1:Heat Waves")
-        self.assertEqual(state, {"sessions": 2, "calls": 2})
+        self.assertEqual(state["sessions"], 2)
+        self.assertEqual(state["calls"], 2)
+        self.assertEqual(state["clients"], [["web_embedded"], ["mweb"]])
         mocked_sleep.assert_called_once_with(2.0)
 
     def test_non_network_error_is_not_retried(self):

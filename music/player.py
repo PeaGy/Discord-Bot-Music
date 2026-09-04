@@ -162,6 +162,37 @@ def build_autoplay_query(song: dict) -> str:
 
     return " ".join(keywords)
 
+
+def _is_youtube_page_url(value: object) -> bool:
+    url = str(value or "").strip().casefold()
+    return bool(
+        "youtube.com/watch" in url
+        or "youtube.com/shorts/" in url
+        or "youtu.be/" in url
+    )
+
+
+def _needs_stream_lookup(song: dict, *, use_direct_stream: bool) -> bool:
+    """Only resolve a stream URL when the selected playback path needs one."""
+    if use_direct_stream or song.get("source") == "spotify":
+        return True
+    if song.get("source") == "youtube":
+        return not _is_youtube_page_url(song.get("url"))
+    return False
+
+
+def _youtube_entry_url(entry: dict) -> str | None:
+    webpage_url = entry.get("webpage_url")
+    if webpage_url:
+        return webpage_url
+    video_id = str(entry.get("id") or "").strip()
+    if len(video_id) == 11:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    raw_url = str(entry.get("url") or "").strip()
+    if len(raw_url) == 11 and "/" not in raw_url:
+        return f"https://www.youtube.com/watch?v={raw_url}"
+    return raw_url or None
+
 async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
     import re
 
@@ -231,7 +262,7 @@ async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
             next_song = {
                 "title": picked.get("title"),
                 "author": picked.get("uploader") or picked.get("channel") or "Unknown",
-                "url": picked.get("url") or picked.get("webpage_url"),
+                "url": _youtube_entry_url(picked),
                 "duration": picked.get("duration"),
                 "thumbnail": thumb,
                 "requester": None,
@@ -399,7 +430,19 @@ async def _play_next_locked(
     song = queue.popleft()
     requester = song.get("requester")
 
-    # LẤY URL STREAM KHÔNG BỊ BLOCK LOOP
+    duration = int(song.get("duration") or 0)
+    is_radio = song.get("source") == "radio"
+    is_too_long = duration > 600
+    use_long_temp_file = should_use_long_audio_temp(
+        duration,
+        is_radio=is_radio,
+    )
+    use_direct_stream = is_radio or (is_too_long and not use_long_temp_file)
+    source = song["url"]
+
+    # Cache/file-temp paths let yt-dlp download from the canonical page URL
+    # directly.  Resolving a signed stream first would duplicate YouTube player
+    # requests and that URL would be discarded immediately afterwards.
     def extract_stream():
         query = song.get("search_query") or song["url"]
         if song.get("source") == "spotify" and not query.startswith("ytsearch"):
@@ -410,23 +453,29 @@ async def _play_next_locked(
             info = next((entry for entry in info["entries"] if entry), None)
         return info
 
-    loop = bot.loop
-    try:
-        info = await loop.run_in_executor(None, extract_stream)
-        if not info or not info.get("url"):
-            raise ValueError("yt-dlp không trả về stream URL")
-        source = info["url"]
-    except Exception as error:
-        logger.warning(
-            "Không lấy được stream, bỏ qua bài %r (guild=%s): %s",
-            song.get("title", "Unknown"),
-            vc.guild.id,
-            error,
-        )
-        return await _play_next_locked(bot, vc, channel, state)
-
-    if "webpage_url" in info:
-        song["url"] = info["webpage_url"]
+    if _needs_stream_lookup(song, use_direct_stream=use_direct_stream):
+        loop = bot.loop
+        try:
+            logger.info(
+                "yt-dlp phase=stream-metadata title=%r guild=%s",
+                song.get("title", "Unknown"),
+                vc.guild.id,
+            )
+            info = await loop.run_in_executor(None, extract_stream)
+            if not info or not info.get("url"):
+                raise ValueError("yt-dlp không trả về stream URL")
+            source = info["url"]
+            if info.get("webpage_url"):
+                song["url"] = info["webpage_url"]
+        except Exception as error:
+            logger.warning(
+                "yt-dlp phase=stream-metadata thất bại, bỏ qua bài %r "
+                "(guild=%s): %s",
+                song.get("title", "Unknown"),
+                vc.guild.id,
+                error,
+            )
+            return await _play_next_locked(bot, vc, channel, state)
 
     # ==============================
     # AFTER PLAYING CALLBACK
@@ -504,16 +553,6 @@ async def _play_next_locked(
                 action="phát bài kế tiếp",
             )
 # ▶️ PLAY AUDIO
-    # Lấy duration an toàn, thêm điều kiện > 10 phút (600 giây)
-    duration = int(song.get("duration") or 0)
-    is_radio = song.get("source") == "radio"
-    is_too_long = duration > 600
-    use_long_temp_file = should_use_long_audio_temp(
-        duration,
-        is_radio=is_radio,
-    )
-    use_direct_stream = is_radio or (is_too_long and not use_long_temp_file)
-
     # ==============================
     # LOADING PANEL V2 (hiện ngay trong lúc tải/cache/normalize nhạc)
     # ==============================
