@@ -1,8 +1,6 @@
-# 🎶Tracen Jukebox
+# 🎶Peto Bot
 
 Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tải media, trợ lý AI, kiến thức Limbus Company và tìm ảnh Danbooru.
-
-> Dự án phát triển từ mã nguồn liên quan đến Ryuz-V/Eva Music Bot và đã được chỉnh sửa đáng kể cho nhu cầu sử dụng riêng.
 
 Bạn không thể tự host? mời bot về server của bạn 👉 [Add Pearto to your server](https://discord.com/oauth2/authorize?scope=bot&client_id=1516709319108726944&permissions=92224)
 
@@ -30,7 +28,7 @@ Bạn không thể tự host? mời bot về server của bạn 👉 [Add Pearto
 
 ### 🔗Social Embed
 
-  Cần quyền **Manage Messages** trong kênh.
+Cần quyền **Manage Messages** trong kênh.
 - Pixiv được dựng thành card riêng gồm tiêu đề, tác giả, mô tả, ảnh, lượt thích/lưu/xem và ngày đăng; không dùng `phixiv`. Ugoira được tải từ Pixiv.
 - X/Twitter dùng FxTwitter API để dựng bài ảnh/text; bài có video dùng `fxtwitter.com`. Instagram dùng `vxinstagram.com` để Discord phát media tốt hơn.
 
@@ -74,7 +72,7 @@ Bạn không thể tự host? mời bot về server của bạn 👉 [Add Pearto
 
 - Scheduler UTC cho NIKKE, Blue Archive, Trickcal: Chibi Go, Chaos Zero Nightmare, Limbus Company và Brown Dust 2; từng game có thể bật/tắt, đổi giờ, kênh và role riêng trong `.env`.
 - Riêng Limbus chỉ nhắc Mirror Dungeon Reset vào Thứ Năm hằng tuần (06:00 KST), thay vì gửi checklist mỗi ngày.
-- Mỗi server tự chọn kênh/role và bật từng game bằng `/settings notifications`; người cấu hình cần quyền **Manage Server**.
+- Mỗi server tự chọn kênh/role và bật từng game bằng `/settings notifications`.
 - Cấu hình channel/role cũ trong `.env` được nhập một lần cho server hiện tại; sau đó chỉnh bằng `/settings`.
 - Gửi cảnh báo trước reset và checklist tiếng Việt khi reset; role chỉ được ping ở thông báo reset thật.
 - Thành viên tự đăng ký/tắt DM bằng `/dailyreset subscribe`, `/dailyreset unsubscribe` hoặc nút dưới card reset.
@@ -285,8 +283,6 @@ Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không 
 ## 🤝Ghi nhận
 
 - Ryuz-V
-- Eva Music Bot
-- Lara Bot
 - rapi-bot - mascarell
   
 ## 📄 License

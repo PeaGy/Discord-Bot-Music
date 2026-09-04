@@ -58,7 +58,7 @@ def build_embed(
         color=EMBED_COLOR,
     )
     embed.set_image(url=HELP_IMAGE_URL)
-    footer = "Tracen Jukebox • Chọn danh mục bên dưới để xem thêm"
+    footer = "Pearto • Chọn danh mục bên dưới để xem thêm"
     if page_count > 1:
         footer += f" • Trang {page + 1}/{page_count}"
     embed.set_footer(text=footer)
@@ -91,7 +91,7 @@ class HelpDropdown(discord.ui.View):
         interaction: discord.Interaction,
         embed: discord.Embed,
     ) -> None:
-        self.current_title = str(embed.title or "Tracen Jukebox Help")
+        self.current_title = str(embed.title or "Pearto Help")
         self.current_pages = split_help_description(str(embed.description or ""))
         self.current_page = 0
         self._update_page_buttons()
@@ -136,19 +136,19 @@ class HelpDropdown(discord.ui.View):
         options=[
             discord.SelectOption(
                 label="Giới thiệu",
-                description="Tổng quan về Tracen Jukebox",
+                description="Tổng quan về Pearto",
                 emoji="📢",
                 value="info",
             ),
             discord.SelectOption(
                 label="Lệnh âm nhạc",
-                description="Các lệnh phát nhạc và điều khiển voice",
+                description="Các lệnh phát nhạc",
                 emoji="🎵",
                 value="commands",
             ),
             discord.SelectOption(
                 label="Art & AI",
-                description="Danbooru, Grok và bộ nhớ Peto",
+                description="Danbooru, AI và bộ nhớ Peto",
                 emoji="🎨",
                 value="art_ai",
             ),
@@ -175,7 +175,7 @@ class HelpDropdown(discord.ui.View):
 
         if value == "info":
             embed = build_embed(
-                "📢 Giới thiệu Tracen Jukebox",
+                "📢 Giới thiệu Pearto",
                 (
                     "Bot âm nhạc, hình ảnh và trò chuyện AI dành cho server của bạn.\n\n"
                     "✨ **Tính năng nổi bật**\n"
@@ -197,7 +197,7 @@ class HelpDropdown(discord.ui.View):
 
         elif value == "commands":
             embed = build_embed(
-                "🎵 Lệnh âm nhạc & voice",
+                "🎵 Lệnh âm nhạc",
                 (
                     "**Phát và quản lý hàng đợi**\n"
                     "`/play <query>` — Phát nhạc từ từ khóa hoặc URL\n"
@@ -422,13 +422,13 @@ class Help(commands.Cog):
 
     @app_commands.command(
         name="help",
-        description="Mở bảng hướng dẫn sử dụng Tracen Jukebox",
+        description="Mở bảng hướng dẫn sử dụng Pearto",
     )
     async def help(self, interaction: discord.Interaction):
         embed = build_embed(
-            "🍐 Tracen Jukebox Help Panel",
+            "🍐 Pearto Help Panel",
             (
-                "Tracen Jukebox kết hợp phát nhạc chất lượng cao, radio internet, "
+                "Pearto kết hợp phát nhạc chất lượng cao, radio internet, "
                 "anime art và trợ lý AI Peto sẵn sàng trò chuyện cùng bạn.\n\n"
                 "**Danh mục trợ giúp**\n"
                 "📢 **Giới thiệu** — Tổng quan tính năng và công nghệ\n"
