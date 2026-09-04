@@ -4,28 +4,29 @@ Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tả
 
 > Dự án phát triển từ mã nguồn liên quan đến Ryuz-V/Eva Music Bot và đã được chỉnh sửa đáng kể cho nhu cầu sử dụng riêng.
 
+Bạn không thể tự host? mời bot về server của bạn 👉 [Add Pearto to your server](https://discord.com/oauth2/authorize?scope=bot&client_id=1516709319108726944&permissions=92224)
+
 [![License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
 
 ## ⚡Tính năng
 
 ### 🎶Nhạc
 
-- Phát từ từ khóa, YouTube, SoundCloud hoặc Spotify track; mỗi server có queue và trạng thái riêng.
+- Phát từ từ khóa, YouTube, SoundCloud hoặc Spotify track.
 - Music Panel Components V2: pause/resume, previous/next, loop track/queue, autoplay, yêu thích, playlist và tải MP3 riêng tư.
 - Queue nâng cao, lịch sử nghe, favorites, playlist cá nhân/chia sẻ, `/stats` và `/wrapped` được lưu bằng SQLite.
-- Lyrics từ LRCLIB, radio internet, chế độ 24/7, sleep timer và tự rời voice khi không hoạt động.
+- Lyrics từ LRCLIB, radio internet, chế độ 24/7, sleep timer.
 - Preload bài kế tiếp, cache âm thanh và chuẩn hóa khoảng `-16 LUFS`; radio hoặc bài dài được stream trực tiếp.
-- Có thể bật SoundCloud fallback cho bot-check/403/429 của YouTube. Peto đối chiếu tên bài, nghệ sĩ và thời lượng rồi stream trực tiếp nguồn dự phòng, không tạo thêm cache SoundCloud.
+- Tự fallback về SoundCloud nếu link Youtube bị lỗi.
 
 ### ⬇️Tải media
 
 - `/download` hỗ trợ YouTube, TikTok và X/Twitter bằng panel riêng tư.
-- YouTube: MP3 chất lượng cao hoặc MP4 theo các mức chất lượng thật sự có; ưu tiên audio original thay vì track lồng tiếng.
+- YouTube: MP3 chất lượng cao hoặc MP4 theo các mức chất lượng thật sự có.
 - TikTok: video MP4 không watermark hoặc toàn bộ ảnh của photo post.
 - X/Twitter: video MP4, tối đa 4 ảnh gốc của bài đăng, hoặc ảnh động dưới dạng GIF thật và MP4 nhẹ hơn.
 - Video công khai dưới 60 phút, không hỗ trợ playlist/livestream/Facebook/Instagram.
 - File nhỏ gửi qua Discord; file lớn có thể đi qua Download Gateway + Cloudflare Tunnel và tự hết hạn sau 2 giờ.
-- Tracker hiển thị giai đoạn, phần trăm, dung lượng, tốc độ và ETA trong lúc xử lý.
 
 ### 🔗Social Embed
 
