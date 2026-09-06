@@ -16,9 +16,11 @@ from ytdlp_support import (
     soundcloud_fallback_ttl_seconds,
     soundcloud_ydl_options,
     ydl_options_for_player_client,
+    youtube_direct_fallback_enabled,
     youtube_player_clients,
     youtube_proxy_enabled,
     youtube_ydl_options,
+    youtube_ydl_routes,
 )
 
 
@@ -42,6 +44,49 @@ class YoutubeYdlOptionsTests(unittest.TestCase):
             {"YTDLP_PROXY": "socks5://127.0.0.1:40000"},
         ):
             self.assertTrue(youtube_proxy_enabled())
+
+    def test_direct_fallback_is_explicitly_opt_in(self):
+        with patch.dict(os.environ, {"YTDLP_YOUTUBE_DIRECT_FALLBACK": ""}):
+            self.assertFalse(youtube_direct_fallback_enabled())
+        with patch.dict(
+            os.environ,
+            {"YTDLP_YOUTUBE_DIRECT_FALLBACK": "true"},
+        ):
+            self.assertTrue(youtube_direct_fallback_enabled())
+
+    def test_direct_route_removes_proxy_and_cookie_without_mutating_primary(self):
+        options = {
+            "proxy": "socks5://127.0.0.1:40000",
+            "cookiefile": "cookies.txt",
+            "quiet": True,
+        }
+        with patch.dict(
+            os.environ,
+            {"YTDLP_YOUTUBE_DIRECT_FALLBACK": "true"},
+        ):
+            routes = youtube_ydl_routes(
+                options,
+                query="https://www.youtube.com/watch?v=test",
+            )
+
+        self.assertEqual([name for name, _ in routes], ["proxy", "direct"])
+        self.assertEqual(routes[0][1]["proxy"], options["proxy"])
+        self.assertEqual(routes[0][1]["cookiefile"], "cookies.txt")
+        self.assertNotIn("proxy", routes[1][1])
+        self.assertNotIn("cookiefile", routes[1][1])
+        self.assertEqual(options["cookiefile"], "cookies.txt")
+
+    def test_non_youtube_url_does_not_get_direct_retry_route(self):
+        with patch.dict(
+            os.environ,
+            {"YTDLP_YOUTUBE_DIRECT_FALLBACK": "true"},
+        ):
+            routes = youtube_ydl_routes(
+                {"proxy": "socks5://127.0.0.1:40000"},
+                query="https://soundcloud.com/artist/track",
+            )
+
+        self.assertEqual([name for name, _ in routes], ["proxy"])
 
     def test_long_audio_temp_only_applies_to_proxied_non_radio_tracks(self):
         with patch.dict(os.environ, {"YTDLP_PROXY": ""}):
@@ -166,6 +211,113 @@ class YoutubeMetadataRetryTests(unittest.TestCase):
         self.assertEqual(state["calls"], 2)
         self.assertEqual(state["clients"], [["web_embedded"], ["mweb"]])
         mocked_sleep.assert_called_once_with(2.0)
+
+    def test_transient_proxy_failure_retries_direct_without_cookie(self):
+        state = {"calls": 0, "proxies": [], "cookies": [], "clients": []}
+
+        class FakeYoutubeDL:
+            def __init__(self, options):
+                state["proxies"].append(options.get("proxy"))
+                state["cookies"].append(options.get("cookiefile"))
+                state["clients"].append(
+                    options["extractor_args"]["youtube"]["player_client"]
+                )
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def extract_info(self, query, *, download):
+                state["calls"] += 1
+                if state["calls"] <= 2:
+                    raise RuntimeError("Sign in to confirm you're not a bot")
+                return {"query": query, "download": download}
+
+        fake_module = types.SimpleNamespace(YoutubeDL=FakeYoutubeDL)
+        env = {
+            "YTDLP_YOUTUBE_DIRECT_FALLBACK": "true",
+            "YTDLP_YOUTUBE_CLIENT": "web_embedded,mweb",
+        }
+        options = {
+            "quiet": True,
+            "proxy": "socks5://127.0.0.1:40000",
+            "cookiefile": "cookies.txt",
+            "extractor_args": {
+                "youtube": {"player_client": ["web_embedded", "mweb"]}
+            },
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch.dict(sys.modules, {"yt_dlp": fake_module}):
+                with patch("ytdlp_support.time.sleep") as mocked_sleep:
+                    result = extract_info_with_retry(
+                        "https://www.youtube.com/watch?v=test",
+                        options,
+                        retry_delay=0,
+                    )
+
+        self.assertEqual(result["query"], "https://www.youtube.com/watch?v=test")
+        self.assertEqual(state["calls"], 3)
+        self.assertEqual(
+            state["proxies"],
+            ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000", None],
+        )
+        self.assertEqual(state["cookies"], ["cookies.txt", "cookies.txt", None])
+        self.assertEqual(
+            state["clients"],
+            [["web_embedded"], ["mweb"], ["web_embedded"]],
+        )
+        self.assertEqual(mocked_sleep.call_count, 2)
+
+    def test_metadata_only_result_continues_until_direct_route_is_playable(self):
+        state = {"proxies": []}
+
+        class FakeYoutubeDL:
+            def __init__(self, options):
+                self.options = options
+                state["proxies"].append(options.get("proxy"))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def extract_info(self, _query, *, download):
+                if self.options.get("proxy"):
+                    return {"title": "Track", "formats": []}
+                return {
+                    "title": "Track",
+                    "formats": [{"url": "https://audio", "acodec": "opus"}],
+                }
+
+        fake_module = types.SimpleNamespace(YoutubeDL=FakeYoutubeDL)
+        env = {
+            "YTDLP_YOUTUBE_DIRECT_FALLBACK": "true",
+            "YTDLP_YOUTUBE_CLIENT": "web_embedded,mweb",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch.dict(sys.modules, {"yt_dlp": fake_module}):
+                result = extract_info_with_retry(
+                    "ytsearch1:Track",
+                    {
+                        "proxy": "socks5://127.0.0.1:40000",
+                        "extractor_args": {
+                            "youtube": {
+                                "player_client": ["web_embedded", "mweb"]
+                            }
+                        },
+                    },
+                    result_validator=lambda info: bool(info.get("formats")),
+                    retry_delay=0,
+                )
+
+        self.assertTrue(result["formats"])
+        self.assertEqual(
+            state["proxies"],
+            ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000", None],
+        )
 
     def test_non_network_error_is_not_retried(self):
         self.assertFalse(is_transient_ytdlp_error(ValueError("no results")))

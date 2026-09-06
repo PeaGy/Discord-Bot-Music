@@ -34,6 +34,16 @@ def youtube_proxy_enabled() -> bool:
     return bool(os.getenv("YTDLP_PROXY", "").strip())
 
 
+def youtube_direct_fallback_enabled() -> bool:
+    """Return whether a failed proxied YouTube request may retry directly."""
+    return os.getenv("YTDLP_YOUTUBE_DIRECT_FALLBACK", "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def youtube_player_clients() -> tuple[str, ...]:
     """Return the ordered YouTube client fallback list for this deployment."""
     configured = os.getenv("YTDLP_YOUTUBE_CLIENT", "").strip().lower()
@@ -171,6 +181,47 @@ def ydl_options_for_player_client(options: dict, player_client: str | None) -> d
     return attempt_options
 
 
+def youtube_ydl_routes(
+    options: dict,
+    *,
+    query: str | None = None,
+) -> tuple[tuple[str, dict], ...]:
+    """Build the bounded YouTube egress order for one operation.
+
+    The normal route keeps ``YTDLP_PROXY`` (WARP on the VPS).  When explicitly
+    enabled, a transient failure gets one second route with the proxy removed,
+    so the request exits through the VPS address.  Cookies are deliberately not
+    copied to that route: public music does not require them, and reusing one
+    account session from two IPs is an unnecessary risk.
+
+    ``extract_info_with_retry`` can also receive a SoundCloud URL, so only add
+    the direct route when its query is recognisably YouTube-backed.
+    """
+    primary = copy.deepcopy(options)
+    primary_name = "proxy" if primary.get("proxy") else "direct"
+    routes = [(primary_name, primary)]
+
+    normalized_query = str(query or "").strip().casefold()
+    is_youtube_query = (
+        not normalized_query
+        or normalized_query.startswith("ytsearch")
+        or "youtube.com" in normalized_query
+        or "youtu.be" in normalized_query
+    )
+    if (
+        primary.get("proxy")
+        and is_youtube_query
+        and youtube_direct_fallback_enabled()
+    ):
+        direct = copy.deepcopy(primary)
+        direct.pop("proxy", None)
+        direct.pop("cookiefile", None)
+        direct.pop("cookiesfrombrowser", None)
+        routes.append(("direct", direct))
+
+    return tuple(routes)
+
+
 def extract_info_with_retry(
     query: str,
     options: dict,
@@ -178,50 +229,102 @@ def extract_info_with_retry(
     download: bool = False,
     attempts: int = 2,
     retry_delay: float = 5.0,
+    result_validator=None,
 ):
-    """Extract metadata in fresh sessions and rotate configured YouTube clients."""
+    """Extract metadata while rotating clients and an optional direct route.
+
+    A validator lets callers treat metadata-only YouTube responses as an
+    unsuccessful attempt without discarding their title/author.  If no attempt
+    becomes usable, the last such response is returned for the external audio
+    fallback to consume.
+    """
     import yt_dlp
 
     attempts = max(1, int(attempts))
     clients = youtube_player_clients()
+    routes = youtube_ydl_routes(options, query=query)
+    attempt_specs = []
+    for route_name, route_options in routes:
+        for attempt_index in range(attempts):
+            client = (
+                clients[min(attempt_index, len(clients) - 1)]
+                if clients
+                else None
+            )
+            attempt_specs.append((route_name, route_options, client))
+
     last_error = None
-    for attempt in range(1, attempts + 1):
-        client = clients[min(attempt - 1, len(clients) - 1)] if clients else None
-        attempt_options = ydl_options_for_player_client(options, client)
+    no_result = object()
+    last_unusable_result = no_result
+    total_attempts = len(attempt_specs)
+    for attempt, (route_name, route_options, client) in enumerate(
+        attempt_specs,
+        start=1,
+    ):
+        attempt_options = ydl_options_for_player_client(route_options, client)
         try:
             logger.debug(
-                "yt-dlp phase=metadata attempt=%s/%s client=%s",
+                "yt-dlp phase=metadata attempt=%s/%s route=%s client=%s",
                 attempt,
-                attempts,
+                total_attempts,
+                route_name,
                 client or "auto",
             )
             with yt_dlp.YoutubeDL(attempt_options) as ydl:
-                return ydl.extract_info(query, download=download)
+                result = ydl.extract_info(query, download=download)
+            if result_validator is None or result_validator(result):
+                if route_name == "direct" and len(routes) > 1:
+                    logger.info(
+                        "YouTube hoạt động qua kết nối trực tiếp sau khi proxy lỗi"
+                    )
+                return result
+
+            last_unusable_result = result
+            if attempt < total_attempts:
+                next_route, _, next_client = attempt_specs[attempt]
+                logger.info(
+                    "yt-dlp phase=metadata không có audio "
+                    "(route=%s, client=%s); thử route=%s client=%s",
+                    route_name,
+                    client or "auto",
+                    next_route,
+                    next_client or "auto",
+                )
         except Exception as error:
             last_error = error
-            next_client = (
-                clients[min(attempt, len(clients) - 1)]
-                if clients and attempt < attempts
-                else None
-            )
-            switching_client = bool(next_client and next_client != client)
-            if (
-                attempt >= attempts
-                or (not switching_client and not is_transient_ytdlp_error(error))
-            ):
+            if attempt >= total_attempts:
+                if last_unusable_result is not no_result:
+                    return last_unusable_result
+                raise
+
+            next_route, _, next_client = attempt_specs[attempt]
+            switching_route = next_route != route_name
+            switching_client = next_client != client
+            transient = is_transient_ytdlp_error(error)
+            if switching_route and not transient:
+                if last_unusable_result is not no_result:
+                    return last_unusable_result
+                raise
+            if not switching_route and not switching_client and not transient:
+                if last_unusable_result is not no_result:
+                    return last_unusable_result
                 raise
             logger.warning(
-                "yt-dlp phase=metadata lỗi (lần %s/%s, client=%s): %s "
-                "— thử lại client=%s sau %.1fs",
+                "yt-dlp phase=metadata lỗi (lần %s/%s, route=%s, client=%s): %s "
+                "— thử lại route=%s client=%s sau %.1fs",
                 attempt,
-                attempts,
+                total_attempts,
+                route_name,
                 client or "auto",
                 error,
+                next_route,
                 next_client or client or "auto",
                 retry_delay,
             )
             time.sleep(max(0.0, float(retry_delay)))
 
+    if last_unusable_result is not no_result:
+        return last_unusable_result
     raise last_error
 
 

@@ -14,6 +14,7 @@ from ytdlp_support import (
     audio_fallback_enabled,
     extract_info_with_retry,
     is_transient_ytdlp_error,
+    youtube_direct_fallback_enabled,
     youtube_ydl_options,
 )
 
@@ -36,6 +37,14 @@ def _has_playable_audio_format(info: dict) -> bool:
     )
 
 
+def _extraction_has_playable_audio(info: dict | None) -> bool:
+    if not info:
+        return False
+    if "entries" in info:
+        info = next((entry for entry in info["entries"] if entry), None)
+    return bool(info and _has_playable_audio_format(info))
+
+
 def _audio_fallback_search_seed(query: str) -> dict:
     """Keep a failed keyword search playable without inventing metadata."""
     return {
@@ -56,11 +65,17 @@ def get_song_info(query: str):
     options = youtube_ydl_options(
         {"format": "bestaudio/best", "quiet": True, "noplaylist": True}
     )
-    if fallback_eligible:
+    direct_fallback_eligible = bool(
+        not is_soundcloud_url(query)
+        and options.get("proxy")
+        and youtube_direct_fallback_enabled()
+    )
+    metadata_tolerant = fallback_eligible or direct_fallback_eligible
+    if metadata_tolerant:
         # A bot-check response often still contains title/author/thumbnail in
         # the initial page data. Keep that metadata even when no audio format is
-        # available so the player can search external providers instead of
-        # rejecting the command before it reaches the queue.
+        # available. The shared retry helper first tries direct VPS egress, then
+        # preserves the metadata for external providers if both routes fail.
         options["ignore_no_formats_error"] = True
     lookup = (
         query
@@ -68,7 +83,14 @@ def get_song_info(query: str):
         else f"ytsearch1:{query}"
     )
     try:
-        info = extract_info_with_retry(lookup, options, download=False)
+        info = extract_info_with_retry(
+            lookup,
+            options,
+            download=False,
+            result_validator=(
+                _extraction_has_playable_audio if metadata_tolerant else None
+            ),
+        )
     except Exception as error:
         # A plain-text query already is useful SoundCloud search metadata. A
         # failed direct YouTube URL is not: never search using only a video ID.
@@ -105,6 +127,8 @@ def get_song_info(query: str):
             "YouTube chỉ trả metadata cho %r; chuyển sang audio fallback",
             song["title"],
         )
+    elif direct_fallback_eligible and not _has_playable_audio_format(info):
+        raise ValueError("YouTube không trả về định dạng audio có thể phát.")
     return song
 
 

@@ -15,7 +15,7 @@ Bạn không thể tự host? mời bot về server của bạn 👉 [Add Pearto
 - Queue nâng cao, lịch sử nghe, favorites, playlist cá nhân/chia sẻ, `/stats` và `/wrapped` được lưu bằng SQLite.
 - Lyrics từ LRCLIB, radio internet, chế độ 24/7, sleep timer.
 - Preload bài kế tiếp, cache âm thanh và chuẩn hóa khoảng `-16 LUFS`; radio hoặc bài dài được stream trực tiếp.
-- Tự fallback về SoundCloud rồi Audius nếu YouTube bị lỗi.
+- Trên VPS có thể thử YouTube qua WARP rồi IP trực tiếp trước khi fallback về SoundCloud/Audius.
 
 ### ⬇️Tải media
 
@@ -267,7 +267,7 @@ Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không 
 - **Không nhận `ffmpeg`:** mở terminal mới và chạy `ffmpeg -version`.
 - **AI chưa đăng nhập:** chạy `python -m xai_oauth login` rồi `python -m xai_oauth status`.
 - **OAuth 403/429:** kiểm tra gói/quota SuperGrok hoặc dùng `XAI_API_KEY` dự phòng.
-- **YouTube lỗi:** bot tự thử lại bằng client kế tiếp trong `YTDLP_YOUTUBE_CLIENT`; đặt `YTDLP_SOUNDCLOUD_FALLBACK=true` để thử SoundCloud và `YTDLP_AUDIUS_FALLBACK=true` để thử tiếp Audius khi gặp bot-check/403/429. Hai nguồn dự phòng chỉ stream trực tiếp, dùng chung `YTDLP_AUDIO_FALLBACK_TIMEOUT_SECONDS` và không tạo audio cache. Nếu vẫn không có bản phù hợp, kiểm tra WARP/BgUtils rồi chạy lại `pip install -r requirements.txt` và làm mới `cookies.txt` khi thật sự dùng cookie.
+- **YouTube lỗi:** bot tự thử client kế tiếp trong `YTDLP_YOUTUBE_CLIENT`. Khi VPS đã dùng WARP qua `YTDLP_PROXY`, đặt `YTDLP_YOUTUBE_DIRECT_FALLBACK=true` để thử lại qua IP trực tiếp của VPS sau bot-check/403/429; tuyến trực tiếp không dùng cookie. Sau đó có thể bật `YTDLP_SOUNDCLOUD_FALLBACK=true` và `YTDLP_AUDIUS_FALLBACK=true`; hai nguồn ngoài YouTube chỉ stream trực tiếp, dùng chung `YTDLP_AUDIO_FALLBACK_TIMEOUT_SECONDS` và không tạo audio cache. Nếu mọi tuyến đều lỗi, kiểm tra WARP/BgUtils rồi cập nhật các gói trong `requirements.txt`.
 - **TikTok extractor lỗi:** cập nhật `yt-dlp`; bot tự thử TikWM khi nguồn chính thất bại.
 - **Không thấy slash command:** kiểm tra scope `applications.commands`, quyền bot và log đồng bộ lệnh.
 - **Discord báo reconnect rồi `RESUMED`:** thường là lỗi mạng tạm thời, không phải bot crash.

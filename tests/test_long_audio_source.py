@@ -129,6 +129,68 @@ class ShortAudioDownloadRetryTests(unittest.TestCase):
 
         self.assertEqual(state["calls"], 1)
 
+    def test_transient_proxy_failures_retry_download_directly(self):
+        state = {"calls": 0, "proxies": [], "cookies": [], "clients": []}
+
+        class FakeYoutubeDL:
+            def __init__(self, options):
+                state["proxies"].append(options.get("proxy"))
+                state["cookies"].append(options.get("cookiefile"))
+                state["clients"].append(
+                    options["extractor_args"]["youtube"]["player_client"]
+                )
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def extract_info(self, _url, *, download):
+                state["calls"] += 1
+                if state["calls"] <= 2:
+                    raise RuntimeError("HTTP Error 403: Forbidden")
+                return {"id": "video-id"}
+
+            @staticmethod
+            def prepare_filename(_info):
+                return "audio.webm"
+
+        env = {
+            "YTDLP_PROXY": "socks5://127.0.0.1:40000",
+            "YTDLP_YOUTUBE_DIRECT_FALLBACK": "true",
+            "YTDLP_COOKIE_FILE": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch.object(
+                cache_manager,
+                "youtube_player_clients",
+                return_value=("web_embedded", "mweb"),
+            ):
+                with patch.object(
+                    cache_manager.yt_dlp,
+                    "YoutubeDL",
+                    FakeYoutubeDL,
+                ):
+                    with patch.object(cache_manager.time, "sleep") as mocked_sleep:
+                        path = cache_manager.download_raw_sync(
+                            "https://www.youtube.com/watch?v=video-id",
+                            "audio.%(ext)s",
+                        )
+
+        self.assertEqual(path, "audio.webm")
+        self.assertEqual(state["calls"], 3)
+        self.assertEqual(
+            state["proxies"],
+            ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000", None],
+        )
+        self.assertEqual(state["cookies"], [None, None, None])
+        self.assertEqual(
+            state["clients"],
+            [["web_embedded"], ["mweb"], ["web_embedded"]],
+        )
+        self.assertEqual(mocked_sleep.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

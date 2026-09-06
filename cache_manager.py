@@ -17,6 +17,7 @@ from ytdlp_support import (
     ydl_options_for_player_client,
     youtube_player_clients,
     youtube_ydl_options,
+    youtube_ydl_routes,
 )
 
 
@@ -155,7 +156,36 @@ def _remove_long_audio_bundle(prefix):
             pass
 
 
-def _download_long_audio_sync(url, player_client=None):
+def _youtube_download_attempt_specs(base_options, url):
+    """Return client attempts for WARP first, then direct VPS egress."""
+    clients = youtube_player_clients()
+    if clients:
+        attempt_clients = clients[:2]
+        if len(attempt_clients) == 1:
+            attempt_clients = (attempt_clients[0], attempt_clients[0])
+    else:
+        # Preserve the old home-PC behavior: one automatic-client attempt.
+        attempt_clients = (None,)
+
+    return tuple(
+        (route_name, route_options, client)
+        for route_name, route_options in youtube_ydl_routes(
+            base_options,
+            query=url,
+        )
+        for client in attempt_clients
+    )
+
+
+def _can_continue_download_attempt(error, current_spec, next_spec):
+    current_route, _, current_client = current_spec
+    next_route, _, next_client = next_spec
+    if next_route != current_route:
+        return is_transient_ytdlp_error(error)
+    return next_client != current_client or is_transient_ytdlp_error(error)
+
+
+def _download_long_audio_sync(url, player_client=None, route_name=None):
     """Download original long-form audio through yt-dlp without normalization."""
     token = uuid.uuid4().hex
     prefix = os.path.join(LONG_AUDIO_TEMP_DIR, f"long_{token}_")
@@ -172,6 +202,9 @@ def _download_long_audio_sync(url, player_client=None):
         "fragment_retries": 2,
         "max_filesize": LONG_AUDIO_TEMP_MAX_BYTES,
     })
+    available_routes = dict(youtube_ydl_routes(ydl_opts, query=url))
+    if route_name in available_routes:
+        ydl_opts = available_routes[route_name]
     ydl_opts = ydl_options_for_player_client(ydl_opts, player_client)
 
     try:
@@ -213,22 +246,29 @@ async def get_long_audio_source(url, duration):
         )
 
     cleanup_stale_long_audio_files()
-    clients = youtube_player_clients()
+    base_options = youtube_ydl_options({})
+    attempt_specs = _youtube_download_attempt_specs(base_options, url)
     last_error = None
-    for attempt in range(1, 3):
+    total_attempts = len(attempt_specs)
+    for attempt, spec in enumerate(attempt_specs, start=1):
+        route_name, _, player_client = spec
         filepath = None
         try:
             logger.info(
-                "Tải audio tạm cho bài dài (lần %s/2, client=%s): %s",
+                "Tải audio tạm cho bài dài "
+                "(lần %s/%s, route=%s, client=%s): %s",
                 attempt,
-                clients[min(attempt - 1, len(clients) - 1)] if clients else "auto",
+                total_attempts,
+                route_name,
+                player_client or "auto",
                 url,
             )
             async with _long_audio_download_semaphore:
                 filepath, codec = await asyncio.to_thread(
                     _download_long_audio_sync,
                     url,
-                    clients[min(attempt - 1, len(clients) - 1)] if clients else None,
+                    player_client,
+                    route_name,
                 )
             ffmpeg_source = discord.FFmpegOpusAudio(
                 filepath,
@@ -253,12 +293,22 @@ async def get_long_audio_source(url, duration):
                 except OSError:
                     pass
             logger.warning(
-                "Không chuẩn bị được audio tạm bài dài (lần %s/2): %s",
+                "Không chuẩn bị được audio tạm bài dài "
+                "(lần %s/%s, route=%s, client=%s): %s",
                 attempt,
+                total_attempts,
+                route_name,
+                player_client or "auto",
                 error,
             )
-            if attempt < 2:
+            if attempt < total_attempts and _can_continue_download_attempt(
+                error,
+                spec,
+                attempt_specs[attempt],
+            ):
                 await asyncio.sleep(3)
+                continue
+            break
 
     raise AudioDownloadError("Không tải được audio tạm cho bài dài.") from last_error
 
@@ -296,23 +346,20 @@ def download_raw_sync(url, raw_outtmpl):
         "retries": 2,
         "fragment_retries": 2,
     })
-    clients = youtube_player_clients()
-    if clients:
-        attempt_clients = clients[:2]
-        if len(attempt_clients) == 1:
-            attempt_clients = (attempt_clients[0], attempt_clients[0])
-    else:
-        # Preserve the old home-PC behavior: one automatic-client download.
-        attempt_clients = (None,)
+    attempt_specs = _youtube_download_attempt_specs(base_options, url)
 
     last_error = None
-    for attempt, client in enumerate(attempt_clients, start=1):
-        options = ydl_options_for_player_client(base_options, client)
+    total_attempts = len(attempt_specs)
+    for attempt, spec in enumerate(attempt_specs, start=1):
+        route_name, route_options, client = spec
+        options = ydl_options_for_player_client(route_options, client)
         try:
             logger.info(
-                "yt-dlp phase=short-download attempt=%s/%s client=%s url=%s",
+                "yt-dlp phase=short-download "
+                "attempt=%s/%s route=%s client=%s url=%s",
                 attempt,
-                len(attempt_clients),
+                total_attempts,
+                route_name,
                 client or "auto",
                 url,
             )
@@ -329,19 +376,22 @@ def download_raw_sync(url, raw_outtmpl):
             last_error = error
             prefix = raw_outtmpl.split("%", 1)[0]
             _remove_long_audio_bundle(prefix)
-            if attempt >= len(attempt_clients):
+            if attempt >= total_attempts:
                 raise
-            next_client = attempt_clients[attempt]
-            switching_client = next_client != client
-            if not switching_client and not is_transient_ytdlp_error(error):
+            next_spec = attempt_specs[attempt]
+            next_route, _, next_client = next_spec
+            if not _can_continue_download_attempt(error, spec, next_spec):
                 raise
             logger.warning(
-                "yt-dlp phase=short-download lỗi (lần %s/%s, client=%s): %s "
-                "— thử lại client=%s sau 3s",
+                "yt-dlp phase=short-download lỗi "
+                "(lần %s/%s, route=%s, client=%s): %s "
+                "— thử lại route=%s client=%s sau 3s",
                 attempt,
-                len(attempt_clients),
+                total_attempts,
+                route_name,
                 client or "auto",
                 error,
+                next_route,
                 next_client or "auto",
             )
             time.sleep(3)
