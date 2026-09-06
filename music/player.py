@@ -426,6 +426,7 @@ async def play_song_by_query(
         (vc.is_playing() or vc.is_paused())
         and len(state.queue) == 1
         and not is_radio
+        and not song.get("youtube_metadata_failed")
         and duration <= 600
     ):
         asyncio.create_task(preload_audio(song["url"], delay=3.0))
@@ -505,11 +506,20 @@ async def _play_next_locked(
     source = song["url"]
     fallback_info = None
 
+    # /play can preserve initial YouTube page metadata even when the extractor
+    # returns no playable formats. This is the earliest failure point, so try
+    # SoundCloud before starting another YouTube download cycle.
+    if song.get("youtube_metadata_failed"):
+        fallback_info = await _try_soundcloud_fallback(song)
+        if fallback_info:
+            source = fallback_info["stream_url"]
+            use_direct_stream = True
+
     # A successful match is remembered briefly in RAM. Replays during that
     # window can skip another doomed YouTube attempt, while the actual expiring
     # SoundCloud CDN URL is always resolved afresh.
     preferred_fallback_url = song.get("fallback_url") or get_cached_soundcloud_page(song)
-    if preferred_fallback_url:
+    if not fallback_info and preferred_fallback_url:
         fallback_info = await _try_soundcloud_fallback(
             song,
             preferred_page_url=preferred_fallback_url,
@@ -548,6 +558,7 @@ async def _play_next_locked(
             source = info["url"]
             if info.get("webpage_url"):
                 song["url"] = info["webpage_url"]
+            song.pop("youtube_metadata_failed", None)
         except Exception as error:
             fallback_info = await _try_soundcloud_fallback(song, error=error)
             if fallback_info:
@@ -687,6 +698,7 @@ async def _play_next_locked(
                 vc.guild.id,
             )
             base_source = await get_audio_source(song['url'])
+            song.pop("youtube_metadata_failed", None)
     except Exception as e:
         # A cached SoundCloud match still gets exactly one fresh CDN resolution.
         # A failing YouTube path searches for a match only for recognized
@@ -770,6 +782,7 @@ async def _play_next_locked(
         if (
             not next_is_radio
             and not next_song.get("stream_only")
+            and not next_song.get("youtube_metadata_failed")
             and next_duration <= 600
         ):
             asyncio.create_task(preload_audio(next_song['url'], delay=3.0))

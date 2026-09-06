@@ -10,7 +10,12 @@ from cache_manager import preload_audio
 from music.player import play_next, start_idle_timer
 from music.spotify import get_spotify_info, is_spotify_url
 from music.state import get_guild_state
-from ytdlp_support import extract_info_with_retry, youtube_ydl_options
+from ytdlp_support import (
+    extract_info_with_retry,
+    is_transient_ytdlp_error,
+    soundcloud_fallback_enabled,
+    youtube_ydl_options,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,21 +29,65 @@ def format_duration(seconds):
     return f"{minutes}:{seconds:02d}"
 
 
+def _has_playable_audio_format(info: dict) -> bool:
+    return any(
+        item.get("url") and str(item.get("acodec") or "").casefold() != "none"
+        for item in info.get("formats") or []
+    )
+
+
+def _soundcloud_search_seed(query: str) -> dict:
+    """Keep a failed keyword search playable without inventing metadata."""
+    return {
+        "title": query.strip(),
+        "author": "Unknown",
+        "duration": 0,
+        "url": query.strip(),
+        "thumbnail": None,
+        "source": "youtube",
+        "youtube_metadata_failed": True,
+    }
+
+
 def get_song_info(query: str):
+    fallback_eligible = (
+        soundcloud_fallback_enabled() and not is_soundcloud_url(query)
+    )
     options = youtube_ydl_options(
         {"format": "bestaudio/best", "quiet": True, "noplaylist": True}
     )
+    if fallback_eligible:
+        # A bot-check response often still contains title/author/thumbnail in
+        # the initial page data. Keep that metadata even when no audio format is
+        # available so the player can search SoundCloud instead of rejecting
+        # the command before it reaches the queue.
+        options["ignore_no_formats_error"] = True
     lookup = (
         query
         if is_soundcloud_url(query) or is_youtube_url(query)
         else f"ytsearch1:{query}"
     )
-    info = extract_info_with_retry(lookup, options, download=False)
-    if "entries" in info:
+    try:
+        info = extract_info_with_retry(lookup, options, download=False)
+    except Exception as error:
+        # A plain-text query already is useful SoundCloud search metadata. A
+        # failed direct YouTube URL is not: never search using only a video ID.
+        if (
+            fallback_eligible
+            and not is_youtube_url(query)
+            and is_transient_ytdlp_error(error)
+        ):
+            logger.info(
+                "YouTube search bị chặn; chuyển query %r vào SoundCloud fallback",
+                query,
+            )
+            return _soundcloud_search_seed(query)
+        raise
+    if info and "entries" in info:
         info = next((entry for entry in info["entries"] if entry), None)
     if not info:
         raise ValueError("Không tìm thấy kết quả phù hợp.")
-    return {
+    song = {
         "title": info["title"],
         "author": (
             info.get("uploader")
@@ -46,10 +95,17 @@ def get_song_info(query: str):
             or info.get("channel", "Unknown")
         ),
         "duration": info.get("duration", 0),
-        "url": info["webpage_url"],
+        "url": info.get("webpage_url") or query,
         "thumbnail": info.get("thumbnail"),
         "source": "soundcloud" if is_soundcloud_url(query) else "youtube",
     }
+    if fallback_eligible and not _has_playable_audio_format(info):
+        song["youtube_metadata_failed"] = True
+        logger.info(
+            "YouTube chỉ trả metadata cho %r; chuyển sang SoundCloud fallback",
+            song["title"],
+        )
+    return song
 
 
 class DuplicateConfirmView(discord.ui.View):
@@ -116,7 +172,12 @@ class Play(commands.Cog):
 
         item = {**song, "requester": interaction.user}
         queue.appendleft(item) if front else queue.append(item)
-        if (vc.is_playing() or vc.is_paused()) and len(queue) == 1 and int(song.get("duration") or 0) <= 600:
+        if (
+            (vc.is_playing() or vc.is_paused())
+            and len(queue) == 1
+            and not song.get("youtube_metadata_failed")
+            and int(song.get("duration") or 0) <= 600
+        ):
             asyncio.create_task(preload_audio(song["url"], delay=3.0))
         embed = discord.Embed(description=f"**{song['title']}** `[{format_duration(song['duration'])}]`")
         embed.set_author(name=f"Đã thêm vào hàng đợi (#{1 if front else len(queue)})", icon_url=interaction.user.display_avatar.url)

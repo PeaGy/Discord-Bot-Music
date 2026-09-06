@@ -1,6 +1,14 @@
+import asyncio
+from collections import deque
+from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
 
-from music.player import _needs_stream_lookup, _youtube_entry_url
+from music.player import (
+    _needs_stream_lookup,
+    _play_next_locked,
+    _youtube_entry_url,
+)
 
 
 class MusicPlayerRouteTests(unittest.TestCase):
@@ -25,6 +33,103 @@ class MusicPlayerRouteTests(unittest.TestCase):
             _youtube_entry_url({"id": "mRD0-GxqHVo", "url": "mRD0-GxqHVo"}),
             "https://www.youtube.com/watch?v=mRD0-GxqHVo",
         )
+
+
+class EarlySoundCloudFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_initial_metadata_streams_fallback_without_cache(self):
+        song = {
+            "title": "Heat Waves",
+            "author": "Glass Animals",
+            "duration": 238,
+            "url": "https://www.youtube.com/watch?v=mRD0-GxqHVo",
+            "source": "youtube",
+            "youtube_metadata_failed": True,
+            "requester": None,
+        }
+        resolved = {
+            "stream_url": "https://cf-media.sndcdn.com/audio.mp3",
+            "webpage_url": "https://soundcloud.com/glassanimals/heat-waves",
+        }
+        state = SimpleNamespace(
+            queue=deque([song]),
+            history=[],
+            text_channel=None,
+            now_playing_message=None,
+            loop_mode="off",
+            autoplay=False,
+        )
+        guild = SimpleNamespace(id=123)
+
+        class DummyVoiceClient:
+            current_volume = 1.0
+
+            def __init__(self):
+                self.guild = guild
+                self.played = None
+
+            def is_connected(self):
+                return True
+
+            def is_playing(self):
+                return False
+
+            def is_paused(self):
+                return False
+
+            def play(self, source, *, after):
+                self.played = (source, after)
+
+        vc = DummyVoiceClient()
+        bot = SimpleNamespace(loop=asyncio.get_running_loop(), user=Mock())
+        base_source = Mock()
+        volume_source = Mock()
+
+        with patch("music.player.cancel_idle_timer"):
+            with patch(
+                "music.player.get_cached_soundcloud_page",
+                return_value=None,
+            ):
+                with patch(
+                    "music.player._try_soundcloud_fallback",
+                    new=AsyncMock(return_value=resolved),
+                ) as fallback:
+                    with patch(
+                        "music.player.get_audio_source",
+                        new=AsyncMock(),
+                    ) as cached_source:
+                        with patch(
+                            "music.player.discord.FFmpegPCMAudio",
+                            return_value=base_source,
+                        ) as ffmpeg:
+                            with patch(
+                                "music.player.discord.PCMVolumeTransformer",
+                                return_value=volume_source,
+                            ):
+                                with patch(
+                                    "music.player.MusicControl",
+                                    return_value=Mock(),
+                                ):
+                                    with patch(
+                                        "music.player.send_panel_message",
+                                        new=AsyncMock(return_value=Mock()),
+                                    ):
+                                        with patch(
+                                            "music.player._record_recent_safely",
+                                            new=AsyncMock(),
+                                        ):
+                                            await _play_next_locked(
+                                                bot,
+                                                vc,
+                                                Mock(),
+                                                state,
+                                            )
+                                            await asyncio.sleep(0)
+
+        fallback.assert_awaited_once_with(song)
+        cached_source.assert_not_awaited()
+        ffmpeg.assert_called_once()
+        self.assertEqual(ffmpeg.call_args.args[0], resolved["stream_url"])
+        self.assertIs(vc.played[0], volume_source)
 
 
 if __name__ == "__main__":
