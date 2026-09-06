@@ -368,6 +368,7 @@ class MusicControl(discord.ui.LayoutView):
             'youtube': '🔴',
             'spotify': '🟢',
             'soundcloud': '🟠',
+            'audius': '🟣',
             'direct': '🔗'
         }
         return emojis.get(platform.lower() if platform else '', '🎵')
@@ -768,6 +769,8 @@ class MusicControl(discord.ui.LayoutView):
         platform_name = (
             "SoundCloud dự phòng"
             if fallback_platform == "soundcloud"
+            else "Audius dự phòng"
+            if fallback_platform == "audius"
             else platform.capitalize()
         )
         emoji = self.get_platform_emoji(platform)

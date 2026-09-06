@@ -35,7 +35,7 @@ class MusicPlayerRouteTests(unittest.TestCase):
         )
 
 
-class EarlySoundCloudFallbackTests(unittest.IsolatedAsyncioTestCase):
+class EarlyAudioFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_initial_metadata_streams_fallback_without_cache(self):
         song = {
             "title": "Heat Waves",
@@ -90,7 +90,7 @@ class EarlySoundCloudFallbackTests(unittest.IsolatedAsyncioTestCase):
                 return_value=None,
             ):
                 with patch(
-                    "music.player._try_soundcloud_fallback",
+                    "music.player._try_audio_fallback",
                     new=AsyncMock(return_value=resolved),
                 ) as fallback:
                     with patch(
@@ -130,6 +130,70 @@ class EarlySoundCloudFallbackTests(unittest.IsolatedAsyncioTestCase):
         ffmpeg.assert_called_once()
         self.assertEqual(ffmpeg.call_args.args[0], resolved["stream_url"])
         self.assertIs(vc.played[0], volume_source)
+
+    async def test_failed_early_fallback_is_not_repeated_after_youtube_download(self):
+        song = {
+            "title": "Heat Waves",
+            "author": "Glass Animals",
+            "duration": 0,
+            "url": "https://www.youtube.com/watch?v=mRD0-GxqHVo",
+            "source": "youtube",
+            "youtube_metadata_failed": True,
+            "requester": None,
+        }
+        state = SimpleNamespace(
+            queue=deque([song]),
+            history=[],
+            text_channel=None,
+            now_playing_message=None,
+            loop_mode="off",
+            autoplay=False,
+        )
+        guild = SimpleNamespace(id=123)
+
+        class DummyVoiceClient:
+            def __init__(self):
+                self.guild = guild
+
+            def is_connected(self):
+                return True
+
+            def is_playing(self):
+                return False
+
+            def is_paused(self):
+                return False
+
+        fallback = AsyncMock(return_value=None)
+        with patch("music.player.cancel_idle_timer"):
+            with patch("music.player._try_audio_fallback", fallback):
+                with patch(
+                    "music.player.get_audio_source",
+                    new=AsyncMock(
+                        side_effect=RuntimeError(
+                            "Sign in to confirm you're not a bot"
+                        )
+                    ),
+                ):
+                    with patch(
+                        "music.player.send_panel_message",
+                        new=AsyncMock(return_value=None),
+                    ):
+                        with patch(
+                            "music.player.start_idle_timer",
+                            new=AsyncMock(),
+                        ):
+                            await _play_next_locked(
+                                SimpleNamespace(
+                                    loop=asyncio.get_running_loop(),
+                                    user=Mock(),
+                                ),
+                                DummyVoiceClient(),
+                                Mock(),
+                                state,
+                            )
+
+        fallback.assert_awaited_once_with(song)
 
 
 if __name__ == "__main__":

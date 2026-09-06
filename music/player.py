@@ -16,8 +16,9 @@ from music.controls import (
 )
 from music.state import get_guild_state
 from music.source_fallback import (
+    get_cached_audius_track_id,
     get_cached_soundcloud_page,
-    resolve_soundcloud_fallback_sync,
+    resolve_audio_fallback_sync,
 )
 from cache_manager import (
     get_audio_source,
@@ -25,11 +26,11 @@ from cache_manager import (
     preload_audio,
 )
 from ytdlp_support import (
+    audio_fallback_enabled,
+    audio_fallback_timeout_seconds,
     extract_info_with_retry,
     is_transient_ytdlp_error,
     should_use_long_audio_temp,
-    soundcloud_fallback_enabled,
-    soundcloud_fallback_timeout_seconds,
     youtube_ydl_options,
 )
 
@@ -201,12 +202,88 @@ def _youtube_entry_url(entry: dict) -> str | None:
     return raw_url or None
 
 
-def _can_use_soundcloud_fallback(song: dict, error: BaseException | None = None) -> bool:
-    if not soundcloud_fallback_enabled():
+def _can_use_audio_fallback(song: dict, error: BaseException | None = None) -> bool:
+    if not audio_fallback_enabled():
         return False
     if str(song.get("source") or "").casefold() not in {"youtube", "spotify"}:
         return False
     return error is None or is_transient_ytdlp_error(error)
+
+
+def _can_use_soundcloud_fallback(song: dict, error: BaseException | None = None) -> bool:
+    """Backwards-compatible name retained for callers outside this module."""
+    return _can_use_audio_fallback(song, error)
+
+
+def _cached_audio_fallback_hint(song: dict) -> tuple[str | None, str | None]:
+    source = str(song.get("fallback_source") or "").casefold()
+    locator = str(song.get("fallback_locator") or "").strip()
+    if source == "soundcloud":
+        return source, locator or str(song.get("fallback_url") or "").strip()
+    if source == "audius" and locator:
+        return source, locator
+
+    soundcloud_page = get_cached_soundcloud_page(song)
+    if soundcloud_page:
+        return "soundcloud", soundcloud_page
+    audius_track_id = get_cached_audius_track_id(song)
+    if audius_track_id:
+        return "audius", audius_track_id
+    return None, None
+
+
+async def _try_audio_fallback(
+    song: dict,
+    *,
+    error: BaseException | None = None,
+    preferred_source: str | None = None,
+    preferred_locator: str | None = None,
+) -> dict | None:
+    """Resolve a verified SoundCloud/Audius match without audio caching."""
+    if not _can_use_audio_fallback(song, error):
+        return None
+
+    logger.info(
+        "Tìm audio fallback trực tiếp cho %r (youtube_error=%s)",
+        song.get("title", "Unknown"),
+        str(error) if error else "cached-match",
+    )
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                resolve_audio_fallback_sync,
+                song,
+                preferred_source=preferred_source,
+                preferred_locator=preferred_locator,
+            ),
+            timeout=audio_fallback_timeout_seconds(),
+        )
+    except TimeoutError:
+        logger.warning("Audio fallback quá thời gian chờ cho %r", song.get("title"))
+        return None
+    except Exception as fallback_error:
+        logger.warning(
+            "Audio fallback thất bại cho %r: %s",
+            song.get("title"),
+            fallback_error,
+        )
+        return None
+    if not result:
+        logger.info("Không có audio fallback đủ khớp cho %r", song.get("title"))
+        return None
+
+    fallback_source = str(result.get("fallback_source") or "").casefold()
+    song["fallback_source"] = fallback_source
+    song["fallback_url"] = result["webpage_url"]
+    song["fallback_locator"] = result.get("fallback_locator")
+    song["stream_only"] = True
+    logger.info(
+        "Dùng %s fallback trực tiếp cho %r: %s",
+        fallback_source.capitalize(),
+        song.get("title", "Unknown"),
+        result["webpage_url"],
+    )
+    return result
 
 
 async def _try_soundcloud_fallback(
@@ -215,47 +292,13 @@ async def _try_soundcloud_fallback(
     error: BaseException | None = None,
     preferred_page_url: str | None = None,
 ) -> dict | None:
-    """Resolve a verified SoundCloud match without downloading or caching it."""
-    if not _can_use_soundcloud_fallback(song, error):
-        return None
-
-    logger.info(
-        "Tìm SoundCloud fallback trực tiếp cho %r (youtube_error=%s)",
-        song.get("title", "Unknown"),
-        str(error) if error else "cached-match",
+    """Compatibility wrapper for older tests/extensions."""
+    return await _try_audio_fallback(
+        song,
+        error=error,
+        preferred_source="soundcloud" if preferred_page_url else None,
+        preferred_locator=preferred_page_url,
     )
-    try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                resolve_soundcloud_fallback_sync,
-                song,
-                preferred_page_url=preferred_page_url,
-            ),
-            timeout=soundcloud_fallback_timeout_seconds(),
-        )
-    except TimeoutError:
-        logger.warning("SoundCloud fallback quá thời gian chờ cho %r", song.get("title"))
-        return None
-    except Exception as fallback_error:
-        logger.warning(
-            "SoundCloud fallback thất bại cho %r: %s",
-            song.get("title"),
-            fallback_error,
-        )
-        return None
-    if not result:
-        logger.info("Không có SoundCloud fallback đủ khớp cho %r", song.get("title"))
-        return None
-
-    song["fallback_source"] = "soundcloud"
-    song["fallback_url"] = result["webpage_url"]
-    song["stream_only"] = True
-    logger.info(
-        "Dùng SoundCloud fallback trực tiếp cho %r: %s",
-        song.get("title", "Unknown"),
-        result["webpage_url"],
-    )
-    return result
 
 async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
     import re
@@ -505,24 +548,28 @@ async def _play_next_locked(
     use_direct_stream = is_radio or (is_too_long and not use_long_temp_file)
     source = song["url"]
     fallback_info = None
+    fallback_attempted = False
 
     # /play can preserve initial YouTube page metadata even when the extractor
     # returns no playable formats. This is the earliest failure point, so try
-    # SoundCloud before starting another YouTube download cycle.
+    # the external providers before starting another YouTube download cycle.
     if song.get("youtube_metadata_failed"):
-        fallback_info = await _try_soundcloud_fallback(song)
+        fallback_attempted = True
+        fallback_info = await _try_audio_fallback(song)
         if fallback_info:
             source = fallback_info["stream_url"]
             use_direct_stream = True
 
     # A successful match is remembered briefly in RAM. Replays during that
     # window can skip another doomed YouTube attempt, while the actual expiring
-    # SoundCloud CDN URL is always resolved afresh.
-    preferred_fallback_url = song.get("fallback_url") or get_cached_soundcloud_page(song)
-    if not fallback_info and preferred_fallback_url:
-        fallback_info = await _try_soundcloud_fallback(
+    # provider stream is always resolved afresh when required.
+    preferred_source, preferred_locator = _cached_audio_fallback_hint(song)
+    if not fallback_info and not fallback_attempted and preferred_locator:
+        fallback_attempted = True
+        fallback_info = await _try_audio_fallback(
             song,
-            preferred_page_url=preferred_fallback_url,
+            preferred_source=preferred_source,
+            preferred_locator=preferred_locator,
         )
         if fallback_info:
             source = fallback_info["stream_url"]
@@ -560,7 +607,9 @@ async def _play_next_locked(
                 song["url"] = info["webpage_url"]
             song.pop("youtube_metadata_failed", None)
         except Exception as error:
-            fallback_info = await _try_soundcloud_fallback(song, error=error)
+            if not fallback_attempted:
+                fallback_attempted = True
+                fallback_info = await _try_audio_fallback(song, error=error)
             if fallback_info:
                 source = fallback_info["stream_url"]
                 use_direct_stream = True
@@ -700,15 +749,19 @@ async def _play_next_locked(
             base_source = await get_audio_source(song['url'])
             song.pop("youtube_metadata_failed", None)
     except Exception as e:
-        # A cached SoundCloud match still gets exactly one fresh CDN resolution.
-        # A failing YouTube path searches for a match only for recognized
-        # transient/bot-check errors. Neither path writes an audio cache file.
-        retry_fallback_url = song.get("fallback_url") if fallback_info else None
-        replacement = await _try_soundcloud_fallback(
-            song,
-            error=None if fallback_info else e,
-            preferred_page_url=retry_fallback_url,
-        )
+        # A failing matched provider gets one fresh resolve and may move on to
+        # the next enabled provider. A failed search earlier in this playback
+        # is not repeated after the final YouTube attempt.
+        replacement = None
+        if fallback_info:
+            replacement = await _try_audio_fallback(
+                song,
+                preferred_source=song.get("fallback_source"),
+                preferred_locator=song.get("fallback_locator"),
+            )
+        elif not fallback_attempted:
+            fallback_attempted = True
+            replacement = await _try_audio_fallback(song, error=e)
         if replacement:
             try:
                 source = replacement["stream_url"]

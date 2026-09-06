@@ -14,7 +14,7 @@ class PlayMetadataFallbackTests(unittest.TestCase):
             "thumbnail": "https://i.ytimg.com/example.jpg",
             "formats": [],
         }
-        with patch("commands.play.soundcloud_fallback_enabled", return_value=True):
+        with patch("commands.play.audio_fallback_enabled", return_value=True):
             with patch(
                 "commands.play.extract_info_with_retry",
                 return_value=info,
@@ -41,7 +41,7 @@ class PlayMetadataFallbackTests(unittest.TestCase):
                 }
             ],
         }
-        with patch("commands.play.soundcloud_fallback_enabled", return_value=True):
+        with patch("commands.play.audio_fallback_enabled", return_value=True):
             with patch("commands.play.extract_info_with_retry", return_value=info):
                 song = get_song_info(
                     "https://www.youtube.com/watch?v=mRD0-GxqHVo"
@@ -50,7 +50,7 @@ class PlayMetadataFallbackTests(unittest.TestCase):
         self.assertNotIn("youtube_metadata_failed", song)
 
     def test_blocked_plain_search_becomes_soundcloud_search_seed(self):
-        with patch("commands.play.soundcloud_fallback_enabled", return_value=True):
+        with patch("commands.play.audio_fallback_enabled", return_value=True):
             with patch(
                 "commands.play.extract_info_with_retry",
                 side_effect=RuntimeError(
@@ -64,7 +64,7 @@ class PlayMetadataFallbackTests(unittest.TestCase):
         self.assertTrue(song["youtube_metadata_failed"])
 
     def test_blocked_direct_url_without_metadata_is_not_searched_by_video_id(self):
-        with patch("commands.play.soundcloud_fallback_enabled", return_value=True):
+        with patch("commands.play.audio_fallback_enabled", return_value=True):
             with patch(
                 "commands.play.extract_info_with_retry",
                 side_effect=RuntimeError("HTTP Error 403: Forbidden"),
@@ -82,7 +82,7 @@ class PlayMetadataFallbackTests(unittest.TestCase):
             "webpage_url": "https://www.youtube.com/watch?v=mRD0-GxqHVo",
             "formats": [],
         }
-        with patch("commands.play.soundcloud_fallback_enabled", return_value=False):
+        with patch("commands.play.audio_fallback_enabled", return_value=False):
             with patch(
                 "commands.play.extract_info_with_retry",
                 return_value=info,

@@ -5,6 +5,9 @@ import unittest
 from unittest.mock import patch
 
 from ytdlp_support import (
+    audio_fallback_enabled,
+    audio_fallback_timeout_seconds,
+    audius_fallback_enabled,
     extract_info_with_retry,
     is_transient_ytdlp_error,
     should_use_long_audio_temp,
@@ -192,6 +195,19 @@ class SoundCloudFallbackOptionsTests(unittest.TestCase):
         with patch.dict(os.environ, {"YTDLP_SOUNDCLOUD_FALLBACK": "true"}):
             self.assertTrue(soundcloud_fallback_enabled())
 
+    def test_audius_is_separately_opt_in(self):
+        with patch.dict(os.environ, {"YTDLP_AUDIUS_FALLBACK": ""}):
+            self.assertFalse(audius_fallback_enabled())
+        with patch.dict(
+            os.environ,
+            {
+                "YTDLP_SOUNDCLOUD_FALLBACK": "",
+                "YTDLP_AUDIUS_FALLBACK": "true",
+            },
+        ):
+            self.assertTrue(audius_fallback_enabled())
+            self.assertTrue(audio_fallback_enabled())
+
     def test_ttl_is_bounded(self):
         with patch.dict(
             os.environ,
@@ -215,6 +231,24 @@ class SoundCloudFallbackOptionsTests(unittest.TestCase):
             {"YTDLP_SOUNDCLOUD_FALLBACK_TIMEOUT_SECONDS": "invalid"},
         ):
             self.assertEqual(soundcloud_fallback_timeout_seconds(), 20.0)
+
+    def test_shared_timeout_prefers_new_name_and_supports_legacy_name(self):
+        with patch.dict(
+            os.environ,
+            {
+                "YTDLP_AUDIO_FALLBACK_TIMEOUT_SECONDS": "12",
+                "YTDLP_SOUNDCLOUD_FALLBACK_TIMEOUT_SECONDS": "30",
+            },
+        ):
+            self.assertEqual(audio_fallback_timeout_seconds(), 12.0)
+        with patch.dict(
+            os.environ,
+            {
+                "YTDLP_AUDIO_FALLBACK_TIMEOUT_SECONDS": "",
+                "YTDLP_SOUNDCLOUD_FALLBACK_TIMEOUT_SECONDS": "14",
+            },
+        ):
+            self.assertEqual(audio_fallback_timeout_seconds(), 14.0)
 
     def test_soundcloud_stream_does_not_inherit_youtube_proxy(self):
         result = soundcloud_ydl_options(

@@ -96,6 +96,21 @@ def soundcloud_fallback_enabled() -> bool:
     }
 
 
+def audius_fallback_enabled() -> bool:
+    """Return whether Audius is enabled as the last direct-stream fallback."""
+    return os.getenv("YTDLP_AUDIUS_FALLBACK", "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def audio_fallback_enabled() -> bool:
+    """Return whether at least one non-YouTube audio fallback is enabled."""
+    return soundcloud_fallback_enabled() or audius_fallback_enabled()
+
+
 def soundcloud_fallback_ttl_seconds() -> int:
     """Return the bounded lifetime of an in-memory matched-track hint."""
     raw_value = os.getenv("YTDLP_SOUNDCLOUD_FALLBACK_TTL_SECONDS", "1800")
@@ -108,6 +123,21 @@ def soundcloud_fallback_ttl_seconds() -> int:
 def soundcloud_fallback_timeout_seconds() -> float:
     """Return the maximum time playback may wait for a fallback match."""
     raw_value = os.getenv("YTDLP_SOUNDCLOUD_FALLBACK_TIMEOUT_SECONDS", "20")
+    try:
+        return max(5.0, min(float(raw_value), 60.0))
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def audio_fallback_timeout_seconds() -> float:
+    """Return one shared timeout for the SoundCloud -> Audius fallback chain.
+
+    Keep the old SoundCloud variable as a backwards-compatible fallback so an
+    existing VPS does not silently change its wait time after an update.
+    """
+    raw_value = os.getenv("YTDLP_AUDIO_FALLBACK_TIMEOUT_SECONDS", "").strip()
+    if not raw_value:
+        return soundcloud_fallback_timeout_seconds()
     try:
         return max(5.0, min(float(raw_value), 60.0))
     except (TypeError, ValueError):

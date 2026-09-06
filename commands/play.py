@@ -11,9 +11,9 @@ from music.player import play_next, start_idle_timer
 from music.spotify import get_spotify_info, is_spotify_url
 from music.state import get_guild_state
 from ytdlp_support import (
+    audio_fallback_enabled,
     extract_info_with_retry,
     is_transient_ytdlp_error,
-    soundcloud_fallback_enabled,
     youtube_ydl_options,
 )
 
@@ -36,7 +36,7 @@ def _has_playable_audio_format(info: dict) -> bool:
     )
 
 
-def _soundcloud_search_seed(query: str) -> dict:
+def _audio_fallback_search_seed(query: str) -> dict:
     """Keep a failed keyword search playable without inventing metadata."""
     return {
         "title": query.strip(),
@@ -51,7 +51,7 @@ def _soundcloud_search_seed(query: str) -> dict:
 
 def get_song_info(query: str):
     fallback_eligible = (
-        soundcloud_fallback_enabled() and not is_soundcloud_url(query)
+        audio_fallback_enabled() and not is_soundcloud_url(query)
     )
     options = youtube_ydl_options(
         {"format": "bestaudio/best", "quiet": True, "noplaylist": True}
@@ -59,8 +59,8 @@ def get_song_info(query: str):
     if fallback_eligible:
         # A bot-check response often still contains title/author/thumbnail in
         # the initial page data. Keep that metadata even when no audio format is
-        # available so the player can search SoundCloud instead of rejecting
-        # the command before it reaches the queue.
+        # available so the player can search external providers instead of
+        # rejecting the command before it reaches the queue.
         options["ignore_no_formats_error"] = True
     lookup = (
         query
@@ -78,10 +78,10 @@ def get_song_info(query: str):
             and is_transient_ytdlp_error(error)
         ):
             logger.info(
-                "YouTube search bị chặn; chuyển query %r vào SoundCloud fallback",
+                "YouTube search bị chặn; chuyển query %r vào audio fallback",
                 query,
             )
-            return _soundcloud_search_seed(query)
+            return _audio_fallback_search_seed(query)
         raise
     if info and "entries" in info:
         info = next((entry for entry in info["entries"] if entry), None)
@@ -102,7 +102,7 @@ def get_song_info(query: str):
     if fallback_eligible and not _has_playable_audio_format(info):
         song["youtube_metadata_failed"] = True
         logger.info(
-            "YouTube chỉ trả metadata cho %r; chuyển sang SoundCloud fallback",
+            "YouTube chỉ trả metadata cho %r; chuyển sang audio fallback",
             song["title"],
         )
     return song

@@ -2,17 +2,21 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 import html
+import json
 import logging
 import re
 import threading
 import time
 import unicodedata
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
+from urllib.request import Request, urlopen
 
 import yt_dlp
 
 from ytdlp_support import (
+    audius_fallback_enabled,
     soundcloud_fallback_ttl_seconds,
+    soundcloud_fallback_enabled,
     soundcloud_ydl_options,
 )
 
@@ -22,6 +26,12 @@ logger = logging.getLogger(__name__)
 _SEARCH_RESULT_LIMIT = 5
 _RESOLVE_ATTEMPT_LIMIT = 3
 _MINIMUM_MATCH_SCORE = 0.72
+_AUDIUS_API_BASE = "https://api.audius.co/v1"
+_AUDIUS_APP_NAME = "Peto"
+_AUDIUS_SEARCH_RESULT_LIMIT = 10
+_AUDIUS_HTTP_TIMEOUT_SECONDS = 8
+_AUDIUS_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+_AUDIUS_USER_AGENT = "Peto Discord Bot/1.0"
 _VERSION_MARKERS = (
     "acoustic",
     "cover",
@@ -36,6 +46,7 @@ _VERSION_MARKERS = (
 )
 
 _match_cache: dict[str, tuple[float, str]] = {}
+_audius_match_cache: dict[str, tuple[float, str]] = {}
 _match_cache_lock = threading.Lock()
 
 
@@ -160,9 +171,35 @@ def _forget_soundcloud_page(song: dict) -> None:
 
 
 def clear_soundcloud_fallback_cache() -> None:
-    """Clear only volatile match hints; primarily useful for deterministic tests."""
+    """Clear volatile audio match hints; primarily useful for tests."""
     with _match_cache_lock:
         _match_cache.clear()
+        _audius_match_cache.clear()
+
+
+def get_cached_audius_track_id(song: dict) -> str | None:
+    key = _cache_key(song)
+    now = time.monotonic()
+    with _match_cache_lock:
+        cached = _audius_match_cache.get(key)
+        if not cached:
+            return None
+        expires_at, track_id = cached
+        if expires_at <= now:
+            _audius_match_cache.pop(key, None)
+            return None
+        return track_id
+
+
+def _remember_audius_track(song: dict, track_id: str) -> None:
+    expires_at = time.monotonic() + soundcloud_fallback_ttl_seconds()
+    with _match_cache_lock:
+        _audius_match_cache[_cache_key(song)] = (expires_at, track_id)
+
+
+def _forget_audius_track(song: dict) -> None:
+    with _match_cache_lock:
+        _audius_match_cache.pop(_cache_key(song), None)
 
 
 def _soundcloud_page_url(entry: dict) -> str | None:
@@ -275,4 +312,178 @@ def resolve_soundcloud_fallback_sync(
             continue
         _remember_soundcloud_page(song, resolved["webpage_url"])
         return resolved
+    return None
+
+
+def _audius_api_data(path: str, params: dict | None = None):
+    query = urlencode({**(params or {}), "app_name": _AUDIUS_APP_NAME})
+    url = f"{_AUDIUS_API_BASE}{path}"
+    if query:
+        url = f"{url}?{query}"
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": _AUDIUS_USER_AGENT,
+        },
+    )
+    with urlopen(request, timeout=_AUDIUS_HTTP_TIMEOUT_SECONDS) as response:
+        raw = response.read(_AUDIUS_MAX_RESPONSE_BYTES + 1)
+    if len(raw) > _AUDIUS_MAX_RESPONSE_BYTES:
+        raise ValueError("Audius trả về response quá lớn")
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict) or "data" not in payload:
+        raise ValueError("Audius trả về response không hợp lệ")
+    return payload["data"]
+
+
+def _audius_page_url(track: dict) -> str | None:
+    value = str(track.get("permalink") or "").strip()
+    if value.startswith("/"):
+        value = f"https://audius.co{value}"
+    if not value.startswith(("https://", "http://")):
+        return None
+    hostname = (urlparse(value).hostname or "").casefold()
+    if hostname == "audius.co" or hostname.endswith(".audius.co"):
+        return value
+    return None
+
+
+def _audius_stream_is_available(track: dict) -> bool:
+    if track.get("is_stream_gated"):
+        return False
+    access = track.get("access")
+    return not isinstance(access, dict) or access.get("stream") is not False
+
+
+def _audius_candidate(track: dict) -> dict:
+    user = track.get("user") if isinstance(track.get("user"), dict) else {}
+    artist = user.get("name") or user.get("handle")
+    return {
+        "title": track.get("title"),
+        "artist": artist,
+        "uploader": artist,
+        "duration": track.get("duration"),
+    }
+
+
+def _audius_resolved_result(track: dict) -> dict | None:
+    track_id = str(track.get("id") or "").strip()
+    page_url = _audius_page_url(track)
+    if not track_id or not page_url or not _audius_stream_is_available(track):
+        return None
+    user = track.get("user") if isinstance(track.get("user"), dict) else {}
+    stream_query = urlencode({"app_name": _AUDIUS_APP_NAME})
+    return {
+        "stream_url": (
+            f"{_AUDIUS_API_BASE}/tracks/{track_id}/stream?{stream_query}"
+        ),
+        "webpage_url": page_url,
+        "title": track.get("title"),
+        "artist": user.get("name") or user.get("handle"),
+        "duration": track.get("duration"),
+        "http_headers": {"User-Agent": _AUDIUS_USER_AGENT},
+        "track_id": track_id,
+    }
+
+
+def resolve_audius_fallback_sync(
+    song: dict,
+    *,
+    preferred_track_id: str | None = None,
+) -> dict | None:
+    """Find a close Audius match and return its stable direct-stream endpoint."""
+    cached_track_id = preferred_track_id or get_cached_audius_track_id(song)
+    if cached_track_id:
+        try:
+            track = _audius_api_data(f"/tracks/{cached_track_id}")
+            resolved = _audius_resolved_result(track) if isinstance(track, dict) else None
+            if resolved:
+                _remember_audius_track(song, resolved["track_id"])
+                return resolved
+        except Exception as error:
+            logger.info("Audius fallback cache đã cũ, tìm lại: %s", error)
+        _forget_audius_track(song)
+
+    title = str(song.get("title") or "").strip()
+    author = str(song.get("author") or "").strip()
+    query = " ".join(part for part in (title, author) if part)
+    if not query:
+        return None
+
+    try:
+        tracks = _audius_api_data(
+            "/tracks/search",
+            {
+                "query": query,
+                "limit": _AUDIUS_SEARCH_RESULT_LIMIT,
+                "sort_method": "relevant",
+            },
+        )
+    except Exception as error:
+        logger.warning("Không tìm được Audius fallback: %s", error)
+        return None
+
+    candidates = []
+    for track in tracks if isinstance(tracks, list) else []:
+        if not isinstance(track, dict) or not _audius_stream_is_available(track):
+            continue
+        score = score_soundcloud_candidate(song, _audius_candidate(track))
+        resolved = _audius_resolved_result(track)
+        if score is not None and score >= _MINIMUM_MATCH_SCORE and resolved:
+            candidates.append((score, resolved))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    resolved = candidates[0][1]
+    _remember_audius_track(song, resolved["track_id"])
+    return resolved
+
+
+def resolve_audio_fallback_sync(
+    song: dict,
+    *,
+    preferred_source: str | None = None,
+    preferred_locator: str | None = None,
+) -> dict | None:
+    """Try enabled direct-stream providers in SoundCloud -> Audius order."""
+    providers = []
+    if soundcloud_fallback_enabled():
+        providers.append("soundcloud")
+    if audius_fallback_enabled():
+        providers.append("audius")
+
+    preferred_source = str(preferred_source or "").casefold()
+    if preferred_source in providers:
+        providers.remove(preferred_source)
+        providers.insert(0, preferred_source)
+
+    for provider in providers:
+        if provider == "soundcloud":
+            result = resolve_soundcloud_fallback_sync(
+                song,
+                preferred_page_url=(
+                    preferred_locator if preferred_source == provider else None
+                ),
+            )
+        else:
+            result = resolve_audius_fallback_sync(
+                song,
+                preferred_track_id=(
+                    preferred_locator if preferred_source == provider else None
+                ),
+            )
+        if result:
+            result["fallback_source"] = provider
+            result["fallback_locator"] = (
+                result.get("track_id")
+                if provider == "audius"
+                else result.get("webpage_url")
+            )
+            return result
+        logger.info(
+            "%s không có bản đủ khớp cho %r",
+            provider.capitalize(),
+            song.get("title", "Unknown"),
+        )
     return None
