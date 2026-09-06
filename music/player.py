@@ -20,6 +20,7 @@ from music.source_fallback import (
     get_cached_soundcloud_page,
     resolve_audio_fallback_sync,
 )
+from music.stream_source import open_fallback_stream, STREAM_STARTUP_TIMEOUT
 from cache_manager import (
     get_audio_source,
     get_long_audio_source,
@@ -239,7 +240,7 @@ async def _try_audio_fallback(
     preferred_source: str | None = None,
     preferred_locator: str | None = None,
 ) -> dict | None:
-    """Resolve a verified SoundCloud/Audius match without audio caching."""
+    """Return a matching stream only after FFmpeg produces its first PCM frame."""
     if not _can_use_audio_fallback(song, error):
         return None
 
@@ -248,42 +249,75 @@ async def _try_audio_fallback(
         song.get("title", "Unknown"),
         str(error) if error else "cached-match",
     )
-    try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                resolve_audio_fallback_sync,
-                song,
-                preferred_source=preferred_source,
-                preferred_locator=preferred_locator,
-            ),
-            timeout=audio_fallback_timeout_seconds(),
-        )
-    except TimeoutError:
-        logger.warning("Audio fallback quá thời gian chờ cho %r", song.get("title"))
-        return None
-    except Exception as fallback_error:
-        logger.warning(
-            "Audio fallback thất bại cho %r: %s",
-            song.get("title"),
-            fallback_error,
-        )
-        return None
-    if not result:
-        logger.info("Không có audio fallback đủ khớp cho %r", song.get("title"))
-        return None
+    deadline = time.monotonic() + audio_fallback_timeout_seconds()
+    excluded = set()
+    # One shared deadline covers search, resolve and first-frame validation.
+    # A bad cached URL must not be retried on every iteration.
+    for _attempt in range(3):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    resolve_audio_fallback_sync,
+                    dict(song),
+                    preferred_source=preferred_source,
+                    preferred_locator=preferred_locator,
+                    excluded=frozenset(excluded),
+                ),
+                timeout=remaining,
+            )
+        except TimeoutError:
+            logger.warning("Audio fallback quá thời gian chờ cho %r", song.get("title"))
+            break
+        except Exception as fallback_error:
+            logger.warning("Tìm audio fallback thất bại: %s", fallback_error)
+            break
+        if not result:
+            break
+        fallback_source = str(result.get("fallback_source") or "").casefold()
+        locator = str(result.get("fallback_locator") or result["webpage_url"])
+        key = (fallback_source, locator)
+        if key in excluded:
+            break
+        excluded.add(key)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            base_source = await open_fallback_stream(
+                result, timeout=min(STREAM_STARTUP_TIMEOUT, remaining)
+            )
+        except (FileNotFoundError, discord.ClientException):
+            # A missing FFmpeg installation is not fixed by choosing another song.
+            logger.warning("Không khởi động được FFmpeg cho audio fallback")
+            break
+        except Exception as stream_error:
+            # Do not log the raw exception: FFmpeg errors may contain signed URLs.
+            logger.warning(
+                "%s fallback không đọc được audio (%s), thử ứng viên khác: %s",
+                fallback_source.capitalize(), type(stream_error).__name__,
+                result["webpage_url"],
+            )
+            continue
 
-    fallback_source = str(result.get("fallback_source") or "").casefold()
-    song["fallback_source"] = fallback_source
-    song["fallback_url"] = result["webpage_url"]
-    song["fallback_locator"] = result.get("fallback_locator")
-    song["stream_only"] = True
-    logger.info(
-        "Dùng %s fallback trực tiếp cho %r: %s",
-        fallback_source.capitalize(),
-        song.get("title", "Unknown"),
-        result["webpage_url"],
-    )
-    return result
+        song["fallback_source"] = fallback_source
+        song["fallback_url"] = result["webpage_url"]
+        song["fallback_locator"] = locator
+        song["stream_only"] = True
+        if not song.get("duration") and result.get("duration"):
+            song["duration"] = result["duration"]
+        logger.info(
+            "Dùng %s fallback, đã đọc được audio cho %r: %s",
+            fallback_source.capitalize(), song.get("title"), result["webpage_url"],
+        )
+        return {**result, "audio_source": base_source}
+
+    for field in ("fallback_source", "fallback_url", "fallback_locator", "stream_only"):
+        song.pop(field, None)
+    logger.info("Không có audio fallback phù hợp và phát được cho %r", song.get("title"))
+    return None
 
 
 async def _try_soundcloud_fallback(
@@ -727,10 +761,13 @@ async def _play_next_locked(
             logger.info(
                 "Stream trực tiếp %r, duration=%ss (guild=%s)",
                 song.get("title"),
-                duration,
+                song.get("duration") or duration,
                 vc.guild.id,
             )
-            base_source = discord.FFmpegPCMAudio(source, **FFMPEG_OPTIONS)
+            base_source = (
+                fallback_info["audio_source"] if fallback_info
+                else discord.FFmpegPCMAudio(source, **FFMPEG_OPTIONS)
+            )
         elif use_long_temp_file:
             logger.info(
                 "Chuẩn bị file tạm cho bài dài %r, duration=%ss (guild=%s)",
@@ -749,17 +786,10 @@ async def _play_next_locked(
             base_source = await get_audio_source(song['url'])
             song.pop("youtube_metadata_failed", None)
     except Exception as e:
-        # A failing matched provider gets one fresh resolve and may move on to
-        # the next enabled provider. A failed search earlier in this playback
-        # is not repeated after the final YouTube attempt.
+        # Fallback already validates/rotates finite streams within one deadline.
+        # A failed early search is not repeated after the final YouTube attempt.
         replacement = None
-        if fallback_info:
-            replacement = await _try_audio_fallback(
-                song,
-                preferred_source=song.get("fallback_source"),
-                preferred_locator=song.get("fallback_locator"),
-            )
-        elif not fallback_attempted:
+        if not fallback_attempted:
             fallback_attempted = True
             replacement = await _try_audio_fallback(song, error=e)
         if replacement:
@@ -767,7 +797,7 @@ async def _play_next_locked(
                 source = replacement["stream_url"]
                 fallback_info = replacement
                 use_direct_stream = True
-                base_source = discord.FFmpegPCMAudio(source, **FFMPEG_OPTIONS)
+                base_source = replacement["audio_source"]
             except Exception as fallback_error:
                 e = fallback_error
                 replacement = None
@@ -782,6 +812,11 @@ async def _play_next_locked(
             if loading_msg:
                 try:
                     await edit_panel_message(loading_msg, create_error_panel(song))
+                except Exception:
+                    pass
+            else:
+                try:
+                    await send_panel_message(channel, create_error_panel(song))
                 except Exception:
                     pass
             return await _play_next_locked(bot, vc, channel, state)

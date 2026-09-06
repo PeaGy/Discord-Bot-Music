@@ -94,6 +94,16 @@ def score_soundcloud_candidate(song: dict, candidate: dict) -> float | None:
         return None
     if _has_unrequested_version(original_title, candidate_title):
         return None
+    # Search titles can omit "cover". Check explicit claims in the full page
+    # description too, without treating "cover art" or URL slugs as versions.
+    description = _normalize_text(str(candidate.get("description") or "")[:8192])
+    if "cover" not in original_title.split() and re.search(
+        r"\b(?:(?:my|our|this|a|an) (?:acoustic )?(?:cover|rendition)"
+        r"(?! (?:art|artwork|photo|image|design)\b)|"
+        r"(?:cover|rendition) (?:of|by|version)\b)",
+        description,
+    ):
+        return None
 
     title_score = _text_similarity(original_title, candidate_title)
     if title_score < 0.62:
@@ -227,7 +237,7 @@ def _resolve_soundcloud_page(page_url: str) -> dict:
     )
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(page_url, download=False)
-    if "entries" in info:
+    if info and "entries" in info:
         info = next((entry for entry in info.get("entries") or [] if entry), None)
     if not info or not info.get("url"):
         raise ValueError("SoundCloud không trả về stream URL")
@@ -237,6 +247,7 @@ def _resolve_soundcloud_page(page_url: str) -> dict:
         "title": info.get("title"),
         "artist": info.get("artist") or info.get("uploader") or info.get("creator"),
         "duration": info.get("duration"),
+        "description": info.get("description"),
         "http_headers": dict(info.get("http_headers") or {}),
     }
 
@@ -281,14 +292,21 @@ def resolve_soundcloud_fallback_sync(
     song: dict,
     *,
     preferred_page_url: str | None = None,
+    excluded_locators: frozenset[str] = frozenset(),
 ) -> dict | None:
     """Find and freshly resolve a close SoundCloud match for direct streaming."""
     cached_page_url = preferred_page_url or get_cached_soundcloud_page(song)
-    attempted_urls = set()
-    if cached_page_url:
+    attempted_urls = set(excluded_locators)
+    if cached_page_url in attempted_urls:
+        _forget_soundcloud_page(song)
+    if cached_page_url and cached_page_url not in attempted_urls:
         attempted_urls.add(cached_page_url)
         try:
             resolved = _resolve_soundcloud_page(cached_page_url)
+            score = score_soundcloud_candidate(song, resolved)
+            if (score is None or score < _MINIMUM_MATCH_SCORE
+                    or resolved["webpage_url"] in excluded_locators):
+                raise ValueError("Metadata đầy đủ không còn khớp bản nhạc yêu cầu")
             _remember_soundcloud_page(song, resolved["webpage_url"])
             return resolved
         except Exception as error:
@@ -301,7 +319,8 @@ def resolve_soundcloud_fallback_sync(
         logger.warning("Không tìm được SoundCloud fallback: %s", error)
         return None
 
-    for _score, page_url in candidates[:_RESOLVE_ATTEMPT_LIMIT]:
+    remaining_candidates = [item for item in candidates if item[1] not in attempted_urls]
+    for _score, page_url in remaining_candidates[:_RESOLVE_ATTEMPT_LIMIT]:
         if page_url in attempted_urls:
             continue
         attempted_urls.add(page_url)
@@ -309,6 +328,11 @@ def resolve_soundcloud_fallback_sync(
             resolved = _resolve_soundcloud_page(page_url)
         except Exception as error:
             logger.info("Không resolve được SoundCloud candidate %s: %s", page_url, error)
+            continue
+        score = score_soundcloud_candidate(song, resolved)
+        if (score is None or score < _MINIMUM_MATCH_SCORE
+                or resolved["webpage_url"] in excluded_locators):
+            logger.info("Bỏ SoundCloud candidate không khớp sau khi đọc đầy đủ: %s", page_url)
             continue
         _remember_soundcloud_page(song, resolved["webpage_url"])
         return resolved
@@ -364,6 +388,7 @@ def _audius_candidate(track: dict) -> dict:
         "artist": artist,
         "uploader": artist,
         "duration": track.get("duration"),
+        "description": track.get("description"),
     }
 
 
@@ -391,14 +416,19 @@ def resolve_audius_fallback_sync(
     song: dict,
     *,
     preferred_track_id: str | None = None,
+    excluded_locators: frozenset[str] = frozenset(),
 ) -> dict | None:
     """Find a close Audius match and return its stable direct-stream endpoint."""
     cached_track_id = preferred_track_id or get_cached_audius_track_id(song)
-    if cached_track_id:
+    if cached_track_id in excluded_locators:
+        _forget_audius_track(song)
+    if cached_track_id and cached_track_id not in excluded_locators:
         try:
             track = _audius_api_data(f"/tracks/{cached_track_id}")
             resolved = _audius_resolved_result(track) if isinstance(track, dict) else None
-            if resolved:
+            score = score_soundcloud_candidate(song, _audius_candidate(track)) if resolved else None
+            if (resolved and score is not None and score >= _MINIMUM_MATCH_SCORE
+                    and resolved["track_id"] not in excluded_locators):
                 _remember_audius_track(song, resolved["track_id"])
                 return resolved
         except Exception as error:
@@ -430,7 +460,8 @@ def resolve_audius_fallback_sync(
             continue
         score = score_soundcloud_candidate(song, _audius_candidate(track))
         resolved = _audius_resolved_result(track)
-        if score is not None and score >= _MINIMUM_MATCH_SCORE and resolved:
+        if (score is not None and score >= _MINIMUM_MATCH_SCORE and resolved
+                and resolved["track_id"] not in excluded_locators):
             candidates.append((score, resolved))
     if not candidates:
         return None
@@ -445,6 +476,7 @@ def resolve_audio_fallback_sync(
     *,
     preferred_source: str | None = None,
     preferred_locator: str | None = None,
+    excluded: frozenset[tuple[str, str]] = frozenset(),
 ) -> dict | None:
     """Try enabled direct-stream providers in SoundCloud -> Audius order."""
     providers = []
@@ -459,12 +491,14 @@ def resolve_audio_fallback_sync(
         providers.insert(0, preferred_source)
 
     for provider in providers:
+        excluded_locators = frozenset(locator for name, locator in excluded if name == provider)
         if provider == "soundcloud":
             result = resolve_soundcloud_fallback_sync(
                 song,
                 preferred_page_url=(
                     preferred_locator if preferred_source == provider else None
                 ),
+                excluded_locators=excluded_locators,
             )
         else:
             result = resolve_audius_fallback_sync(
@@ -472,6 +506,7 @@ def resolve_audio_fallback_sync(
                 preferred_track_id=(
                     preferred_locator if preferred_source == provider else None
                 ),
+                excluded_locators=excluded_locators,
             )
         if result:
             result["fallback_source"] = provider

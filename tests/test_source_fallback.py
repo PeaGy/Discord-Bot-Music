@@ -1,6 +1,7 @@
+import asyncio
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from music import source_fallback
 from music.player import (
@@ -77,6 +78,73 @@ class SoundCloudCandidateTests(unittest.TestCase):
         self.assertIsNone(
             source_fallback.score_soundcloud_candidate(song, candidate)
         )
+
+    def test_cover_disclosed_only_in_description_is_rejected(self):
+        song = {"title": "Harry Styles - As It Was (Official Video)", "duration": 0}
+        candidate = {
+            "title": "Harry Styles - As It Was",
+            "artist": "The Paper Outlet",
+            "description": "Here's our rendition of As It Was ~The Paper Outlet~",
+        }
+        self.assertIsNone(source_fallback.score_soundcloud_candidate(song, candidate))
+        candidate["description"] = "Cover art by Someone. Official release."
+        self.assertGreaterEqual(source_fallback.score_soundcloud_candidate(song, candidate), 0.72)
+
+    def test_resolved_cover_is_rejected_even_when_cached_and_search_title_matches(self):
+        song = {"title": "Harry Styles - As It Was", "duration": 0}
+        cover_url = "https://soundcloud.com/thepaperoutlet/intentions-justin-bieber"
+        good_url = "https://soundcloud.com/harrystyles/as-it-was"
+        cover = {
+            "title": song["title"], "webpage_url": cover_url,
+            "stream_url": "https://cdn.test/cover.mp3",
+            "description": "Here's our rendition of As It Was",
+        }
+        original = {**cover, "webpage_url": good_url, "description": "Official audio"}
+        source_fallback._remember_soundcloud_page(song, cover_url)
+        with patch.object(source_fallback, "_search_soundcloud_candidates",
+                          return_value=[(0.99, cover_url), (0.95, good_url)]), patch.object(
+            source_fallback, "_resolve_soundcloud_page", side_effect=[cover, original]
+        ) as resolve:
+            result = source_fallback.resolve_soundcloud_fallback_sync(song)
+        self.assertEqual(result["webpage_url"], good_url)
+        self.assertEqual(resolve.call_count, 2)
+        self.assertEqual(source_fallback.get_cached_soundcloud_page(song), good_url)
+
+    def test_full_metadata_duration_mismatch_is_rejected_without_known_versions(self):
+        song = {"title": "Heat Waves", "author": "Glass Animals", "duration": 238}
+        url = "https://soundcloud.com/artist/song"
+        with patch.object(source_fallback, "_search_soundcloud_candidates",
+                          return_value=[(0.99, url)]), patch.object(
+            source_fallback, "_resolve_soundcloud_page",
+            return_value={"title": "Heat Waves", "artist": "Glass Animals",
+                          "duration": 30, "webpage_url": url}
+        ):
+            self.assertIsNone(source_fallback.resolve_soundcloud_fallback_sync(song))
+        self.assertIsNone(source_fallback.get_cached_soundcloud_page(song))
+
+    def test_failed_audio_locator_is_skipped_in_cache_and_search(self):
+        song = {"title": "Heat Waves", "author": "Glass Animals"}
+        bad, good = "https://soundcloud.com/a/expired", "https://soundcloud.com/a/good"
+        source_fallback._remember_soundcloud_page(song, bad)
+        with patch.object(source_fallback, "_search_soundcloud_candidates",
+                          return_value=[(0.99, bad), (0.95, good)]), patch.object(
+            source_fallback, "_resolve_soundcloud_page",
+            return_value={"title": "Heat Waves", "artist": "Glass Animals", "webpage_url": good}
+        ) as resolve:
+            result = source_fallback.resolve_soundcloud_fallback_sync(
+                song, preferred_page_url=bad, excluded_locators=frozenset({bad})
+            )
+        resolve.assert_called_once_with(good)
+        self.assertEqual(result["webpage_url"], good)
+
+    def test_missing_soundcloud_metadata_is_handled(self):
+        ydl = Mock()
+        ydl.__enter__ = Mock(return_value=ydl)
+        ydl.__exit__ = Mock(return_value=False)
+        ydl.extract_info.return_value = None
+        with patch.object(source_fallback.yt_dlp, "YoutubeDL", return_value=ydl):
+            with self.assertRaisesRegex(ValueError, "stream URL"):
+                source_fallback._resolve_soundcloud_page("https://soundcloud.com/a/b")
 
     def test_search_resolves_stream_without_downloading_and_reuses_match_hint(self):
         calls = []
@@ -205,16 +273,25 @@ class SoundCloudCandidateTests(unittest.TestCase):
                     return_value=audius,
                 ) as audius_resolver:
                     result = source_fallback.resolve_audio_fallback_sync(
-                        {"title": "Song"}
+                        {"title": "Song"},
+                        excluded=frozenset({("soundcloud", "bad-page"), ("audius", "bad-id")}),
                     )
 
         soundcloud.assert_called_once()
         audius_resolver.assert_called_once()
+        self.assertEqual(soundcloud.call_args.kwargs["excluded_locators"], frozenset({"bad-page"}))
+        self.assertEqual(audius_resolver.call_args.kwargs["excluded_locators"], frozenset({"bad-id"}))
         self.assertEqual(result["fallback_source"], "audius")
         self.assertEqual(result["fallback_locator"], "id")
 
 
 class SoundCloudPlayerRoutingTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.audio = Mock()
+        patcher = patch("music.player.open_fallback_stream", new=AsyncMock(return_value=self.audio))
+        self.open_stream = patcher.start()
+        self.addCleanup(patcher.stop)
+
     async def test_transient_youtube_error_marks_stream_only_fallback(self):
         song = {
             "title": "Heat Waves",
@@ -243,7 +320,7 @@ class SoundCloudPlayerRoutingTests(unittest.IsolatedAsyncioTestCase):
                     error=RuntimeError("HTTP Error 403: Forbidden"),
                 )
 
-        self.assertEqual(result, resolved)
+        self.assertEqual(result, {**resolved, "audio_source": self.audio})
         self.assertTrue(song["stream_only"])
         self.assertEqual(song["fallback_source"], "soundcloud")
         self.assertEqual(song["url"], "https://www.youtube.com/watch?v=mRD0-GxqHVo")
@@ -277,10 +354,74 @@ class SoundCloudPlayerRoutingTests(unittest.IsolatedAsyncioTestCase):
                     error=RuntimeError("HTTP Error 403: Forbidden"),
                 )
 
-        self.assertEqual(result, resolved)
+        self.assertEqual(result, {**resolved, "audio_source": self.audio})
         self.assertTrue(song["stream_only"])
         self.assertEqual(song["fallback_source"], "audius")
         self.assertEqual(song["fallback_locator"], "id")
+
+    async def test_no_audio_tries_next_candidate_without_reusing_failed_url(self):
+        song = {"title": "Track", "source": "youtube", "duration": 0}
+        first = {"stream_url": "https://cdn.test/bad", "webpage_url": "https://soundcloud.com/a/bad",
+                 "fallback_source": "soundcloud", "fallback_locator": "https://soundcloud.com/a/bad"}
+        second = {**first, "webpage_url": "https://soundcloud.com/a/good",
+                  "fallback_locator": "https://soundcloud.com/a/good", "duration": 174}
+        self.open_stream.side_effect = [RuntimeError("EOF"), self.audio]
+        with patch.dict(os.environ, {"YTDLP_SOUNDCLOUD_FALLBACK": "true"}), patch(
+            "music.player.resolve_audio_fallback_sync", side_effect=[first, second]
+        ) as resolve:
+            result = await _try_audio_fallback(song)
+        self.assertIs(result["audio_source"], self.audio)
+        self.assertEqual(resolve.call_args_list[1].kwargs["excluded"],
+                         frozenset({("soundcloud", first["fallback_locator"])}))
+        self.assertEqual(song["fallback_url"], second["webpage_url"])
+        self.assertEqual(song["duration"], 174)
+
+    async def test_all_streams_fail_does_not_mark_song_as_playing_fallback(self):
+        song = {"title": "Track", "source": "youtube"}
+        self.open_stream.side_effect = TimeoutError("no audio")
+        candidates = [{"stream_url": "https://cdn.test/stream", "webpage_url": f"https://soundcloud.com/a/{i}",
+                       "fallback_source": "soundcloud"} for i in range(3)]
+        with patch.dict(os.environ, {"YTDLP_SOUNDCLOUD_FALLBACK": "true"}), patch(
+            "music.player.resolve_audio_fallback_sync", side_effect=candidates
+        ) as resolve:
+            result = await _try_audio_fallback(song)
+        self.assertIsNone(result)
+        self.assertEqual(resolve.call_count, 3)
+        self.assertNotIn("fallback_source", song)
+        self.assertNotIn("stream_only", song)
+
+    async def test_startup_and_reselection_share_the_same_deadline(self):
+        song = {"title": "Track", "source": "youtube"}
+        now = [0.0]
+        candidate = {"stream_url": "https://cdn.test/bad", "webpage_url": "https://soundcloud.com/a/bad",
+                     "fallback_source": "soundcloud"}
+
+        async def stall(info, *, timeout):
+            now[0] += timeout
+            raise TimeoutError()
+
+        self.open_stream.side_effect = stall
+        with patch.dict(os.environ, {"YTDLP_SOUNDCLOUD_FALLBACK": "true"}), patch(
+            "music.player.resolve_audio_fallback_sync", return_value=candidate
+        ) as resolve, patch("music.player.audio_fallback_timeout_seconds", return_value=0.05), patch(
+            "music.player.time", Mock(monotonic=lambda: now[0])
+        ):
+            self.assertIsNone(await _try_audio_fallback(song))
+        resolve.assert_called_once()
+        self.assertLessEqual(self.open_stream.call_args.kwargs["timeout"], 0.05)
+
+    async def test_cancelled_startup_propagates_without_marking_success(self):
+        song = {"title": "Track", "source": "youtube"}
+        candidate = {"stream_url": "https://cdn.test/bad", "webpage_url": "https://soundcloud.com/a/bad",
+                     "fallback_source": "soundcloud"}
+        self.open_stream.side_effect = asyncio.CancelledError()
+        with patch.dict(os.environ, {"YTDLP_SOUNDCLOUD_FALLBACK": "true"}), patch(
+            "music.player.resolve_audio_fallback_sync", return_value=candidate
+        ) as resolve:
+            with self.assertRaises(asyncio.CancelledError):
+                await _try_audio_fallback(song)
+        resolve.assert_called_once()
+        self.assertNotIn("stream_only", song)
 
     def test_non_transient_or_non_youtube_source_does_not_fallback(self):
         with patch.dict(os.environ, {"YTDLP_SOUNDCLOUD_FALLBACK": "true"}):

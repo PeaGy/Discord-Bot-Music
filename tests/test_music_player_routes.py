@@ -82,6 +82,7 @@ class EarlyAudioFallbackTests(unittest.IsolatedAsyncioTestCase):
         vc = DummyVoiceClient()
         bot = SimpleNamespace(loop=asyncio.get_running_loop(), user=Mock())
         base_source = Mock()
+        resolved["audio_source"] = base_source
         volume_source = Mock()
 
         with patch("music.player.cancel_idle_timer"):
@@ -127,8 +128,8 @@ class EarlyAudioFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         fallback.assert_awaited_once_with(song)
         cached_source.assert_not_awaited()
-        ffmpeg.assert_called_once()
-        self.assertEqual(ffmpeg.call_args.args[0], resolved["stream_url"])
+        # Playback must reuse the primed, validated process (not open a new URL).
+        ffmpeg.assert_not_called()
         self.assertIs(vc.played[0], volume_source)
 
     async def test_failed_early_fallback_is_not_repeated_after_youtube_download(self):
