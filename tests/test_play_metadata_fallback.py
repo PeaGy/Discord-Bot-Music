@@ -5,6 +5,11 @@ from commands.play import get_song_info
 
 
 class PlayMetadataFallbackTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch("commands.play.find_cached_audio_path", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_no_format_youtube_metadata_is_kept_for_soundcloud(self):
         info = {
             "title": "Heat Waves",

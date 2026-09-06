@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 
 import yt_dlp
 import discord
+from music.urls import canonical_youtube_url
 from ytdlp_support import (
     is_transient_ytdlp_error,
     ydl_options_for_player_client,
@@ -328,6 +329,22 @@ def get_cache_paths(url):
     return raw_outtmpl, final_path
 
 
+def find_cached_audio_path(url):
+    """Cache-only lookup; preserve legacy hashes and accept YouTube URL aliases."""
+    urls = [str(url)]
+    canonical = canonical_youtube_url(url)
+    if canonical and canonical not in urls:
+        urls.append(canonical)
+    for candidate in urls:
+        _, path = get_cache_paths(candidate)
+        try:
+            if os.path.isfile(path) and _is_valid_file(path):
+                return path
+        except OSError:
+            continue
+    return None
+
+
 def download_raw_sync(url, raw_outtmpl):
     """
     Tải audio tốt nhất từ YouTube, KHÔNG transcode ở bước này (giữ nguyên chất
@@ -459,19 +476,26 @@ def normalize_and_encode_sync(raw_path, final_path, stats):
 
 def build_cache_sync(url, raw_outtmpl, final_path):
     raw_path = download_raw_sync(url, raw_outtmpl)
+    staged_path = f"{final_path}.{uuid.uuid4().hex}.tmp.opus"
     try:
         stats = measure_loudness_sync(raw_path)
-        normalize_and_encode_sync(raw_path, final_path, stats)
+        normalize_and_encode_sync(raw_path, staged_path, stats)
+        # Publish only a complete file. A concurrent cache-first /play must not
+        # mistake the non-empty output of an unfinished encoder for a cache hit.
+        os.replace(staged_path, final_path)
     finally:
-        # File raw chỉ là trung gian để đo/encode, xoá đi cho đỡ tốn ổ đĩa
-        try:
-            os.remove(raw_path)
-        except OSError:
-            pass
+        for temporary_path in (raw_path, staged_path):
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
 
 
 async def ensure_audio_cached(url):
     """Trả về file Opus cache, tránh tải/encode trùng cùng một URL."""
+    cached_path = await asyncio.to_thread(find_cached_audio_path, url)
+    if cached_path:
+        return cached_path
     raw_outtmpl, final_path = get_cache_paths(url)
 
     if _is_valid_file(final_path):
@@ -554,14 +578,21 @@ async def temporary_download_mp3(url):
                     pass
 
 
+async def get_cached_audio_source(url):
+    """Return a local Opus source or None, without extraction/download/fallback."""
+    final_path = await asyncio.to_thread(find_cached_audio_path, url)
+    if not final_path:
+        return None
+    logger.info("Cache hit: %s", final_path)
+    opus_source = discord.FFmpegOpusAudio(final_path, codec="copy", options="-vn")
+    return OpusPrerollAudioSource(opus_source)
+
+
 async def get_audio_source(url):
     """Trả về nguồn Opus cache có preroll, không decode/encode lại."""
-    _, final_path = get_cache_paths(url)
-
-    if _is_valid_file(final_path):
-        logger.info("Cache hit: %s", final_path)
-        opus_source = discord.FFmpegOpusAudio(final_path, codec="copy", options="-vn")
-        return OpusPrerollAudioSource(opus_source)
+    cached_source = await get_cached_audio_source(url)
+    if cached_source is not None:
+        return cached_source
 
     logger.info("Cache miss, bắt đầu tải và normalize: %s", url)
     final_path = await ensure_audio_cached(url)
@@ -576,16 +607,14 @@ async def preload_audio(url, delay=0):
     Hàm tải trước nhạc vào nền (Background Task).
     Chỉ kiểm tra và tải, không trả về Audio Source để tránh block bot.
     """
-    _, final_path = get_cache_paths(url)
-
     # Nếu đã có sẵn trong ổ cứng thì bỏ qua luôn
-    if _is_valid_file(final_path):
+    if await asyncio.to_thread(find_cached_audio_path, url):
         return
 
     if delay > 0:
         await asyncio.sleep(delay)
         # Bài có thể đã được cache bởi tác vụ khác trong thời gian chờ.
-        if _is_valid_file(final_path):
+        if await asyncio.to_thread(find_cached_audio_path, url):
             return
 
     logger.info("Bắt đầu tải trước: %s", url)

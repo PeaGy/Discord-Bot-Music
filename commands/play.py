@@ -6,7 +6,8 @@ from discord import app_commands
 from discord.ext import commands
 
 import music_library
-from cache_manager import preload_audio
+from cache_manager import find_cached_audio_path, preload_audio
+from music.urls import canonical_youtube_url
 from music.player import play_next, start_idle_timer
 from music.spotify import get_spotify_info, is_spotify_url
 from music.state import get_guild_state
@@ -37,12 +38,18 @@ def _has_playable_audio_format(info: dict) -> bool:
     )
 
 
-def _extraction_has_playable_audio(info: dict | None) -> bool:
+def _extraction_has_playable_audio_or_cache(info: dict | None) -> bool:
     if not info:
         return False
     if "entries" in info:
         info = next((entry for entry in info["entries"] if entry), None)
-    return bool(info and _has_playable_audio_format(info))
+    if not info:
+        return False
+    url = info.get("webpage_url") or ""
+    return bool(
+        _has_playable_audio_format(info)
+        or (canonical_youtube_url(url) and find_cached_audio_path(url))
+    )
 
 
 def _audio_fallback_search_seed(query: str) -> dict:
@@ -59,6 +66,20 @@ def _audio_fallback_search_seed(query: str) -> dict:
 
 
 def get_song_info(query: str):
+    canonical = canonical_youtube_url(query)
+    if canonical and find_cached_audio_path(query):
+        known = music_library.find_known_track_sync(canonical) or {}
+        logger.info("Metadata từ cache cục bộ, bỏ qua YouTube: %s", canonical)
+        return {
+            "title": known.get("title") or f"YouTube (bản đã lưu: {canonical.split('=')[-1]})",
+            "author": known.get("author") or "Unknown",
+            "duration": known.get("duration") or 0,
+            # Preserve an exact legacy URL cache hit; cache_manager also tries
+            # the canonical URL when the user supplies a share/mobile link.
+            "url": query.strip(),
+            "thumbnail": known.get("thumbnail"),
+            "source": "youtube",
+        }
     fallback_eligible = (
         audio_fallback_enabled() and not is_soundcloud_url(query)
     )
@@ -88,7 +109,7 @@ def get_song_info(query: str):
             options,
             download=False,
             result_validator=(
-                _extraction_has_playable_audio if metadata_tolerant else None
+                _extraction_has_playable_audio_or_cache if metadata_tolerant else None
             ),
         )
     except Exception as error:
@@ -121,13 +142,16 @@ def get_song_info(query: str):
         "thumbnail": info.get("thumbnail"),
         "source": "soundcloud" if is_soundcloud_url(query) else "youtube",
     }
-    if fallback_eligible and not _has_playable_audio_format(info):
+    # A keyword lookup may identify a cached video on its very first response,
+    # even while YouTube refuses audio. No further client/proxy retries needed.
+    cached_audio = bool(canonical_youtube_url(song["url"]) and find_cached_audio_path(song["url"]))
+    if fallback_eligible and not _has_playable_audio_format(info) and not cached_audio:
         song["youtube_metadata_failed"] = True
         logger.info(
             "YouTube chỉ trả metadata cho %r; chuyển sang audio fallback",
             song["title"],
         )
-    elif direct_fallback_eligible and not _has_playable_audio_format(info):
+    elif direct_fallback_eligible and not _has_playable_audio_format(info) and not cached_audio:
         raise ValueError("YouTube không trả về định dạng audio có thể phát.")
     return song
 

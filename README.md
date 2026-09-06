@@ -15,6 +15,7 @@ Bạn không thể tự host? mời bot về server của bạn 👉 [Add Pearto
 - Queue nâng cao, lịch sử nghe, favorites, playlist cá nhân/chia sẻ, `/stats` và `/wrapped` được lưu bằng SQLite.
 - Lyrics từ LRCLIB, radio internet, chế độ 24/7, sleep timer.
 - Preload bài kế tiếp, cache âm thanh và chuẩn hóa khoảng `-16 LUFS`; radio hoặc bài dài được stream trực tiếp.
+- Ưu tiên audio cache trước YouTube và các nguồn dự phòng. Link YouTube đã cache bỏ qua tra cứu mạng, dùng thông tin bài đã lưu trong thư viện; hỗ trợ cả link chia sẻ/mobile cùng video. Cache cũ thiếu metadata vẫn phát được với tên tạm. Tìm kiếm bằng từ khóa vẫn cần xác định đúng bài trước.
 - Trên VPS có thể thử YouTube qua WARP rồi IP trực tiếp trước khi fallback về SoundCloud/Audius.
 - Audio fallback kiểm tra lại metadata đầy đủ (kể cả mô tả cover) và đọc thử frame audio trước khi báo đang phát. Nguồn lỗi được bỏ qua để thử ứng viên khác, tối đa 3 nguồn trong cùng thời gian chờ; không tạo cache nhạc. Radio giữ cơ chế reconnect riêng.
 

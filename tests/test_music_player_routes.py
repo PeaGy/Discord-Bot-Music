@@ -36,6 +36,11 @@ class MusicPlayerRouteTests(unittest.TestCase):
 
 
 class EarlyAudioFallbackTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        patcher = patch("music.player.get_cached_audio_source", new=AsyncMock(return_value=None))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     async def test_failed_initial_metadata_streams_fallback_without_cache(self):
         song = {
             "title": "Heat Waves",

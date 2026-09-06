@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import closing
 import os
 import re
 import secrets
+import sqlite3
+from pathlib import Path
 import urllib.parse
 
 import aiosqlite
@@ -88,6 +91,37 @@ def _row_to_track(row: aiosqlite.Row) -> dict:
         "thumbnail": row["thumbnail"] or None,
         "source": row["source"],
     }
+
+
+def find_known_track_sync(url: str) -> dict | None:
+    """Read only public track metadata for an exact known URL, never user IDs.
+
+    Used by the executor-based /play cache fast path. Missing/older databases
+    are fine: this must not initialize or migrate the music library at startup.
+    """
+    key = track_key({"url": url})
+    try:
+        uri = Path(DB_PATH).resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as db:
+            db.row_factory = sqlite3.Row
+            for table, ordering in (
+                ("music_recent", "id DESC"),
+                ("music_favorites", "created_at DESC"),
+                ("music_playlist_tracks", "id DESC"),
+            ):
+                try:
+                    row = db.execute(
+                        f"SELECT {TRACK_COLUMNS} FROM {table} "
+                        f"WHERE track_key = ? AND title NOT LIKE 'YouTube (bản đã lưu:%' "
+                        f"ORDER BY {ordering} LIMIT 1", (key,),
+                    ).fetchone()
+                except sqlite3.Error:
+                    continue
+                if row:
+                    return _row_to_track(row)
+    except (sqlite3.Error, OSError, ValueError):
+        pass
+    return None
 
 
 async def init_db() -> None:

@@ -23,6 +23,7 @@ from music.source_fallback import (
 from music.stream_source import open_fallback_stream, STREAM_STARTUP_TIMEOUT
 from cache_manager import (
     get_audio_source,
+    get_cached_audio_source,
     get_long_audio_source,
     preload_audio,
 )
@@ -584,10 +585,27 @@ async def _play_next_locked(
     fallback_info = None
     fallback_attempted = False
 
+    # Check local audio before any metadata request or external-provider hint.
+    # This is cache-only: a miss must not start a YouTube download. Radio never
+    # enters this path, and disk/FFmpeg errors do not discard the user's cache.
+    cached_source = None
+    if not is_radio:
+        try:
+            cached_source = await get_cached_audio_source(song["url"])
+        except Exception as cache_error:
+            logger.warning("Không mở được audio cache (%s), thử luồng thường", type(cache_error).__name__)
+    if cached_source is not None:
+        use_direct_stream = False
+        use_long_temp_file = False
+        for field in ("youtube_metadata_failed", "fallback_source", "fallback_url",
+                      "fallback_locator", "stream_only"):
+            song.pop(field, None)
+        logger.info("Ưu tiên cache cục bộ cho %r, bỏ qua YouTube/audio fallback", song.get("title"))
+
     # /play can preserve initial YouTube page metadata even when the extractor
     # returns no playable formats. This is the earliest failure point, so try
     # the external providers before starting another YouTube download cycle.
-    if song.get("youtube_metadata_failed"):
+    if cached_source is None and song.get("youtube_metadata_failed"):
         fallback_attempted = True
         fallback_info = await _try_audio_fallback(song)
         if fallback_info:
@@ -597,8 +615,10 @@ async def _play_next_locked(
     # A successful match is remembered briefly in RAM. Replays during that
     # window can skip another doomed YouTube attempt, while the actual expiring
     # provider stream is always resolved afresh when required.
-    preferred_source, preferred_locator = _cached_audio_fallback_hint(song)
-    if not fallback_info and not fallback_attempted and preferred_locator:
+    preferred_source, preferred_locator = (
+        _cached_audio_fallback_hint(song) if cached_source is None else (None, None)
+    )
+    if cached_source is None and not fallback_info and not fallback_attempted and preferred_locator:
         fallback_attempted = True
         fallback_info = await _try_audio_fallback(
             song,
@@ -622,7 +642,7 @@ async def _play_next_locked(
             info = next((entry for entry in info["entries"] if entry), None)
         return info
 
-    if not fallback_info and _needs_stream_lookup(
+    if cached_source is None and not fallback_info and _needs_stream_lookup(
         song,
         use_direct_stream=use_direct_stream,
     ):
@@ -737,7 +757,7 @@ async def _play_next_locked(
     # LOADING PANEL V2 (hiện ngay trong lúc tải/cache/normalize nhạc)
     # ==============================
     loading_msg = None
-    if not is_radio and not use_direct_stream:
+    if cached_source is None and not is_radio and not use_direct_stream:
         loading_view = create_loading_panel(song, long_track=use_long_temp_file)
 
         existing_msg = state.now_playing_message
@@ -757,7 +777,9 @@ async def _play_next_locked(
         # Radio luôn giữ đường stream cũ. Máy nhà cũng tiếp tục stream nhạc dài.
         # Trên VPS dùng proxy, yt-dlp và FFmpeg có IP ra khác nhau nên signed URL
         # Googlevideo bị 403; tải file tạm qua yt-dlp để cả bài chỉ dùng một IP.
-        if use_direct_stream:
+        if cached_source is not None:
+            base_source = cached_source
+        elif use_direct_stream:
             logger.info(
                 "Stream trực tiếp %r, duration=%ss (guild=%s)",
                 song.get("title"),
