@@ -113,7 +113,7 @@ class QualityAndCacheTimingTests(unittest.TestCase):
     STATS = {"input_i": "-20", "input_tp": "-6", "input_lra": "5", "input_thresh": "-30", "target_offset": "0"}
 
     def test_two_pass_filter_and_opus_quality_are_unchanged(self):
-        with patch.object(cache_manager.subprocess, "run", return_value=SimpleNamespace(stderr=json.dumps(self.STATS))) as run:
+        with patch.object(cache_manager.subprocess, "run", return_value=SimpleNamespace(returncode=0, stderr=json.dumps(self.STATS))) as run:
             measured = cache_manager.measure_loudness_sync("raw.webm")
         self.assertEqual(measured, self.STATS)
         self.assertIn("loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", run.call_args.args[0])
@@ -154,6 +154,15 @@ class QualityAndCacheTimingTests(unittest.TestCase):
         with patch.object(cache_manager.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "ffmpeg")):
             with self.assertRaises(subprocess.CalledProcessError):
                 cache_manager.normalize_and_encode_sync("raw.webm", "final.opus", self.STATS)
+
+    def test_single_pass_fallback_reports_mode_without_changing_target_or_quality(self):
+        with patch.object(cache_manager.subprocess, "run", return_value=SimpleNamespace(stderr="Normalization Type: Dynamic\n")) as run:
+            with self.assertLogs("cache_manager", level="INFO") as logs:
+                cache_manager.normalize_and_encode_sync("raw.webm", "final.opus", None)
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("-af") + 1], "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=summary")
+        self.assertEqual(command[command.index("-b:a") + 1], "160k")
+        self.assertIn("mode=dynamic", logs.output[0])
 
 
 if __name__ == "__main__":

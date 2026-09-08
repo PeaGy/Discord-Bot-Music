@@ -3,6 +3,8 @@ import json
 import hashlib
 import asyncio
 import logging
+import math
+import re
 import glob
 import subprocess
 import tempfile
@@ -455,6 +457,59 @@ def download_raw_sync(url, raw_outtmpl):
     raise AudioDownloadError("Không tải được audio để tạo cache.") from last_error
 
 
+_LOUDNESS_FIELDS = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+_LOUDNESS_FIELD_MARKER = re.compile(r'"(?:' + "|".join(_LOUDNESS_FIELDS) + r')"\s*:')
+
+
+def _parse_loudness_stats(stderr):
+    """Read one complete loudnorm report, independent of surrounding FFmpeg logs.
+
+    raw_decode stops at the closing JSON brace; json.loads on the whole stderr
+    tail rejects valid reports followed by muxer/progress messages. Unrelated
+    JSON is ignored, but ambiguous or broken loudnorm reports aren't reused.
+    """
+    if not isinstance(stderr, str):
+        return None
+    decoder = json.JSONDecoder()
+    stats = None
+    position = 0
+    while True:
+        start = stderr.find("{", position)
+        if start < 0:
+            return stats
+        try:
+            value, end = decoder.raw_decode(stderr, start)
+        except (json.JSONDecodeError, RecursionError):
+            # Limit the lookahead to this apparent object. A stray brace in an
+            # earlier log line must not swallow the genuine report after it.
+            next_start = stderr.find("{", start + 1)
+            fragment = stderr[start:next_start if next_start >= 0 else len(stderr)]
+            if _LOUDNESS_FIELD_MARKER.search(fragment):
+                return None
+            position = start + 1
+            continue
+        position = end
+        if not isinstance(value, dict) or not any(key in value for key in _LOUDNESS_FIELDS):
+            continue
+        if stats is not None or not all(key in value for key in _LOUDNESS_FIELDS):
+            return None
+        parsed = {}
+        for key in _LOUDNESS_FIELDS:
+            number = value[key]
+            if isinstance(number, bool) or not isinstance(number, (str, int, float)):
+                return None
+            try:
+                number = float(number)
+            except (ValueError, TypeError, OverflowError):
+                return None
+            if not math.isfinite(number):
+                # Silence can produce -inf. It has no usable two-pass gain;
+                # keep the existing single-pass fallback instead of failing.
+                return None
+            parsed[key] = format(number, ".12g")
+        stats = parsed
+
+
 def measure_loudness_sync(filepath):
     """
     PASS 1 (2-pass loudnorm): chỉ ĐO loudness thật của file, không sửa gì.
@@ -466,18 +521,22 @@ def measure_loudness_sync(filepath):
         "-f", "null", "-",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    except (subprocess.TimeoutExpired, OSError):
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("audio-normalization measure-error reason=timeout")
         return None
-
-    stderr = result.stderr
-    start = stderr.rfind('{')
-    if start == -1:
+    except OSError:
+        logger.warning("audio-normalization measure-error reason=process-start")
         return None
-    try:
-        return json.loads(stderr[start:])
-    except json.JSONDecodeError:
+    if result.returncode != 0:
+        logger.warning("audio-normalization measure-error reason=ffmpeg-exit")
         return None
+    stats = _parse_loudness_stats(result.stderr)
+    if stats is None:
+        logger.warning("audio-normalization measure-error reason=invalid-or-missing-stats")
+    return stats
 
 
 def normalize_and_encode_sync(raw_path, final_path, stats):
@@ -497,7 +556,7 @@ def normalize_and_encode_sync(raw_path, final_path, stats):
     else:
         # Không đo được (file lỗi / ffmpeg cũ) -> fallback single-pass, vẫn còn
         # hơn là không normalize gì cả
-        loudnorm_filter = f"loudnorm={LOUDNORM_TARGET}"
+        loudnorm_filter = f"loudnorm={LOUDNORM_TARGET}:print_format=summary"
 
     cmd = [
         "ffmpeg", "-y", "-i", raw_path,
@@ -527,10 +586,17 @@ def build_cache_sync(url, raw_outtmpl, final_path):
         raw_path = download_raw_sync(url, raw_outtmpl)
     staged_path = f"{final_path}.{uuid.uuid4().hex}.tmp.opus"
     try:
-        with phase_timer(logger, "loudness-measure", track_id=track_id):
+        measured_at = time.perf_counter()
+        measure_outcome = "error"
+        try:
             stats = measure_loudness_sync(raw_path)
-        if not stats:
-            logger.warning("audio-normalization measurement=unavailable track=%s", track_id)
+            measure_outcome = "success" if stats else "fallback"
+        finally:
+            log_phase_timing(logger, "loudness-measure", measured_at, track_id=track_id, outcome=measure_outcome)
+        if stats:
+            logger.info("audio-normalization measurement=ok strategy=two-pass track=%s", track_id)
+        else:
+            logger.warning("audio-normalization measurement=unavailable strategy=single-pass track=%s", track_id)
         with phase_timer(logger, "normalize-encode", track_id=track_id):
             normalize_and_encode_sync(raw_path, staged_path, stats)
         # Publish only a complete file. A concurrent cache-first /play must not

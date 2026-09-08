@@ -21,7 +21,7 @@ def log_phase_timing(logger, phase, started, *, guild_id=None, track_id=None, ou
         "music-timing phase=%s elapsed=%.3fs outcome=%s guild=%s track=%s",
         _safe_label(phase),
         max(0.0, perf_counter() - started),
-        outcome if outcome in {"success", "error", "cancelled"} else "error",
+        outcome if outcome in {"success", "error", "cancelled", "fallback"} else "error",
         _safe_label(guild_id),
         _safe_label(track_id),
     )
