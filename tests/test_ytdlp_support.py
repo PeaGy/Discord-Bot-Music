@@ -72,7 +72,7 @@ class YoutubeYdlOptionsTests(unittest.TestCase):
         self.assertEqual([name for name, _ in routes], ["proxy", "direct"])
         self.assertEqual(routes[0][1]["proxy"], options["proxy"])
         self.assertEqual(routes[0][1]["cookiefile"], "cookies.txt")
-        self.assertNotIn("proxy", routes[1][1])
+        self.assertEqual(routes[1][1]["proxy"], "")
         self.assertNotIn("cookiefile", routes[1][1])
         self.assertEqual(options["cookiefile"], "cookies.txt")
 
@@ -261,7 +261,7 @@ class YoutubeMetadataRetryTests(unittest.TestCase):
         self.assertEqual(state["calls"], 3)
         self.assertEqual(
             state["proxies"],
-            ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000", None],
+            ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000", ""],
         )
         self.assertEqual(state["cookies"], ["cookies.txt", "cookies.txt", None])
         self.assertEqual(
@@ -316,7 +316,7 @@ class YoutubeMetadataRetryTests(unittest.TestCase):
         self.assertTrue(result["formats"])
         self.assertEqual(
             state["proxies"],
-            ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000", None],
+            ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000", ""],
         )
 
     def test_non_network_error_is_not_retried(self):

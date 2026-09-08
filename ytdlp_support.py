@@ -1,13 +1,178 @@
 from __future__ import annotations
 
 import copy
+from collections import OrderedDict
+from dataclasses import dataclass, field
 import logging
+import math
 import os
 from pathlib import Path
+import threading
 import time
+
+from music.urls import canonical_youtube_url
 
 
 logger = logging.getLogger(__name__)
+
+# A download handoff, not a persistent metadata cache. Signed CDN URLs and
+# cookies must never be copied into song dictionaries, SQLite, or logs.
+_DOWNLOAD_SEED_TTL_SECONDS = 120.0
+_DOWNLOAD_SEED_MAX_ENTRIES = 32
+_DOWNLOAD_SESSION_KEYS = (
+    "proxy", "source_address", "cookiefile", "cookiesfrombrowser",
+    "extractor_args", "http_headers", "geo_verification_proxy",
+    "username", "password", "client_certificate", "client_certificate_key",
+    "client_certificate_password", "js_runtimes", "remote_components", "impersonate",
+)
+_DOWNLOAD_SESSION_ENV = (
+    "YTDLP_PROXY", "YTDLP_YOUTUBE_DIRECT_FALLBACK", "YTDLP_YOUTUBE_CLIENT",
+    "YTDLP_COOKIE_FILE", "YTDLP_JS_RUNTIME", "YTDLP_REMOTE_COMPONENTS",
+    "YTDLP_BGUTIL_URL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+)
+
+
+@dataclass
+class YoutubeDownloadSeed:
+    """Single-use resolved video/session; sensitive fields are deliberately hidden."""
+
+    info: dict = field(repr=False)
+    options: dict = field(repr=False)
+    route_name: str
+    player_client: str | None
+    cookiejar: object = field(repr=False)
+
+
+@dataclass(repr=False)
+class _DownloadSeedEntry:
+    seed: YoutubeDownloadSeed
+    created_at: float
+    configuration: object
+    cookie_file_state: object
+
+
+_download_seeds: OrderedDict[str, _DownloadSeedEntry] = OrderedDict()
+_download_seeds_lock = threading.Lock()
+
+
+def _download_session_configuration(options: dict):
+    return (
+        copy.deepcopy({key: options[key] for key in _DOWNLOAD_SESSION_KEYS if key in options}),
+        tuple((key, os.getenv(key)) for key in _DOWNLOAD_SESSION_ENV),
+    )
+
+
+def _cookie_file_state(options: dict):
+    """Detect a replaced cookie file without reading or logging its contents."""
+    path = options.get("cookiefile")
+    if not isinstance(path, (str, os.PathLike)) or not path:
+        return None
+    try:
+        stat = Path(path).stat()
+        return (stat.st_size, stat.st_mtime_ns, stat.st_ino)
+    except OSError:
+        return None
+
+
+def _prune_download_seeds(now: float) -> None:
+    for key, entry in list(_download_seeds.items()):
+        if now - entry.created_at >= _DOWNLOAD_SEED_TTL_SECONDS:
+            _download_seeds.pop(key, None)
+
+
+def _capture_download_seed(query, result, ydl, attempt_options, route_name, client):
+    if not isinstance(result, dict):
+        return None
+    info = result
+    if "entries" in info:
+        entries = info.get("entries")
+        # /play uses ytsearch1. Never select an arbitrary item from a playlist.
+        if not str(query).strip().casefold().startswith("ytsearch1:"):
+            return None
+        if not isinstance(entries, (list, tuple)) or len(entries) != 1:
+            return None
+        info = entries[0]
+    if not isinstance(info, dict) or info.get("_type", "video") != "video":
+        return None
+    canonical = canonical_youtube_url(info.get("webpage_url") or "")
+    if not canonical or str(info.get("id") or "") != canonical.split("=")[-1]:
+        return None
+    query_url = canonical_youtube_url(query)
+    if query_url != canonical and not str(query).strip().casefold().startswith("ytsearch1:"):
+        return None
+    if info.get("is_live") or info.get("live_status") not in (None, "not_live"):
+        return None
+    try:
+        duration = float(info.get("duration") or 0)
+    except (ValueError, TypeError):
+        return None
+    if not math.isfinite(duration) or not 0 < duration <= 600:
+        return None
+    formats = info.get("formats")
+    if not isinstance(formats, (list, tuple)) or not any(
+        isinstance(item, dict) and item.get("url")
+        and item.get("acodec") not in (None, "", "none")
+        for item in formats
+    ):
+        return None
+    if info.get("additional_urls") or "entries" in info:
+        return None
+
+    resolved = copy.deepcopy(info)
+    # A new caller supplies its own output template and format selection. Keep
+    # the complete format catalog, not old selected-download/file bookkeeping.
+    for key in list(resolved):
+        if key.startswith("__") or key in {
+            "requested_downloads", "requested_formats", "requested_subtitles",
+            "filepath", "_filename", "filename", "infojson_filename",
+        }:
+            resolved.pop(key, None)
+    session_options = copy.deepcopy({
+        key: attempt_options[key]
+        for key in _DOWNLOAD_SESSION_KEYS if key in attempt_options
+    })
+    # yt-dlp may supply its own default headers. Preserve those along with the
+    # per-format headers already present in the resolved result.
+    if getattr(ydl, "params", {}).get("http_headers"):
+        session_options["http_headers"] = copy.deepcopy(ydl.params["http_headers"])
+    original_jar = ydl.cookiejar
+    jar = type(original_jar)()
+    for cookie in original_jar:
+        jar.set_cookie(copy.deepcopy(cookie))
+    # This clone has no disk filename. The download must install it before any
+    # request; it must neither reload browser cookies nor overwrite a cookiefile.
+    session_options.pop("cookiefile", None)
+    session_options.pop("cookiesfrombrowser", None)
+    return canonical, YoutubeDownloadSeed(resolved, session_options, route_name, client, jar)
+
+
+def take_youtube_download_seed(url: str, base_options: dict) -> YoutubeDownloadSeed | None:
+    """Consume a fresh, matching session handoff, or use normal extraction.
+
+    Call only when the download is ready to start, after waiting for the cache
+    worker. The caller must assign ``ydl.cookiejar = seed.cookiejar`` before
+    ``ydl.process_ie_result(seed.info, download=True)``. Never serialize a seed.
+    """
+    canonical = canonical_youtube_url(url)
+    if not canonical:
+        return None
+    now = time.monotonic()
+    with _download_seeds_lock:
+        _prune_download_seeds(now)
+        entry = _download_seeds.pop(canonical, None)
+    if entry is None:
+        return None
+    if entry.configuration != _download_session_configuration(base_options):
+        return None
+    if entry.cookie_file_state != _cookie_file_state(base_options):
+        return None
+    options = copy.deepcopy(base_options)
+    for key in _DOWNLOAD_SESSION_KEYS:
+        options.pop(key, None)
+    options.update(entry.seed.options)
+    entry.seed.options = options
+    return entry.seed
 
 _TRANSIENT_YTDLP_ERROR_MARKERS = (
     "http error 403",
@@ -214,7 +379,9 @@ def youtube_ydl_routes(
         and youtube_direct_fallback_enabled()
     ):
         direct = copy.deepcopy(primary)
-        direct.pop("proxy", None)
+        # Explicitly disable ambient HTTP(S)_PROXY too. Omitting this option
+        # lets yt-dlp silently select another proxy, so the route isn't direct.
+        direct["proxy"] = ""
         direct.pop("cookiefile", None)
         direct.pop("cookiesfrombrowser", None)
         routes.append(("direct", direct))
@@ -230,6 +397,7 @@ def extract_info_with_retry(
     attempts: int = 2,
     retry_delay: float = 5.0,
     result_validator=None,
+    remember_for_download: bool = False,
 ):
     """Extract metadata while rotating clients and an optional direct route.
 
@@ -272,7 +440,33 @@ def extract_info_with_retry(
             )
             with yt_dlp.YoutubeDL(attempt_options) as ydl:
                 result = ydl.extract_info(query, download=download)
-            if result_validator is None or result_validator(result):
+                usable = result_validator is None or result_validator(result)
+                captured = None
+                if usable and remember_for_download and not download:
+                    try:
+                        captured = _capture_download_seed(
+                            query, result, ydl, attempt_options, route_name, client,
+                        )
+                    except Exception as capture_error:
+                        # Handoff is an optimization, never a reason to fail a
+                        # valid /play. Don't include exception text or payloads.
+                        logger.debug("Download handoff unavailable (%s)", type(capture_error).__name__)
+            if usable:
+                if captured is not None:
+                    canonical, seed = captured
+                    # __exit__ may have saved/rotated a cookiefile: fingerprint
+                    # its final stat after closing the metadata session.
+                    now = time.monotonic()
+                    entry = _DownloadSeedEntry(
+                        seed, now, _download_session_configuration(options),
+                        _cookie_file_state(options),
+                    )
+                    with _download_seeds_lock:
+                        _prune_download_seeds(now)
+                        _download_seeds[canonical] = entry
+                        _download_seeds.move_to_end(canonical)
+                        while len(_download_seeds) > _DOWNLOAD_SEED_MAX_ENTRIES:
+                            _download_seeds.popitem(last=False)
                 if route_name == "direct" and len(routes) > 1:
                     logger.info(
                         "YouTube hoạt động qua kết nối trực tiếp sau khi proxy lỗi"

@@ -83,6 +83,9 @@ class ShortAudioDownloadRetryTests(unittest.TestCase):
                     raise RuntimeError("HTTP Error 403: Forbidden")
                 return {"id": "video-id"}
 
+            def process_ie_result(self, info, *, download):
+                return info
+
             @staticmethod
             def prepare_filename(_info):
                 return "audio.webm"
@@ -152,6 +155,9 @@ class ShortAudioDownloadRetryTests(unittest.TestCase):
                     raise RuntimeError("HTTP Error 403: Forbidden")
                 return {"id": "video-id"}
 
+            def process_ie_result(self, info, *, download):
+                return info
+
             @staticmethod
             def prepare_filename(_info):
                 return "audio.webm"
@@ -182,7 +188,7 @@ class ShortAudioDownloadRetryTests(unittest.TestCase):
         self.assertEqual(state["calls"], 3)
         self.assertEqual(
             state["proxies"],
-            ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000", None],
+            ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000", ""],
         )
         self.assertEqual(state["cookies"], [None, None, None])
         self.assertEqual(

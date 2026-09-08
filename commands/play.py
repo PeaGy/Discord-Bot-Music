@@ -8,6 +8,7 @@ from discord.ext import commands
 import music_library
 from cache_manager import find_cached_audio_path, preload_audio
 from music.urls import canonical_youtube_url
+from music.timing import phase_timer
 from music.player import play_next, start_idle_timer
 from music.spotify import get_spotify_info, is_spotify_url
 from music.state import get_guild_state
@@ -108,6 +109,7 @@ def get_song_info(query: str):
             lookup,
             options,
             download=False,
+            remember_for_download=not is_soundcloud_url(query),
             result_validator=(
                 _extraction_has_playable_audio_or_cache if metadata_tolerant else None
             ),
@@ -188,7 +190,9 @@ class Play(commands.Cog):
     def __init__(self, bot): self.bot = bot
 
     async def _play(self, interaction, query, *, front):
-        await interaction.response.defer(thinking=True)
+        guild_id = getattr(interaction.guild, "id", None)
+        with phase_timer(logger, "interaction-defer", guild_id=guild_id):
+            await interaction.response.defer(thinking=True)
         if not interaction.user.voice:
             return await interaction.followup.send("❌ Bạn cần vào voice channel trước.", ephemeral=True)
         user_channel = interaction.user.voice.channel
@@ -196,14 +200,18 @@ class Play(commands.Cog):
         if vc and vc.channel != user_channel:
             return await interaction.followup.send(f"❌ Bot đang ở **{vc.channel.name}**.", ephemeral=True)
         if not vc:
-            try: vc = await user_channel.connect(self_deaf=True)
+            try:
+                with phase_timer(logger, "voice-connect", guild_id=guild_id):
+                    vc = await user_channel.connect(self_deaf=True)
             except Exception as error:
                 logger.warning("Không kết nối được voice: %s", error)
                 return await interaction.followup.send("❌ Không thể kết nối voice lúc này.", ephemeral=True)
         loop = asyncio.get_running_loop()
         try:
-            song = await loop.run_in_executor(None, get_spotify_info if is_spotify_url(query) else get_song_info, query)
-            if not song: raise ValueError("metadata unavailable")
+            # Includes executor scheduling and extraction, not just network time.
+            with phase_timer(logger, "metadata-wait", guild_id=guild_id):
+                song = await loop.run_in_executor(None, get_spotify_info if is_spotify_url(query) else get_song_info, query)
+                if not song: raise ValueError("metadata unavailable")
         except Exception as error:
             logger.warning("Không lấy được metadata /play (guild=%s): %s", interaction.guild.id, error)
             if not vc.is_playing() and not vc.is_paused(): await start_idle_timer(vc, channel=interaction.channel)
@@ -216,7 +224,8 @@ class Play(commands.Cog):
         if position or current:
             location = "đang phát" if current else f"đã ở vị trí #{position}"
             view = DuplicateConfirmView(self.bot, interaction.user.id, interaction.guild, interaction.channel, vc, song, interaction.user, front)
-            return await interaction.followup.send(f"⚠️ **{song['title']}** {location}. Vẫn thêm lần nữa?", view=view, ephemeral=True)
+            with phase_timer(logger, "duplicate-ui", guild_id=guild_id):
+                return await interaction.followup.send(f"⚠️ **{song['title']}** {location}. Vẫn thêm lần nữa?", view=view, ephemeral=True)
 
         item = {**song, "requester": interaction.user}
         queue.appendleft(item) if front else queue.append(item)
@@ -230,7 +239,8 @@ class Play(commands.Cog):
         embed = discord.Embed(description=f"**{song['title']}** `[{format_duration(song['duration'])}]`")
         embed.set_author(name=f"Đã thêm vào hàng đợi (#{1 if front else len(queue)})", icon_url=interaction.user.display_avatar.url)
         if song.get("thumbnail"): embed.set_thumbnail(url=song["thumbnail"])
-        await interaction.followup.send(embed=embed)
+        with phase_timer(logger, "queue-ui", guild_id=guild_id):
+            await interaction.followup.send(embed=embed)
         if not vc.is_playing() and not vc.is_paused(): await play_next(self.bot, vc, interaction.channel)
 
     @app_commands.command(name="play", description="Phát nhạc hoặc thêm vào cuối hàng đợi")

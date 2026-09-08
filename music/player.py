@@ -21,6 +21,8 @@ from music.source_fallback import (
     resolve_audio_fallback_sync,
 )
 from music.stream_source import open_fallback_stream, STREAM_STARTUP_TIMEOUT
+from music.timing import log_phase_timing, phase_timer
+from music.urls import canonical_youtube_url
 from cache_manager import (
     get_audio_source,
     get_cached_audio_source,
@@ -533,7 +535,9 @@ async def play_next(
     channel: discord.TextChannel,
 ):
     state = get_guild_state(vc.guild)
+    lock_started = time.perf_counter()
     async with state.play_lock:
+        log_phase_timing(logger, "play-lock-wait", lock_started, guild_id=vc.guild.id)
         if not vc.is_connected():
             logger.info("Bỏ qua play_next vì voice đã ngắt (guild=%s)", vc.guild.id)
             return
@@ -572,6 +576,9 @@ async def _play_next_locked(
 
     song = queue.popleft()
     requester = song.get("requester")
+    preparation_started = time.perf_counter()
+    timing_url = canonical_youtube_url(song.get("url"))
+    timing_track = timing_url.split("=")[-1] if timing_url else None
 
     duration = int(song.get("duration") or 0)
     is_radio = song.get("source") == "radio"
@@ -637,7 +644,10 @@ async def _play_next_locked(
         if song.get("source") == "spotify" and not query.startswith("ytsearch"):
             query = f"ytsearch1:{query}"
 
-        info = extract_info_with_retry(query, YDL_OPTIONS, download=False)
+        info = extract_info_with_retry(
+            query, YDL_OPTIONS, download=False,
+            remember_for_download=not is_radio and song.get("source") in {"youtube", "spotify"},
+        )
         if "entries" in info:
             info = next((entry for entry in info["entries"] if entry), None)
         return info
@@ -653,9 +663,10 @@ async def _play_next_locked(
                 song.get("title", "Unknown"),
                 vc.guild.id,
             )
-            info = await loop.run_in_executor(None, extract_stream)
-            if not info or not info.get("url"):
-                raise ValueError("yt-dlp không trả về stream URL")
+            with phase_timer(logger, "stream-metadata-wait", guild_id=vc.guild.id, track_id=timing_track):
+                info = await loop.run_in_executor(None, extract_stream)
+                if not info or not info.get("url"):
+                    raise ValueError("yt-dlp không trả về stream URL")
             source = info["url"]
             if info.get("webpage_url"):
                 song["url"] = info["webpage_url"]
@@ -674,6 +685,10 @@ async def _play_next_locked(
                     song.get("title", "Unknown"),
                     vc.guild.id,
                     error,
+                )
+                log_phase_timing(
+                    logger, "source-prepare", preparation_started,
+                    guild_id=vc.guild.id, track_id=timing_track, outcome="error",
                 )
                 return await _play_next_locked(bot, vc, channel, state)
 
@@ -762,11 +777,12 @@ async def _play_next_locked(
 
         existing_msg = state.now_playing_message
         try:
-            if existing_msg:
-                await edit_panel_message(existing_msg, loading_view)
-                loading_msg = existing_msg
-            else:
-                loading_msg = await send_panel_message(channel, loading_view)
+            with phase_timer(logger, "loading-ui", guild_id=vc.guild.id, track_id=timing_track):
+                if existing_msg:
+                    await edit_panel_message(existing_msg, loading_view)
+                    loading_msg = existing_msg
+                else:
+                    loading_msg = await send_panel_message(channel, loading_view)
         except Exception as e:
             logger.debug("Không thể hiện loading panel (guild=%s): %s", vc.guild.id, e)
 
@@ -831,6 +847,10 @@ async def _play_next_locked(
                 vc.guild.id,
                 e,
             )
+            log_phase_timing(
+                logger, "source-prepare", preparation_started,
+                guild_id=vc.guild.id, track_id=timing_track, outcome="error",
+            )
             if loading_msg:
                 try:
                     await edit_panel_message(loading_msg, create_error_panel(song))
@@ -842,7 +862,13 @@ async def _play_next_locked(
                 except Exception:
                     pass
             return await _play_next_locked(bot, vc, channel, state)
-    
+
+    # This total includes nested metadata/cache/loading phases. Ready means the
+    # source was prepared, not that Discord has delivered audible sound yet.
+    log_phase_timing(
+        logger, "source-prepare", preparation_started,
+        guild_id=vc.guild.id, track_id=timing_track,
+    )
     # Radio/stream dài vẫn giữ nguyên đường PCM + VolumeTransformer cũ.
     # Cache nhạc ngắn là Opus trực tiếp nên không được bọc PCMVolumeTransformer,
     # tránh decode rồi encode lossy thêm một lần trước khi gửi Discord.
@@ -860,10 +886,13 @@ async def _play_next_locked(
         vc.paused_at = None
 
         history.append(song)
-        vc.play(
-            audio_source,
-            after=after_playing,
-        )
+        # Submission is synchronous; measuring it must not be described as a
+        # first-audible-frame probe or introduce reads/re-encoding of Opus.
+        with phase_timer(logger, "voice-submit", guild_id=vc.guild.id, track_id=timing_track):
+            vc.play(
+                audio_source,
+                after=after_playing,
+            )
         asyncio.create_task(_record_recent_safely(vc.guild.id, song))
     except Exception as error:
         if history and history[-1] is song:

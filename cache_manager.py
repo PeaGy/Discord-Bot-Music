@@ -13,12 +13,14 @@ from contextlib import asynccontextmanager
 import yt_dlp
 import discord
 from music.urls import canonical_youtube_url
+from music.timing import phase_timer, log_phase_timing
 from ytdlp_support import (
     is_transient_ytdlp_error,
     ydl_options_for_player_client,
     youtube_player_clients,
     youtube_ydl_options,
     youtube_ydl_routes,
+    take_youtube_download_seed,
 )
 
 
@@ -345,6 +347,26 @@ def find_cached_audio_path(url):
     return None
 
 
+def _cache_timing_id(url):
+    """Correlate phases without logging URLs, query strings or credentials."""
+    canonical = canonical_youtube_url(url)
+    return canonical.split("=", 1)[1] if canonical else hashlib.md5(url.encode("utf-8")).hexdigest()[:12]
+
+
+def _download_resolved_audio(ydl, info, track_id):
+    if info and "entries" in info:
+        info = next((entry for entry in info["entries"] if entry), None)
+    if not info:
+        raise AudioDownloadError("yt-dlp không trả về thông tin audio.")
+    # This is yt-dlp's normal download-from-info path. Format selection and
+    # downloader/fixup handling stay with yt-dlp, on the same network session.
+    with phase_timer(logger, "audio-transfer", track_id=track_id):
+        downloaded = ydl.process_ie_result(info, download=True)
+    if not downloaded:
+        raise AudioDownloadError("yt-dlp không trả về kết quả tải audio.")
+    return ydl.prepare_filename(downloaded)
+
+
 def download_raw_sync(url, raw_outtmpl):
     """
     Tải audio tốt nhất từ YouTube, KHÔNG transcode ở bước này (giữ nguyên chất
@@ -364,6 +386,28 @@ def download_raw_sync(url, raw_outtmpl):
         "fragment_retries": 2,
     })
     attempt_specs = _youtube_download_attempt_specs(base_options, url)
+    track_id = _cache_timing_id(url)
+
+    # Consume at most one fresh handoff. It never goes into a song/DB, and a
+    # failed or expired signed URL falls back to the bounded extraction loop.
+    seed = take_youtube_download_seed(url, base_options)
+    if seed is not None:
+        try:
+            logger.info(
+                "yt-dlp phase=short-download reuse=fresh-metadata "
+                "route=%s client=%s track=%s",
+                seed.route_name, seed.player_client or "auto", track_id,
+            )
+            with yt_dlp.YoutubeDL(seed.options) as ydl:
+                if seed.cookiejar is not None:
+                    ydl.cookiejar = seed.cookiejar
+                return _download_resolved_audio(ydl, seed.info, track_id)
+        except Exception as error:
+            _remove_long_audio_bundle(raw_outtmpl.split("%", 1)[0])
+            logger.info(
+                "yt-dlp phase=download-seed-refresh track=%s reason=%s",
+                track_id, type(error).__name__,
+            )
 
     last_error = None
     total_attempts = len(attempt_specs)
@@ -381,14 +425,9 @@ def download_raw_sync(url, raw_outtmpl):
                 url,
             )
             with yt_dlp.YoutubeDL(options) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if "entries" in info:
-                    info = next((entry for entry in info["entries"] if entry), None)
-                if not info:
-                    raise AudioDownloadError("yt-dlp không trả về thông tin audio.")
-                # yt-dlp có thể chọn extension thật khác với %(ext)s dự kiến
-                # -> luôn lấy tên file thật qua prepare_filename().
-                return ydl.prepare_filename(info)
+                with phase_timer(logger, "download-metadata", track_id=track_id):
+                    info = ydl.extract_info(url, download=False)
+                return _download_resolved_audio(ydl, info, track_id)
         except Exception as error:
             last_error = error
             prefix = raw_outtmpl.split("%", 1)[0]
@@ -443,11 +482,10 @@ def measure_loudness_sync(filepath):
 
 def normalize_and_encode_sync(raw_path, final_path, stats):
     """
-    PASS 2 (2-pass loudnorm): áp MỘT hệ số gain TĨNH dựa trên số đo thật ở
-    pass 1 (linear=true). Đây là điểm khác biệt quan trọng nhất so với trước:
-    KHÔNG còn gain "rượt" theo thời gian thực lúc phát -> hết hiện tượng
-    pumping (to nhỏ thất thường). Đồng thời mọi bài đều được đưa về cùng
-    một mức loudness -16 LUFS -> nghe đều nhau giữa các bài.
+    PASS 2: ưu tiên gain tuyến tính dựa trên số đo pass 1 (linear=true).
+    FFmpeg có thể chuyển sang dynamic nếu giới hạn true peak/LRA không cho
+    phép linear. Giữ nguyên mục tiêu -16 LUFS và chất lượng encode của cache;
+    toàn bộ xử lý hoàn tất trước khi phát, không normalize lại lúc phát.
     """
     if stats:
         loudnorm_filter = (
@@ -471,18 +509,35 @@ def normalize_and_encode_sync(raw_path, final_path, stats):
         "-fec", "1",
         final_path,
     ]
-    subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=180)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=180)
+    # The FFmpeg summary is captured already; report only the known mode, not
+    # arbitrary stderr (which can contain paths/URLs or credentials).
+    for line in (result.stderr or "").splitlines():
+        if line.strip().startswith("Normalization Type:"):
+            mode = line.split(":", 1)[1].strip().lower()
+            if mode in {"linear", "dynamic"}:
+                logger.info("audio-normalization mode=%s", mode)
+            break
 
 
 def build_cache_sync(url, raw_outtmpl, final_path):
-    raw_path = download_raw_sync(url, raw_outtmpl)
+    track_id = _cache_timing_id(url)
+    started = time.perf_counter()
+    with phase_timer(logger, "download-total", track_id=track_id):
+        raw_path = download_raw_sync(url, raw_outtmpl)
     staged_path = f"{final_path}.{uuid.uuid4().hex}.tmp.opus"
     try:
-        stats = measure_loudness_sync(raw_path)
-        normalize_and_encode_sync(raw_path, staged_path, stats)
+        with phase_timer(logger, "loudness-measure", track_id=track_id):
+            stats = measure_loudness_sync(raw_path)
+        if not stats:
+            logger.warning("audio-normalization measurement=unavailable track=%s", track_id)
+        with phase_timer(logger, "normalize-encode", track_id=track_id):
+            normalize_and_encode_sync(raw_path, staged_path, stats)
         # Publish only a complete file. A concurrent cache-first /play must not
         # mistake the non-empty output of an unfinished encoder for a cache hit.
-        os.replace(staged_path, final_path)
+        with phase_timer(logger, "cache-publish", track_id=track_id):
+            os.replace(staged_path, final_path)
+        log_phase_timing(logger, "cache-build-total", started, track_id=track_id)
     finally:
         for temporary_path in (raw_path, staged_path):
             try:
@@ -502,11 +557,16 @@ async def ensure_audio_cached(url):
         return final_path
 
     lock = _get_lock(_cache_locks, url)
+    track_id = _cache_timing_id(url)
+    lock_started = time.perf_counter()
     async with lock:
+        log_phase_timing(logger, "cache-track-wait", lock_started, track_id=track_id)
         if not _is_valid_file(final_path):
             # Loudness pass + encode Opus khá nặng CPU. Chỉ cho một cache build
             # chạy tại một thời điểm để không giành tài nguyên với audio thread.
+            slot_started = time.perf_counter()
             async with _cache_build_semaphore:
+                log_phase_timing(logger, "cache-slot-wait", slot_started, track_id=track_id)
                 # URL khác có thể đã tạo xong file trong lúc ta chờ semaphore.
                 if not _is_valid_file(final_path):
                     await asyncio.to_thread(build_cache_sync, url, raw_outtmpl, final_path)

@@ -16,6 +16,7 @@ Bạn không thể tự host? mời bot về server của bạn 👉 [Add Pearto
 - Lyrics từ LRCLIB, radio internet, chế độ 24/7, sleep timer.
 - Preload bài kế tiếp, cache âm thanh và chuẩn hóa khoảng `-16 LUFS`; radio hoặc bài dài được stream trực tiếp.
 - Ưu tiên audio cache trước YouTube và các nguồn dự phòng. Link YouTube đã cache bỏ qua tra cứu mạng, dùng thông tin bài đã lưu trong thư viện; hỗ trợ cả link chia sẻ/mobile cùng video. Cache cũ thiếu metadata vẫn phát được với tên tạm. Tìm kiếm bằng từ khóa vẫn cần xác định đúng bài trước.
+- Bài YouTube ngắn vừa tra cứu có thể tải bằng chính thông tin/phiên vừa lấy, tránh tra lại trước khi tải. Handoff chỉ ở RAM, tối đa 120 giây/32 bài, dùng một lần; thông tin cũ, thay đổi cấu hình hoặc tải lỗi sẽ quay về luồng tra cứu có retry. Vẫn giữ chuẩn hóa hai lượt, Opus 160 kbps và cơ chế chống tải cache trùng.
 - Trên VPS có thể thử YouTube qua WARP rồi IP trực tiếp trước khi fallback về SoundCloud/Audius.
 - Audio fallback kiểm tra lại metadata đầy đủ (kể cả mô tả cover) và đọc thử frame audio trước khi báo đang phát. Nguồn lỗi được bỏ qua để thử ứng viên khác, tối đa 3 nguồn trong cùng thời gian chờ; không tạo cache nhạc. Radio giữ cơ chế reconnect riêng.
 
@@ -270,6 +271,22 @@ Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không 
 - **AI chưa đăng nhập:** chạy `python -m xai_oauth login` rồi `python -m xai_oauth status`.
 - **OAuth 403/429:** kiểm tra gói/quota SuperGrok hoặc dùng `XAI_API_KEY` dự phòng.
 - **YouTube lỗi:** bot tự thử client kế tiếp trong `YTDLP_YOUTUBE_CLIENT`. Khi VPS đã dùng WARP qua `YTDLP_PROXY`, đặt `YTDLP_YOUTUBE_DIRECT_FALLBACK=true` để thử lại qua IP trực tiếp của VPS sau bot-check/403/429; tuyến trực tiếp không dùng cookie. Sau đó có thể bật `YTDLP_SOUNDCLOUD_FALLBACK=true` và `YTDLP_AUDIUS_FALLBACK=true`; hai nguồn ngoài YouTube chỉ stream trực tiếp, dùng chung `YTDLP_AUDIO_FALLBACK_TIMEOUT_SECONDS` và không tạo audio cache. Nếu mọi tuyến đều lỗi, kiểm tra WARP/BgUtils rồi cập nhật các gói trong `requirements.txt`.
+
+### Đo thời gian chuẩn bị nhạc
+
+Log `music-timing` có sẵn ở mức INFO, không cần đổi `.env`. Sau khi thử một bài chưa có cache:
+
+```bash
+sudo journalctl -u peto --since "5 minutes ago" --no-pager -o cat | grep -E 'music-timing|reuse=fresh-metadata|download-seed-refresh|audio-normalization'
+```
+
+- `voice-connect`: kết nối Discord; `metadata-wait`: chờ worker và lấy thông tin bài; `queue-ui`/`loading-ui`: gửi giao diện Discord.
+- `cache-track-wait`/`cache-slot-wait`: chờ lượt tạo cache. Giới hạn CPU vẫn là một lượt, chưa tăng tải đồng thời trên VPS.
+- `download-metadata`: tra thông tin tại bước tải. Không cần bước này khi có `reuse=fresh-metadata`; `audio-transfer`: tải audio và xử lý đóng gói của yt-dlp, chưa bao gồm chuẩn hóa âm lượng.
+- `loudness-measure`: đo âm lượng toàn bài; `normalize-encode`: chuẩn hóa và mã hóa Opus, gồm ghi file tạm; `cache-publish`: công bố file hoàn chỉnh để phát. `audio-normalization mode=linear/dynamic` là chế độ thực tế FFmpeg báo lại, không phải thay đổi mục tiêu âm lượng.
+- `download-total`, `cache-build-total` và `source-prepare` là các khoảng tổng **lồng nhau**, không cộng tất cả các dòng lại. `source-prepare` gồm cả chờ và loading UI; `voice-submit` chỉ đo lúc giao nguồn cho Discord, không xác nhận người dùng đã nghe được tiếng.
+
+Các dòng đo chỉ ghi thời gian, trạng thái và ID an toàn; không ghi mật khẩu proxy, cookie hay URL audio có chữ ký. Handoff phiên cũng không nằm trong hàng đợi/lịch sử/SQLite. Bài đã cache vẫn phát từ file cục bộ, không phải tải lại để đo.
 - **TikTok extractor lỗi:** cập nhật `yt-dlp`; bot tự thử TikWM khi nguồn chính thất bại.
 - **Không thấy slash command:** kiểm tra scope `applications.commands`, quyền bot và log đồng bộ lệnh.
 - **Discord báo reconnect rồi `RESUMED`:** thường là lỗi mạng tạm thời, không phải bot crash.
