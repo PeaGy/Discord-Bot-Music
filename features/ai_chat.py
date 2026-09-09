@@ -27,6 +27,12 @@ from openai import AsyncOpenAI, APIError, APIStatusError, AuthenticationError, R
 from tavily import AsyncTavilyClient
 
 import user_memory
+from peto_help import (
+    build_peto_help_context,
+    is_peto_help_request,
+    peto_help_fallback,
+    public_help_answer_supported,
+)
 from guild_ai_settings import (
     AIAdmissionController,
     AIAdmissionDenied,
@@ -3380,6 +3386,9 @@ class GrokChat(commands.Cog):
         2) parse text pseudo-tool ("tool request ...")
         3) fallback: edit / generate / danbooru theo intent
         """
+        if is_peto_help_request(user_text):
+            # A how-to question must never become a forced image/wiki/music call.
+            return [], response
         calls = self._extract_tool_calls(response)
         if calls:
             calls, rejected_image_calls = self._filter_unrequested_image_calls(
@@ -3795,6 +3804,16 @@ class GrokChat(commands.Cog):
                 interaction.user, chat_roles
             ) and not await self.bot.is_owner(interaction.user):
                 return "❌ Role của bạn chưa được phép dùng Chat AI trong server này."
+
+        # Classify ONLY the user's request, not instructions in a selected post.
+        if is_peto_help_request(request):
+            try:
+                async with self.ai_admission.admit(
+                    guild_key, int(interaction.user.id), policy, heavy=False
+                ):
+                    return await self._answer_public_help(request)
+            except AIAdmissionDenied as error:
+                return admission_denial_message(error)
 
         combined_text = f"{request}\n{target.content}".strip()
         chain = await self._collect_reply_chain(target) if target.reference else []
@@ -4227,9 +4246,10 @@ class GrokChat(commands.Cog):
             for mention in message.mentions:
                 admission_text = admission_text.replace(f"<@{mention.id}>", "")
                 admission_text = admission_text.replace(f"<@!{mention.id}>", "")
-            admission_images = await self._iter_image_attachments(message, reply_chain)
-            admission_videos = await self._iter_video_attachments(message, reply_chain)
-            admission_heavy = bool(
+            help_request = is_peto_help_request(admission_text)
+            admission_images = [] if help_request else await self._iter_image_attachments(message, reply_chain)
+            admission_videos = [] if help_request else await self._iter_video_attachments(message, reply_chain)
+            admission_heavy = not help_request and bool(
                 self._looks_like_study_request(
                     admission_text, has_images=bool(admission_images)
                 )
@@ -4292,6 +4312,14 @@ class GrokChat(commands.Cog):
             clean_text = clean_text.replace(f"<@{mention.id}>", "")
             clean_text = clean_text.replace(f"<@!{mention.id}>", "")
         clean_text = clean_text.strip()
+
+        if is_peto_help_request(clean_text):
+            # Public how-to needs only chat access. Do not inspect attachments,
+            # read URLs/history, pin memory, or require execution feature roles.
+            async with message.channel.typing():
+                answer = await self._answer_public_help(clean_text)
+            await self._send_public_help(message, answer)
+            return
 
         # Sticker/emoji là xử lý ảnh cục bộ, chặn trước Grok để model không
         # hiểu nhầm thành generate_image/edit_image và phát sinh ảnh AI.
@@ -4602,6 +4630,53 @@ class GrokChat(commands.Cog):
     # ==========================================
     # GỌI GROK + XỬ LÝ TOOL CALLING
     # ==========================================
+    async def _answer_public_help(self, user_text: str) -> str:
+        """A text-only request with bounded public docs, no personal data/tools."""
+        tree = getattr(self.bot, "tree", None)
+        context = build_peto_help_context(tree, user_text)
+        try:
+            response = await self._create_response(
+                instructions=SYSTEM_PROMPT + "\n\n" + context,
+                input_data=user_text,
+                tool_choice="none",
+                use_tools=False,
+                allow_image_tools=False,
+                allowed_tool_names=set(),
+                max_output_tokens=1000,
+                reasoning_effort="low",
+            )
+            answer = self._response_text(response)
+            if (answer and not self._extract_tool_calls(response)
+                    and not self._looks_like_pseudo_tool_text(answer)
+                    and public_help_answer_supported(tree, answer)):
+                return answer
+            logger.warning("Peto help: bỏ phản hồi rỗng, công cụ ngoài ý định hoặc lệnh chưa xác nhận")
+        except Exception as error:
+            # Still provide confirmed local command guidance if upstream is down.
+            logger.warning("Peto help: AI không khả dụng (%s); dùng hướng dẫn cục bộ", type(error).__name__)
+        return peto_help_fallback(tree, user_text)
+
+    @staticmethod
+    async def _send_public_help(message: discord.Message, answer: str) -> None:
+        chunks = _split_for_discord(answer)
+        attachment = None
+        if len(chunks) > MAX_INLINE_RESPONSE_MESSAGES:
+            attachment = discord.File(io.BytesIO(answer.encode("utf-8-sig")), filename="peto-huong-dan.txt")
+            chunks = ["📄 Peto gửi hướng dẫn đầy đủ trong file để cậu dễ đọc nhé."]
+        try:
+            for index, chunk in enumerate(chunks):
+                kwargs = {"mention_author": False, "allowed_mentions": discord.AllowedMentions.none(),
+                          "suppress_embeds": True}
+                if index == 0 and attachment is not None:
+                    kwargs["file"] = attachment
+                await message.reply(chunk, **kwargs)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            logger.warning("Không gửi được hướng dẫn Peto (channel=%s, message=%s)",
+                           message.channel.id, message.id)
+        finally:
+            if attachment is not None:
+                attachment.close()
+
     async def _ask_grok(
         self,
         message: discord.Message,
@@ -4618,6 +4693,8 @@ class GrokChat(commands.Cog):
         discord.Embed | list[discord.Embed] | None,
         list[discord.File] | None,
     ]:
+        if is_peto_help_request(user_text):
+            return await self._answer_public_help(user_text), None, None
         channel_id = message.channel.id
         user_id = message.author.id
         scope = user_memory.scope_for_guild(
@@ -6091,6 +6168,9 @@ class GrokChat(commands.Cog):
         """
         name = call.name
         args = dict(call.arguments or {})
+
+        if is_peto_help_request(user_text):
+            return peto_help_fallback(getattr(self.bot, "tree", None), user_text), None, None
 
         # Last line of defense: never execute a model-selected image tool unless
         # the current user message independently passes the local intent gate.

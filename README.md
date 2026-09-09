@@ -38,6 +38,7 @@ Cần quyền **Manage Messages** trong kênh.
 ### 🤖Trợ lý AI
 
 - Mention/reply Bot trong server hoặc dùng `/private` để trò chuyện qua DM.
+- Có thể hỏi Peto cách dùng chính bot, ví dụ `@Peto làm sao mở nhạc?`, `gacha dùng sao?`, `cách tạo sticker?`. Peto đối chiếu tài liệu dùng chung với `/help` và lệnh công khai đang đăng ký để hướng dẫn; không tự thực hiện thao tác. Nhánh hướng dẫn không đọc ảnh/link hay trí nhớ cá nhân, không lưu lượt hỏi này vào trí nhớ, không biết cấu hình/số dư hiện tại của server. Không cần thêm biến `.env`; vẫn tuân theo quyền/kênh và giới hạn Chat AI. Lệnh quản trị/chủ bot chưa nằm trong tài liệu hướng dẫn của bản này.
 - Quản trị viên dùng `/settings ai` để chọn kênh/role, chế độ mention hoặc chat tự nhiên, bật từng khả năng và đặt cooldown/giới hạn đồng thời riêng cho server. Các server đã có Peto trước lần nâng cấp giữ nguyên hành vi cũ.
 - Mỗi người chỉ có một lượt AI đang chạy; từng server có hàng chờ ngắn, độc lập nên một bài Study lâu không chặn server khác. Lượt hoàn thành trước được trả lời trước.
 - Grok qua SuperGrok OAuth hoặc `XAI_API_KEY`; hỗ trợ vision, tạo/sửa ảnh, đọc link và Tavily web search.
