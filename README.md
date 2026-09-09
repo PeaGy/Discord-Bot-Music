@@ -291,6 +291,8 @@ Các dòng đo chỉ ghi thời gian, trạng thái và ID an toàn; không ghi 
 
 Có thể chạy `python scripts/manual/check_loudness_normalization.py` để kiểm tra bằng FFmpeg thật với âm thanh giả, không gọi mạng hoặc thay đổi cache nhạc. Sau khi sửa bộ đọc, hãy thử một bài **chưa có cache** để quan sát đủ các bước; cache cũ được giữ nguyên.
 
+Để tìm công đoạn chậm, chạy `python scripts/manual/benchmark_audio_pipeline.py` lúc bot rảnh. Script dùng cùng mẫu giả stereo 120 giây, lặp 3 lần, so sánh cấu hình hiện tại với `filter_threads=1/2` mà không hạ chất lượng hoặc đổi cấu hình bot. Báo trung vị/min/max từng bước và kiểm tra định dạng, thời lượng, âm lượng đầu ra; không gọi mạng hay dùng cache nhạc thật. Cần `ffmpeg` và `ffprobe` trong PATH, có thể mất vài phút. Xem [hướng dẫn phép đo](scripts/manual/README.md) để đọc kết quả và các giới hạn của mẫu giả.
+
 - **TikTok extractor lỗi:** cập nhật `yt-dlp`; bot tự thử TikWM khi nguồn chính thất bại.
 - **Không thấy slash command:** kiểm tra scope `applications.commands`, quyền bot và log đồng bộ lệnh.
 - **Discord báo reconnect rồi `RESUMED`:** thường là lỗi mạng tạm thời, không phải bot crash.

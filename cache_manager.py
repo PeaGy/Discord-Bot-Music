@@ -1,10 +1,7 @@
 import os
-import json
 import hashlib
 import asyncio
 import logging
-import math
-import re
 import glob
 import subprocess
 import tempfile
@@ -14,6 +11,13 @@ from contextlib import asynccontextmanager
 
 import yt_dlp
 import discord
+from music.loudness import (
+    LOUDNORM_TARGET,
+    OPUS_EXPECTED_PACKET_LOSS,
+    measurement_command,
+    normalization_command,
+    parse_loudness_stats as _parse_loudness_stats,
+)
 from music.urls import canonical_youtube_url
 from music.timing import phase_timer, log_phase_timing
 from ytdlp_support import (
@@ -38,11 +42,8 @@ if not os.path.exists(CACHE_DIR):
 LONG_AUDIO_TEMP_DIR = os.path.join(CACHE_DIR, "long_temp")
 os.makedirs(LONG_AUDIO_TEMP_DIR, exist_ok=True)
 
-# Target loudness dùng chung cho toàn bộ bot (khớp với radio path bên player.py)
-LOUDNORM_TARGET = "I=-16:TP=-1.5:LRA=11"
 DOWNLOAD_MP3_BITRATE = "128k"
 CACHE_FORMAT_VERSION = "v2_fec10"
-OPUS_EXPECTED_PACKET_LOSS = 10
 OPUS_PREROLL_FRAMES = 8  # 8 x 20 ms = 160 ms để ổn định nhịp gửi lúc bắt đầu
 OPUS_SILENCE_PACKET = b"\xF8\xFF\xFE"
 LONG_AUDIO_TEMP_MAX_DURATION = 2 * 60 * 60
@@ -457,69 +458,12 @@ def download_raw_sync(url, raw_outtmpl):
     raise AudioDownloadError("Không tải được audio để tạo cache.") from last_error
 
 
-_LOUDNESS_FIELDS = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
-_LOUDNESS_FIELD_MARKER = re.compile(r'"(?:' + "|".join(_LOUDNESS_FIELDS) + r')"\s*:')
-
-
-def _parse_loudness_stats(stderr):
-    """Read one complete loudnorm report, independent of surrounding FFmpeg logs.
-
-    raw_decode stops at the closing JSON brace; json.loads on the whole stderr
-    tail rejects valid reports followed by muxer/progress messages. Unrelated
-    JSON is ignored, but ambiguous or broken loudnorm reports aren't reused.
-    """
-    if not isinstance(stderr, str):
-        return None
-    decoder = json.JSONDecoder()
-    stats = None
-    position = 0
-    while True:
-        start = stderr.find("{", position)
-        if start < 0:
-            return stats
-        try:
-            value, end = decoder.raw_decode(stderr, start)
-        except (json.JSONDecodeError, RecursionError):
-            # Limit the lookahead to this apparent object. A stray brace in an
-            # earlier log line must not swallow the genuine report after it.
-            next_start = stderr.find("{", start + 1)
-            fragment = stderr[start:next_start if next_start >= 0 else len(stderr)]
-            if _LOUDNESS_FIELD_MARKER.search(fragment):
-                return None
-            position = start + 1
-            continue
-        position = end
-        if not isinstance(value, dict) or not any(key in value for key in _LOUDNESS_FIELDS):
-            continue
-        if stats is not None or not all(key in value for key in _LOUDNESS_FIELDS):
-            return None
-        parsed = {}
-        for key in _LOUDNESS_FIELDS:
-            number = value[key]
-            if isinstance(number, bool) or not isinstance(number, (str, int, float)):
-                return None
-            try:
-                number = float(number)
-            except (ValueError, TypeError, OverflowError):
-                return None
-            if not math.isfinite(number):
-                # Silence can produce -inf. It has no usable two-pass gain;
-                # keep the existing single-pass fallback instead of failing.
-                return None
-            parsed[key] = format(number, ".12g")
-        stats = parsed
-
-
 def measure_loudness_sync(filepath):
     """
     PASS 1 (2-pass loudnorm): chỉ ĐO loudness thật của file, không sửa gì.
     Chạy 1 lần duy nhất lúc cache bài hát -> không tốn CPU lúc đang phát nhạc.
     """
-    cmd = [
-        "ffmpeg", "-i", filepath,
-        "-af", f"loudnorm={LOUDNORM_TARGET}:print_format=json",
-        "-f", "null", "-",
-    ]
+    cmd = measurement_command(filepath)
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
@@ -546,28 +490,7 @@ def normalize_and_encode_sync(raw_path, final_path, stats):
     phép linear. Giữ nguyên mục tiêu -16 LUFS và chất lượng encode của cache;
     toàn bộ xử lý hoàn tất trước khi phát, không normalize lại lúc phát.
     """
-    if stats:
-        loudnorm_filter = (
-            f"loudnorm={LOUDNORM_TARGET}:"
-            f"measured_I={stats['input_i']}:measured_TP={stats['input_tp']}:"
-            f"measured_LRA={stats['input_lra']}:measured_thresh={stats['input_thresh']}:"
-            f"offset={stats['target_offset']}:linear=true:print_format=summary"
-        )
-    else:
-        # Không đo được (file lỗi / ffmpeg cũ) -> fallback single-pass, vẫn còn
-        # hơn là không normalize gì cả
-        loudnorm_filter = f"loudnorm={LOUDNORM_TARGET}:print_format=summary"
-
-    cmd = [
-        "ffmpeg", "-y", "-i", raw_path,
-        "-vn", "-af", loudnorm_filter,
-        "-c:a", "libopus", "-b:a", "160k",
-        "-application", "audio",
-        "-frame_duration", "20",
-        "-packet_loss", str(OPUS_EXPECTED_PACKET_LOSS),
-        "-fec", "1",
-        final_path,
-    ]
+    cmd = normalization_command(raw_path, final_path, stats)
     result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=180)
     # The FFmpeg summary is captured already; report only the known mode, not
     # arbitrary stderr (which can contain paths/URLs or credentials).
