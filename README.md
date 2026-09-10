@@ -17,8 +17,7 @@ Bạn không thể tự host? mời bot về server của bạn 👉 [Add Pearto
 - Preload bài kế tiếp, cache âm thanh và chuẩn hóa khoảng `-16 LUFS`; radio hoặc bài dài được stream trực tiếp.
 - Ưu tiên audio cache trước YouTube và các nguồn dự phòng. Link YouTube đã cache bỏ qua tra cứu mạng, dùng thông tin bài đã lưu trong thư viện; hỗ trợ cả link chia sẻ/mobile cùng video. Cache cũ thiếu metadata vẫn phát được với tên tạm. Tìm kiếm bằng từ khóa vẫn cần xác định đúng bài trước.
 - Bài YouTube ngắn vừa tra cứu có thể tải bằng chính thông tin/phiên vừa lấy, tránh tra lại trước khi tải. Handoff chỉ ở RAM, tối đa 120 giây/32 bài, dùng một lần; thông tin cũ, thay đổi cấu hình hoặc tải lỗi sẽ quay về luồng tra cứu có retry. Vẫn giữ chuẩn hóa hai lượt, Opus 160 kbps và cơ chế chống tải cache trùng.
-- Trên VPS có thể thử YouTube qua WARP rồi IP trực tiếp trước khi fallback về SoundCloud/Audius.
-- Audio fallback kiểm tra lại metadata đầy đủ (kể cả mô tả cover) và đọc thử frame audio trước khi báo đang phát. Nguồn lỗi được bỏ qua để thử ứng viên khác, tối đa 3 nguồn trong cùng thời gian chờ; không tạo cache nhạc. Radio giữ cơ chế reconnect riêng.
+- Audio fallback kiểm tra lại metadata đầy đủ và đọc thử frame audio trước khi báo đang phát. Nguồn lỗi được bỏ qua để thử ứng viên khác, tối đa 3 nguồn trong cùng thời gian chờ; không tạo cache nhạc.
 
 ### ⬇️Tải media
 
@@ -240,7 +239,7 @@ Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Dis
 - Lịch sử gốc trong `bot_memory.db` không tự bị cắt; chat thường chỉ gửi một cửa sổ gần cho Grok để giữ tốc độ.
 - Khi hỏi “Bot còn nhớ…?”, bot mới tìm sâu trong kho của đúng người đó bằng SQLite cục bộ.
 - Prompt giữ nguyên tính cách/nhịp trò chuyện; hướng dẫn toán, ảnh và Limbus chỉ được ghép khi đúng ngữ cảnh. Console ghi token và thời gian của từng lượt xAI để theo dõi chi phí thực tế.
-- Grok 4.6 dùng reasoning thích ứng: `low` cho chat/roleplay/trí nhớ/nhạc/ảnh, `medium` cho Limbus/web/kỹ thuật và `high` cho Study Mode hoặc suy luận nhiều bước.
+- Grok dùng reasoning thích ứng: `low` cho chat/roleplay/trí nhớ/nhạc/ảnh, `medium` cho Limbus/web/kỹ thuật và `high` cho Study Mode hoặc suy luận nhiều bước.
 - `/andanh` chỉ giữ ngữ cảnh tạm trong RAM và không đọc/ghi trí nhớ dài hạn.
 - `/resetmemory` xóa dữ liệu của người gọi; lệnh admin/chủ bot có phạm vi rộng hơn như tên lệnh mô tả.
 
@@ -272,33 +271,9 @@ Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không 
 - **AI chưa đăng nhập:** chạy `python -m xai_oauth login` rồi `python -m xai_oauth status`.
 - **OAuth 403/429:** kiểm tra gói/quota SuperGrok hoặc dùng `XAI_API_KEY` dự phòng.
 - **YouTube lỗi:** bot tự thử client kế tiếp trong `YTDLP_YOUTUBE_CLIENT`. Khi VPS đã dùng WARP qua `YTDLP_PROXY`, đặt `YTDLP_YOUTUBE_DIRECT_FALLBACK=true` để thử lại qua IP trực tiếp của VPS sau bot-check/403/429; tuyến trực tiếp không dùng cookie. Sau đó có thể bật `YTDLP_SOUNDCLOUD_FALLBACK=true` và `YTDLP_AUDIUS_FALLBACK=true`; hai nguồn ngoài YouTube chỉ stream trực tiếp, dùng chung `YTDLP_AUDIO_FALLBACK_TIMEOUT_SECONDS` và không tạo audio cache. Nếu mọi tuyến đều lỗi, kiểm tra WARP/BgUtils rồi cập nhật các gói trong `requirements.txt`.
-
-### Đo thời gian chuẩn bị nhạc
-
-Log `music-timing` có sẵn ở mức INFO, không cần đổi `.env`. Sau khi thử một bài chưa có cache:
-
-```bash
-sudo journalctl -u peto --since "5 minutes ago" --no-pager -o cat | grep -E 'music-timing|reuse=fresh-metadata|download-seed-refresh|audio-normalization'
-```
-
-- `voice-connect`: kết nối Discord; `metadata-wait`: chờ worker và lấy thông tin bài; `queue-ui`/`loading-ui`: gửi giao diện Discord.
-- `cache-track-wait`/`cache-slot-wait`: chờ lượt tạo cache. Giới hạn CPU vẫn là một lượt, chưa tăng tải đồng thời trên VPS.
-- `download-metadata`: tra thông tin tại bước tải. Không cần bước này khi có `reuse=fresh-metadata`; `audio-transfer`: tải audio và xử lý đóng gói của yt-dlp, chưa bao gồm chuẩn hóa âm lượng.
-- `loudness-measure`: đo âm lượng toàn bài; `normalize-encode`: chuẩn hóa và mã hóa Opus, gồm ghi file tạm; `cache-publish`: công bố file hoàn chỉnh để phát. `audio-normalization mode=linear/dynamic` là chế độ thực tế FFmpeg báo lại, không phải thay đổi mục tiêu âm lượng.
-- Đo hợp lệ sẽ có `measurement=ok strategy=two-pass`. Nếu FFmpeg lỗi hoặc không có số đo dùng được (ví dụ audio im lặng), `loudness-measure` báo `outcome=fallback` và `measurement=unavailable strategy=single-pass`, kèm mã `reason` an toàn. Bot vẫn chuẩn hóa bằng chế độ dự phòng, không bỏ xử lý âm lượng. Bộ đọc chấp nhận log FFmpeg trước/sau JSON nhưng từ chối số đo thiếu, không hữu hạn hoặc nhiều báo cáo mâu thuẫn.
-- `download-total`, `cache-build-total` và `source-prepare` là các khoảng tổng **lồng nhau**, không cộng tất cả các dòng lại. `source-prepare` gồm cả chờ và loading UI; `voice-submit` chỉ đo lúc giao nguồn cho Discord, không xác nhận người dùng đã nghe được tiếng.
-
-Các dòng đo chỉ ghi thời gian, trạng thái và ID an toàn; không ghi mật khẩu proxy, cookie hay URL audio có chữ ký. Handoff phiên cũng không nằm trong hàng đợi/lịch sử/SQLite. Bài đã cache vẫn phát từ file cục bộ, không phải tải lại để đo.
-
-Có thể chạy `python scripts/manual/check_loudness_normalization.py` để kiểm tra bằng FFmpeg thật với âm thanh giả, không gọi mạng hoặc thay đổi cache nhạc. Sau khi sửa bộ đọc, hãy thử một bài **chưa có cache** để quan sát đủ các bước; cache cũ được giữ nguyên.
-
-Để tìm công đoạn chậm, chạy `python scripts/manual/benchmark_audio_pipeline.py` lúc bot rảnh. Script dùng cùng mẫu giả stereo 120 giây, lặp 3 lần, so sánh cấu hình hiện tại với `filter_threads=1/2` mà không hạ chất lượng hoặc đổi cấu hình bot. Báo trung vị/min/max từng bước và kiểm tra định dạng, thời lượng, âm lượng đầu ra; không gọi mạng hay dùng cache nhạc thật. Cần `ffmpeg` và `ffprobe` trong PATH, có thể mất vài phút. Xem [hướng dẫn phép đo](scripts/manual/README.md) để đọc kết quả và các giới hạn của mẫu giả.
-
 - **TikTok extractor lỗi:** cập nhật `yt-dlp`; bot tự thử TikWM khi nguồn chính thất bại.
 - **Không thấy slash command:** kiểm tra scope `applications.commands`, quyền bot và log đồng bộ lệnh.
 - **Discord báo reconnect rồi `RESUMED`:** thường là lỗi mạng tạm thời, không phải bot crash.
-
-Đặt `LOG_LEVEL=DEBUG` khi cần chẩn đoán; dùng `INFO` hoặc `WARNING` cho vận hành thường ngày.
 
 ## Bảo mật và sao lưu
 
