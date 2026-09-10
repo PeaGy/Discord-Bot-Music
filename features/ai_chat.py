@@ -27,6 +27,7 @@ from openai import AsyncOpenAI, APIError, APIStatusError, AuthenticationError, R
 from tavily import AsyncTavilyClient
 
 import user_memory
+from math_format import latex_to_discord
 from peto_help import (
     build_peto_help_context,
     is_peto_help_request,
@@ -586,6 +587,8 @@ Khi giải toán, xác suất, thống kê, vật lý hoặc đọc bài tập t
   `\sum`, `\left`, `\right`, `\sin`, `\cos`, `\tan`, `\cot`, `\quad` hay
   `^\circ`. Không đặt công thức giữa hai dòng `[` và `]`; đó không phải cú pháp
   toán học của Discord. Viết `sin α`, `cos α`, `90°`, `π/2` trực tiếp.
+- Cũng không dùng `\Delta`, `\delta`, `\mathrm{...}`, `\text{...}`, dấu cách
+  `\,` hay dấu thập phân kiểu `0{,}5`. Viết thẳng `Δl = 0,5 mm` và `12,4 cm`.
 - Dùng Markdown vừa phải: tiêu đề in đậm, các bước đánh số và kết luận riêng.
 - Dùng ký hiệu Unicode khi dễ đọc: ∫, √, Σ, π, ±, ×, ÷, ≤, ≥, ≠, →,
   cùng số mũ/chỉ số như x², x³, a₁, a₂. Nếu ký hiệu Unicode làm biểu thức khó
@@ -2376,10 +2379,14 @@ class GrokChat(commands.Cog):
 
     @staticmethod
     def _response_text(response) -> str:
-        """Trích text từ Responses API (output_text hoặc duyệt output items)."""
+        """Trích text từ Responses API (output_text hoặc duyệt output items).
+
+        Đây là cửa duy nhất text của Grok đi ra Discord, nên LaTeX còn sót được
+        đổi sang Unicode ngay tại đây thay vì chỉ trông vào system prompt.
+        """
         text = getattr(response, "output_text", None)
         if text and str(text).strip():
-            return str(text).strip()
+            return latex_to_discord(str(text).strip())
 
         parts: list[str] = []
         for item in getattr(response, "output", None) or []:
@@ -2400,7 +2407,7 @@ class GrokChat(commands.Cog):
                     btext = getattr(block, "text", None)
                     if btype in ("output_text", "text") and btext:
                         parts.append(str(btext).strip())
-        return "\n".join(p for p in parts if p)
+        return latex_to_discord("\n".join(p for p in parts if p))
 
     @staticmethod
     def _last_response_message_text(response) -> str:
@@ -2427,7 +2434,9 @@ class GrokChat(commands.Cog):
                     parts.append(str(block_text).strip())
             if parts:
                 messages.append("\n".join(parts))
-        return messages[-1] if messages else GrokChat._response_text(response)
+        if messages:
+            return latex_to_discord(messages[-1])
+        return GrokChat._response_text(response)
 
     def _safe_content(self, response) -> str:
         content = self._response_text(response)
