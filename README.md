@@ -1,295 +1,96 @@
-# 🎶Peto Bot
+# Peto
 
-Bot Discord đa chức năng viết bằng Python, kết hợp nghe nhạc, tải media, trợ lý AI, kiến thức Limbus Company và tìm ảnh Danbooru.
+Peto là bot Discord đa năng dành cho cộng đồng Việt Nam: nghe nhạc cùng bạn bè, trò chuyện với AI, khám phá game và sử dụng các tiện ích ngay trong server.
 
-Bạn không thể tự host? mời bot về server của bạn 👉 [Add Pearto to your server](https://discord.com/oauth2/authorize?scope=bot&client_id=1516709319108726944&permissions=92224)
+[Thêm Peto vào server](https://discord.com/oauth2/authorize?scope=bot%20applications.commands&client_id=1516709319108726944&permissions=92224) · [Giấy phép MIT](LICENSE)
 
-[![License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
+## Tính năng nổi bật
 
-## ⚡Tính năng
+- **Nghe nhạc:** phát nhạc từ YouTube, SoundCloud và liên kết bài hát Spotify; quản lý hàng chờ, lưu playlist, xem lời bài hát và nghe radio.
+- **Trợ lý AI:** trò chuyện với bot, hỏi đáp, hỗ trợ học tập, đọc ảnh và video ngắn, tạo hoặc chỉnh sửa ảnh theo yêu cầu.
+- **Tải media:** tải nhạc, video và ảnh từ YouTube, TikTok, X/Twitter ngay trong Discord.
+- **Limbus Company:** tra cứu Identity, E.G.O, kỹ năng, cốt truyện và gợi ý đội hình.
+- **Mô phỏng gacha:** thử vận may với Limbus Company, Blue Archive, Fate/Grand Order và Brown Dust 2.
+- **Peto Economy:** kiếm điểm khi chat hoặc tham gia voice, dùng điểm quay gacha, sưu tập nhân vật và xem bảng xếp hạng. Quản trị viên có thể bật riêng cho từng server.
+- **Thông báo game:** nhắc lịch reset, theo dõi gift code và video mới từ Project Moon; hỗ trợ đăng ký nhận tin qua DM.
+- **Tiện ích cộng đồng:** tìm ảnh Danbooru, tạo sticker/emoji, tìm nguồn ảnh, hiển thị bài đăng mạng xã hội và chào mừng thành viên mới.
 
-### 🎶Nhạc
+![gacha](assets/gacha.png)
 
-- Phát từ từ khóa, YouTube, SoundCloud hoặc Spotify track.
-- Music Panel Components V2: pause/resume, previous/next, loop track/queue, autoplay, yêu thích, playlist và tải MP3 riêng tư.
-- Queue nâng cao, lịch sử nghe, favorites, playlist cá nhân/chia sẻ, `/stats` và `/wrapped` được lưu bằng SQLite.
-- Lyrics từ LRCLIB, radio internet, chế độ 24/7, sleep timer.
-- Preload bài kế tiếp, cache âm thanh và chuẩn hóa khoảng `-16 LUFS`; radio hoặc bài dài được stream trực tiếp.
-- Ưu tiên audio cache trước YouTube và các nguồn dự phòng. Link YouTube đã cache bỏ qua tra cứu mạng, dùng thông tin bài đã lưu trong thư viện; hỗ trợ cả link chia sẻ/mobile cùng video. Cache cũ thiếu metadata vẫn phát được với tên tạm. Tìm kiếm bằng từ khóa vẫn cần xác định đúng bài trước.
-- Bài YouTube ngắn vừa tra cứu có thể tải bằng chính thông tin/phiên vừa lấy, tránh tra lại trước khi tải. Handoff chỉ ở RAM, tối đa 120 giây/32 bài, dùng một lần; thông tin cũ, thay đổi cấu hình hoặc tải lỗi sẽ quay về luồng tra cứu có retry. Vẫn giữ chuẩn hóa hai lượt, Opus 160 kbps và cơ chế chống tải cache trùng.
-- Audio fallback kiểm tra lại metadata đầy đủ và đọc thử frame audio trước khi báo đang phát. Nguồn lỗi được bỏ qua để thử ứng viên khác, tối đa 3 nguồn trong cùng thời gian chờ; không tạo cache nhạc.
+## Bắt đầu sử dụng
 
-### ⬇️Tải media
+1. **Thêm Peto** vào server bằng liên kết phía trên.
+2. **Gõ `/help`** để xem các nhóm lệnh và hướng dẫn ngay trong Discord.
+3. **Thử `/play`** khi đang ở kênh voice, hoặc nhắc `@Peto` để bắt đầu trò chuyện.
 
-- `/download` hỗ trợ YouTube, TikTok và X/Twitter bằng panel riêng tư.
-- YouTube: MP3 chất lượng cao hoặc MP4 theo các mức chất lượng thật sự có.
-- TikTok: video MP4 không watermark hoặc toàn bộ ảnh của photo post.
-- X/Twitter: video MP4, tối đa 4 ảnh gốc của bài đăng, hoặc ảnh động dưới dạng GIF thật và MP4 nhẹ hơn.
-- Video công khai dưới 60 phút, không hỗ trợ playlist/livestream/Facebook/Instagram.
-- File nhỏ gửi qua Discord; file lớn có thể đi qua Download Gateway + Cloudflare Tunnel và tự hết hạn sau 2 giờ.
+Một số lệnh thường dùng:
 
-### 🔗Social Embed
+| Bạn muốn… | Lệnh |
+| --- | --- |
+| Nghe và điều khiển nhạc | `/play`, `/pause`, `/resume`, `/next`, `/stop` |
+| Xem hàng chờ, lưu nhạc | `/queue`, `/favorite`, `/playlist` |
+| Tải video hoặc nhạc | `/download` |
+| Trò chuyện riêng với AI | `/private` |
+| Quay gacha, xem bộ sưu tập | `/gacha`, `/collection`, `/points`, `/rank` |
+| Xem gift code, đăng ký nhắc reset | `/coupon codes`, `/dailyreset subscribe` |
+| Tìm ảnh, tạo sticker, tìm nguồn ảnh | `/art`, `/sticker`, `/saucy` |
+| Cấu hình server | `/settings ai`, `/settings notifications`, `/economy` |
 
-Cần quyền **Manage Messages** trong kênh.
-- Pixiv được dựng thành card riêng gồm tiêu đề, tác giả, mô tả, ảnh, lượt thích/lưu/xem và ngày đăng; không dùng `phixiv`. Ugoira được tải từ Pixiv.
-- X/Twitter dùng FxTwitter API để dựng bài ảnh/text; bài có video dùng `fxtwitter.com`. Instagram dùng `vxinstagram.com` để Discord phát media tốt hơn.
+## Tự chạy Peto
 
-### 🤖Trợ lý AI
+Peto được viết bằng Python và `discord.py`, hỗ trợ Windows và Linux. Bạn cần **Python 3.10+**, **FFmpeg**, **Discord Bot Token** và **Tavily API key**. Tính năng AI sử dụng tài khoản SuperGrok hoặc xAI API key.
 
-- Mention/reply Bot trong server hoặc dùng `/private` để trò chuyện qua DM.
-- Có thể hỏi Peto cách dùng chính bot, ví dụ `@Peto làm sao mở nhạc?`, `gacha dùng sao?`, `cách tạo sticker?`. Peto đối chiếu tài liệu dùng chung với `/help` và lệnh công khai đang đăng ký để hướng dẫn; không tự thực hiện thao tác. Nhánh hướng dẫn không đọc ảnh/link hay trí nhớ cá nhân, không lưu lượt hỏi này vào trí nhớ, không biết cấu hình/số dư hiện tại của server. Không cần thêm biến `.env`; vẫn tuân theo quyền/kênh và giới hạn Chat AI. Lệnh quản trị/chủ bot chưa nằm trong tài liệu hướng dẫn của bản này.
-- Quản trị viên dùng `/settings ai` để chọn kênh/role, chế độ mention hoặc chat tự nhiên, bật từng khả năng và đặt cooldown/giới hạn đồng thời riêng cho server. Các server đã có Peto trước lần nâng cấp giữ nguyên hành vi cũ.
-- Mỗi người chỉ có một lượt AI đang chạy; từng server có hàng chờ ngắn, độc lập nên một bài Study lâu không chặn server khác. Lượt hoàn thành trước được trả lời trước.
-- Grok qua SuperGrok OAuth hoặc `XAI_API_KEY`; hỗ trợ vision, tạo/sửa ảnh, đọc link và Tavily web search.
-- Có thể xem video Discord MP4/MOV/WebM/MKV ngắn tối đa 2 phút khi được hỏi: FFmpeg lấy 8 khung hình theo thời gian, xAI STT phiên âm lời nói rồi Grok kết hợp cả hai. Bot không tự đọc mọi clip trong kênh.
-- Study Mode tự nhận diện bài tập, kèm các nút Gợi ý, Chép đề và Xuất PNG.
-- Câu trả lời quá dài được chia hợp lý hoặc gửi bằng file UTF-8 để đọc trên điện thoại.
-- Tạo sticker/emoji từ ảnh đính kèm hoặc ảnh được reply mà không cần gọi AI tạo ảnh.
+<details>
+<summary>Hướng dẫn cài đặt cơ bản</summary>
 
-### 🎮Gacha Game
+### 1. Cài thư viện
 
-- RAG tự đồng bộ Limbus Company Wiki vào `limbus_knowledge.db`.
-- Hiểu nhiều alias cộng đồng; hỗ trợ roster, Identity, E.G.O., skill/passive, status, lore và team building.
-- Full kit và từng Skill/Defense được trình bày bằng embed có màu Sin Affinity, Coin, damage type, status và resistance.
-- Artwork Identity/E.G.O được đồng bộ tăng dần theo revision wiki và dùng làm thumbnail của full kit hoặc card skill riêng. Metadata nằm cùng `limbus_knowledge.db`; lỗi CDN không làm hỏng câu trả lời và cache cũ vẫn được giữ.
-- `/gacha` mặc định dùng đúng pool 3★, 2★, 1★ và E.G.O trong wiki đã đồng bộ.
-  Chọn `game:Blue Archive` để dùng banner JP/Global/CN hiện tại từ SchaleDB. 
-  Chọn `game:Fate/Grand Order` để quay ×1/×11 trong FGO Summon Simulator NA/JP lấy dữ liệu và ảnh từ Atlas Academy.
-  Chọn `game:Brown Dust 2` để quay Costume ×1/×10; pool thường lấy từ Brown Dust 2 Wiki, không gồm Costume limited và có bảo hiểm 4★/5★.
-- Tin về game được kiểm tra qua X Limbus chính thức, Steam News API và ảnh notice.
-- Kết quả đọc ảnh Steam được cache theo hash; câu hỏi cùng chủ đề dùng cache ngắn hạn để tránh lặp lại lượt Vision chậm.
-- Có thể theo dõi RSS của kênh YouTube ProjectMoon Official và thông báo video Limbus mới vào một kênh Discord đã chọn. Trạng thái SQLite chống gửi trùng sau restart; lần chạy đầu chỉ ghi nhận mốc hiện tại.
-![Giao diện gacha](./assets/gacha.png)
+Tải mã nguồn, mở terminal tại thư mục dự án rồi chạy:
 
-### 💰Peto Economy
-
-- Mặc định **tắt** ở mọi server. Quản trị viên bật bằng `/economy enable`, chọn kênh tổng kết tuần và thông báo event bằng `/economy channel`, đồng thời có thể tắt riêng điểm chat/voice bằng `/economy earning`.
-- Thành viên nhận ngẫu nhiên 16–24 điểm cho một tin nhắn hợp lệ mỗi 60 giây, 10 điểm mỗi 5 phút voice khi có ít nhất hai người thật trong kênh và tối đa 1.000 điểm/ngày. Thứ Bảy–Chủ Nhật (UTC+7) mở event **×5**, tương ứng 40–60 điểm chat, 25 điểm voice và giới hạn 2.500 điểm/ngày.
-- Peto tự đăng card khi event cuối tuần bắt đầu và kết thúc vào kênh Economy đã chọn. Trạng thái được lưu trong SQLite nên restart bot không gửi thông báo trùng.
-- `/points` xem số dư, điểm kiếm trong tuần, Extraction Points và tổng lượt quay. `/collection [game]` xem nhân vật/Costume đã sở hữu; `/rank [game]` xếp top 5 collection unique trong server.
-- Gacha Economy tốn 130 điểm/lượt hoặc 1.300 điểm cho một gói ×10 (FGO là ×11). Mỗi lượt Limbus sinh 1 Extraction Point; `/exchange identity` và `/exchange ego` dùng 200 điểm này để chọn một Identity 3★ hoặc E.G.O chưa sở hữu. Quầy đổi có cả Standard, Seasonal và Event nhưng không cho đổi Walpurgis. Kết quả trùng vẫn được lưu thành số bản sao trong collection.
-- Bảng top 5 **điểm đã kiếm** của tuần trước được gửi một lần vào kênh đã cấu hình; tiêu điểm cho gacha không làm giảm thành tích tuần.
-- Điểm, collection và lịch sử giao dịch nằm trong `peto_economy.db`, tách riêng theo Discord server và được giữ nguyên khi Economy bị tắt.
-
-### ⏰Daily Reset
-
-- Scheduler UTC cho NIKKE, Blue Archive, Trickcal: Chibi Go, Chaos Zero Nightmare, Limbus Company và Brown Dust 2; từng game có thể bật/tắt, đổi giờ, kênh và role riêng trong `.env`.
-- Riêng Limbus chỉ nhắc Mirror Dungeon Reset vào Thứ Năm hằng tuần (06:00 KST), thay vì gửi checklist mỗi ngày.
-- Mỗi server tự chọn kênh/role và bật từng game bằng `/settings notifications`.
-- Cấu hình channel/role cũ trong `.env` được nhập một lần cho server hiện tại; sau đó chỉnh bằng `/settings`.
-- Gửi cảnh báo trước reset và checklist tiếng Việt khi reset; role chỉ được ping ở thông báo reset thật.
-- Thành viên tự đăng ký/tắt DM bằng `/dailyreset subscribe`, `/dailyreset unsubscribe` hoặc nút dưới card reset.
-- SQLite chống gửi trùng sau restart và có cửa sổ gửi bù ngắn nếu bot vừa mất kết nối đúng giờ reset.
-
-### 🎟️Gift Code
-
-#### Supported Games
-| Game | Auto-Redeem | Manual Redeem |
-|------|-------------|---------------|
-| Brown Dust 2 (BD2) | ✅ | ✅ |
-| NIKKE | ❌ | ✅ |
-| Blue Archive | ❌ | ✅ |
-
-- Chủ bot thêm/xóa code bằng slash command.
-- Kênh và role thông báo công khai được cấu hình độc lập cho từng server bằng `/settings notifications`.
-- Thành viên có thể lưu nickname/UID trong hồ sơ riêng. Brown Dust 2 hỗ trợ auto-redeem qua endpoint bên thứ ba BD2 Pulse; Bot không cần lưu tài khoản/mật khẩu. NIKKE và Blue Archive vẫn nhập tay vì chưa có API hỗ trợ.
-- Thành viên xem code đang hoạt động, đăng ký DM theo từng game và tùy chọn code mới, cảnh báo hết hạn hoặc bản tổng hợp Chủ nhật.
-- Code redeem thành công, được API báo `AlreadyUsed`, hoặc được đánh dấu `/coupon used` sẽ được ẩn khỏi danh sách của riêng người đó; `/coupon history` xem lại kết quả.
-- Có thể cấu hình kênh công khai và role ping riêng cho từng game; SQLite chống thông báo trùng sau restart.
-
-### 🖼️Danbooru
-
-- `/art`, `/wallpaper` và `/artinfo` cho nội dung SFW.
-- `/artecchi` và `/artnsfw` chỉ hoạt động trong kênh Age-Restricted/NSFW.
-
-### 🔎Tìm nguồn ảnh
-
-- `/saucy image:<ảnh>` hoặc **Apps → Tìm nguồn ảnh** tạo panel riêng tư với Google Lens, SauceNAO, IQDB, TinEye, Yandex và Bing.
-- Bot chỉ tạo liên kết tìm kiếm từ URL ảnh Discord, không cần API key và không tự đọc kết quả của các dịch vụ.
-
-## 🔧Yêu cầu
-
-- Python 3.10 trở lên.
-- FFmpeg có `libopus`, `libmp3lame` và gọi được bằng lệnh `ffmpeg`.
-- Discord Bot Token và Tavily API key.
-- Tài khoản SuperGrok đã đăng nhập hoặc xAI API key.
-- Kết nối internet tới Discord và các dịch vụ media/API liên quan.
-
-## 🚀Cài đặt nhanh
-
-### 1. Tạo môi trường Python
-
-Windows PowerShell:
+**Windows (PowerShell)**
 
 ```powershell
-git clone <repository-url>
-cd Discord-Bot-Music-main
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
 pip install -r requirements.txt
-```
-
-Linux/macOS:
-
-```bash
-git clone <repository-url>
-cd Discord-Bot-Music-main
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-### 2. Cài FFmpeg
-
-```powershell
-# Windows
-winget install Gyan.FFmpeg
-```
-
-```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install ffmpeg
-
-# macOS
-brew install ffmpeg
-```
-
-Kiểm tra bằng `ffmpeg -version`.
-
-### 3. Cấu hình `.env`
-
-```powershell
 Copy-Item .env.example .env
 ```
 
-Linux/macOS dùng `cp .env.example .env`. Điền tối thiểu:
-
-```dotenv
-DISCORD_TOKEN=discord_bot_token
-TAVILY_API_KEY=tavily_api_key
-XAI_MODEL=grok-4.6
-```
-
-Các tùy chọn quan trọng đã được chú thích trong `.env.example`.
-
-Không commit `.env`, cookie, OAuth token hoặc database.
-
-### 4. Đăng nhập SuperGrok
+**Linux**
 
 ```bash
-python -m xai_oauth login
-python -m xai_oauth status
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
 ```
 
-Token được lưu cục bộ và tự refresh. Nếu không dùng OAuth, đặt `XAI_API_KEY` trong `.env`.
+### 2. Cấu hình
 
-### 5. Cấu hình Discord
+- Cài FFmpeg và kiểm tra bằng `ffmpeg -version`.
+- Điền `DISCORD_TOKEN` và `TAVILY_API_KEY` trong `.env`.
+- Đăng nhập SuperGrok bằng `python -m xai_oauth login`, hoặc điền `XAI_API_KEY` trong `.env`.
+- Trong Discord Developer Portal, bật **Message Content Intent**. Nếu bật tính năng chào mừng (`WELCOME_ENABLED=true`), bật thêm **Server Members Intent**.
+- Mời bot với scope `bot` và `applications.commands`; cấp quyền xem kênh, gửi tin nhắn, nhúng liên kết, đính kèm tệp, kết nối và nói trong voice. Tính năng hiển thị bài đăng mạng xã hội cần thêm **Manage Messages**.
 
-Trong Discord Developer Portal:
+Các tùy chọn bổ sung được giải thích trong [`.env.example`](.env.example).
 
-- Nếu bật `WELCOME_ENABLED=true`, bật **Server Members Intent** tại trang **Bot**.
-
-1. Mời bot với scope `bot` và `applications.commands`.
-2. Cứ cấp quyền mạnh nhất cho bot. 
-
-Custom embed Pixiv còn cần `PIXIV_PHPSESSID` trong `.env`. Chỉ sao chép **giá trị** cookie `PHPSESSID` từ phiên Pixiv của chính bạn; cookie này có quyền truy cập tài khoản nên tuyệt đối không gửi vào Discord hoặc commit lên Git.
-
-### 6. Cookie YouTube (khi cần)
-
-Khi YouTube yêu cầu đăng nhập/xác minh, xuất cookie định dạng Netscape vào `cookies.txt` tại thư mục gốc. File này không được commit.
-
-## 🛠️Chạy bot
+### 3. Khởi động
 
 ```bash
 python bot.py
 ```
 
-Trên Windows có thể chạy `run.bat`; script sẽ tự khởi động lại bot sau khi tiến trình dừng.
+</details>
 
-## 🎯Lệnh thường dùng
+## Quyền riêng tư
 
-Dùng `/help` để xem đầy đủ lệnh và nút tương tác ngay trong Discord.
+Peto có thể ghi nhớ nội dung trò chuyện để hỗ trợ các lần trao đổi sau. Dùng `/andanh` để trò chuyện không đọc hoặc lưu trí nhớ dài hạn, và `/resetmemory` để xóa trí nhớ của bạn.
 
-| Nhóm | Lệnh tiêu biểu |
-| --- | --- |
-| Phát nhạc | `/play`, `/search`, `/pause`, `/resume`, `/next`, `/previous`, `/stop` |
-| Queue | `/queue`, `/playnext`, `/remove`, `/move`, `/shuffle`, `/clear` |
-| Chế độ phát | `/loop`, `/autoplay`, `/247`, `/radio`, `/lyric` |
-| Thư viện | `/favorite`, `/favorites`, `/recent`, `/playlist`, `/stats`, `/wrapped` |
-| Media | `/download` |
-| AI & riêng tư | `/private`, `/andanh`, `/resetmemory` |
-| Quản trị bộ nhớ | `/resetmemoryall`, `/resetmemoryglobal` |
-| Quản trị Peto | `/blacklist`, `/unblacklist` (chủ bot) |
-| Limbus Asset | `/limbusasset status`, `/limbusasset preview`; `/limbusasset sync` (chủ bot) |
-| Gacha | `/gacha [game] [pulls] [server] [target]` (Limbus, Blue Archive, FGO, Brown Dust 2), `/exchange identity`, `/exchange ego`, `/collection [game]`, `/rank [game]` |
-| Peto Economy | `/points`; `/economy status/enable/disable/channel/earning/grant/preview` |
-| Project Moon | `/projectmoon status`, `/projectmoon preview`, `/projectmoon test`, `/projectmoon check` (chủ bot) |
-| Cấu hình server | `/settings notifications` cho thông báo; `/settings ai [capability]` cho quyền, kênh và chống spam AI |
-| Daily Reset | `/dailyreset next`, `/dailyreset subscribe`, `/dailyreset unsubscribe`, `/dailyreset subscriptions`; `status/preview/test/check` (chủ bot) |
-| Gift Code | `/coupon codes`, `/coupon subscribe`, `/coupon unsubscribe`, `/coupon subscriptions`, `/coupon history`, `/coupon preferences`, `/coupon used`; `add/remove/status` (chủ bot) |
-| Ảnh | `/art`, `/artecchi`, `/artnsfw`, `/wallpaper`, `/artinfo`, `/sticker`, `/emoji`, `/saucy` |
-| Kiểm tra | `/latency`, `/help` |
+Khi tự chạy bot, hãy giữ kín token, API key, cookie và dữ liệu người dùng.
 
-## 🧠Trí nhớ và quyền riêng tư
+## Ghi nhận
 
-- Trí nhớ cá nhân gắn với Discord `user_id` và theo người dùng giữa DM/các server.
-- Câu “hãy nhớ…”, “ghi nhớ…” hoặc “chốt từ giờ…” ghim cả ngữ cảnh liên quan; các bản tóm tắt cũ cũng được giữ để tránh mất chi tiết khi đổi model.
-- Lịch sử gốc trong `bot_memory.db` không tự bị cắt; chat thường chỉ gửi một cửa sổ gần cho Grok để giữ tốc độ.
-- Khi hỏi “Bot còn nhớ…?”, bot mới tìm sâu trong kho của đúng người đó bằng SQLite cục bộ.
-- Prompt giữ nguyên tính cách/nhịp trò chuyện; hướng dẫn toán, ảnh và Limbus chỉ được ghép khi đúng ngữ cảnh. Console ghi token và thời gian của từng lượt xAI để theo dõi chi phí thực tế.
-- Grok 4.6 dùng reasoning thích ứng: `low` cho chat/roleplay/trí nhớ/nhạc/ảnh, `medium` cho Limbus/web/kỹ thuật và `high` cho Study Mode hoặc suy luận nhiều bước.
-- `/andanh` chỉ giữ ngữ cảnh tạm trong RAM và không đọc/ghi trí nhớ dài hạn.
-- `/resetmemory` xóa dữ liệu của người gọi; lệnh admin/chủ bot có phạm vi rộng hơn như tên lệnh mô tả.
+Phát triển bởi [PeaGy](https://github.com/PeaGy). Cảm ơn **Ryuz-V** và **rapi-bot — mascarell**.
 
-## Download Gateway (tùy chọn)
-
-Gateway cho file vượt giới hạn Discord chạy tại `127.0.0.1:8765`; Cloudflare Tunnel ánh xạ domain tải về cổng này.
-
-## Dữ liệu được tạo khi chạy
-
-| Đường dẫn | Nội dung |
-| --- | --- |
-| `bot_memory.db` | Lịch sử và trí nhớ AI theo người dùng |
-| `music_library.db` | Favorites, playlist và lịch sử nghe |
-| `limbus_knowledge.db` | Wiki RAG và cache notice chính thức |
-| `youtube_notifications.db` | Video Project Moon đã thấy và trạng thái chống thông báo trùng |
-| `daily_reset_notifications.db` | Lịch đã gửi và đăng ký Daily Reset DM của thành viên |
-| `coupon_codes.db` | Gift code, hồ sơ nickname/UID, lịch sử redeem, đăng ký DM và trạng thái chống gửi trùng |
-| `guild_settings.db` | Notification và chính sách AI riêng theo `guild_id` |
-| `audio_cache/` | Cache âm thanh đã xử lý |
-| `temp_downloads/` | File tải tạm thời |
-
-Queue, loop, autoplay, 24/7 và phiên nút Study Mode nằm trong RAM nên mất khi restart. Database, playlist, favorites và trí nhớ AI vẫn còn.
-
-Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không chạy cùng bot.
-
-## Xử lý lỗi nhanh
-
-- **Không nhận `ffmpeg`:** mở terminal mới và chạy `ffmpeg -version`.
-- **AI chưa đăng nhập:** chạy `python -m xai_oauth login` rồi `python -m xai_oauth status`.
-- **OAuth 403/429:** kiểm tra gói/quota SuperGrok hoặc dùng `XAI_API_KEY` dự phòng.
-- **YouTube lỗi:** bot tự thử client kế tiếp trong `YTDLP_YOUTUBE_CLIENT`. Khi VPS đã dùng WARP qua `YTDLP_PROXY`, đặt `YTDLP_YOUTUBE_DIRECT_FALLBACK=true` để thử lại qua IP trực tiếp của VPS sau bot-check/403/429; tuyến trực tiếp không dùng cookie. Sau đó có thể bật `YTDLP_SOUNDCLOUD_FALLBACK=true` và `YTDLP_AUDIUS_FALLBACK=true`; hai nguồn ngoài YouTube chỉ stream trực tiếp, dùng chung `YTDLP_AUDIO_FALLBACK_TIMEOUT_SECONDS` và không tạo audio cache. Nếu mọi tuyến đều lỗi, kiểm tra WARP/BgUtils rồi cập nhật các gói trong `requirements.txt`.
-- **TikTok extractor lỗi:** cập nhật `yt-dlp`; bot tự thử TikWM khi nguồn chính thất bại.
-- **Không thấy slash command:** kiểm tra scope `applications.commands`, quyền bot và log đồng bộ lệnh.
-- **Discord báo reconnect rồi `RESUMED`:** thường là lỗi mạng tạm thời, không phải bot crash.
-
-## Bảo mật và sao lưu
-
-- Không chia sẻ Discord token, API key, cookie, `.xai_tokens.json` hoặc database.
-- Nếu bí mật từng xuất hiện công khai, hãy rotate/reset ngay tại dịch vụ tương ứng.
-- Sao lưu `bot_memory.db`, `music_library.db`, `limbus_knowledge.db` và `coupon_codes.db` trước khi chuyển máy.
-
-## 🤝Ghi nhận
-
-- Ryuz-V
-- rapi-bot - mascarell
-  
-## 📄 License
-
-Dự án này được phân phối dưới giấy phép MIT.
-
----
-
-**Made by [PeaGy](https://github.com/PeaGy)** ❤️
+Dự án được phát hành theo [giấy phép MIT](LICENSE).
