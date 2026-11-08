@@ -244,8 +244,9 @@ Nhắc `@Peto` hoặc reply bot để trò chuyện; nhấp phải tin nhắn �
 | Lệnh | Chức năng |
 | --- | --- |
 | `/private` | Mở cuộc trò chuyện riêng với Peto qua DM. |
+| `/personalization` | Mở ô nhập riêng để tùy chỉnh cách Peto xưng hô và trả lời. Sau khi lưu, dùng bảng riêng để chỉnh sửa, bật/tắt hoặc xóa. |
 | `/andanh` | Bật/tắt ẩn danh tại DM hoặc server hiện tại; không đọc/ghi trí nhớ dài hạn trong phạm vi đó. |
-| `/resetmemory` | Xóa trí nhớ AI của chính bạn trên mọi server và DM. |
+| `/resetmemory` | Xóa trí nhớ AI và hướng dẫn cá nhân hóa của bạn trên mọi server và DM. |
 
 ### Gacha, bộ sưu tập và Limbus
 
@@ -306,7 +307,7 @@ Các lệnh cấu hình cần quyền **Manage Server** hoặc chủ bot. Riêng
 | --- | --- |
 | `/blacklist <user>` | Chặn một người sử dụng chat AI với Peto. |
 | `/unblacklist <user>` | Bỏ chặn quyền chat AI. |
-| `/resetmemoryglobal` | Xóa toàn bộ trí nhớ AI của mọi người trên mọi server và DM. |
+| `/resetmemoryglobal` | Xóa toàn bộ trí nhớ AI và hướng dẫn cá nhân hóa của mọi người trên mọi server và DM. |
 | `/limbusasset sync <name>` | Làm mới artwork của một Identity/E.G.O. |
 | `/projectmoon status` | Xem cấu hình và trạng thái thông báo YouTube Project Moon. |
 | `/projectmoon preview` | Xem trước card video mới nhất. |
@@ -331,6 +332,8 @@ Các lệnh cấu hình cần quyền **Manage Server** hoặc chủ bot. Riêng
 ## 🧠Trí nhớ và quyền riêng tư
 
 - Trí nhớ cá nhân gắn với Discord `user_id` và theo người dùng giữa DM/các server.
+- Hướng dẫn trong `/personalization` dài tối đa 1.500 ký tự, dùng chung cho chat với Peto và **Apps → Hỏi Peto**. Yêu cầu trong lượt chat hiện tại ưu tiên hơn tùy chọn đã lưu. Peto gửi hướng dẫn đang bật đến Grok để tạo câu trả lời.
+- Cá nhân hóa tạm ngưng ở nơi bạn bật Ẩn danh hoặc server tắt trí nhớ cá nhân. Nếu server tắt trí nhớ, bạn vẫn có thể chỉnh hướng dẫn trong DM với Peto.
 - Câu “hãy nhớ…”, “ghi nhớ…” hoặc “chốt từ giờ…” ghim cả ngữ cảnh liên quan; các bản tóm tắt cũ cũng được giữ để tránh mất chi tiết khi đổi model.
 - Lịch sử gốc trong `bot_memory.db` không tự bị cắt; chat thường chỉ gửi một cửa sổ gần cho Grok để giữ tốc độ.
 - Khi hỏi “Bot còn nhớ…?”, bot mới tìm sâu trong kho của đúng người đó bằng SQLite cục bộ.

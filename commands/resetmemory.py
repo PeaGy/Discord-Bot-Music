@@ -20,7 +20,7 @@ class ResetMemory(commands.Cog):
         await user_memory.clear_user(interaction.user.id)
         embed = discord.Embed(
             description=(
-                "🧹 Đã xoá sạch trí nhớ trò chuyện của bạn với bot.\n"
+                "🧹 Đã xóa trí nhớ trò chuyện và hướng dẫn cá nhân hóa của bạn.\n"
                 "-# Cài đặt Ẩn danh, nếu đang bật, vẫn được giữ nguyên."
             )
         )
@@ -84,7 +84,7 @@ class ResetMemory(commands.Cog):
 
         await user_memory.clear_all()
         embed = discord.Embed(
-            description="🧹 Đã xoá sạch **toàn bộ** trí nhớ, mọi server, mọi người."
+            description="🧹 Đã xóa toàn bộ trí nhớ và hướng dẫn cá nhân hóa của mọi người."
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

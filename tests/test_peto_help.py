@@ -26,6 +26,9 @@ def make_tree():
 
     tree.add_command(app_commands.Command(name="play", description="Phát nhạc công khai", callback=play))
     tree.add_command(app_commands.Command(name="help", description="Mở trợ giúp", callback=simple))
+    tree.add_command(app_commands.Command(
+        name="personalization", description="Chỉnh cách Peto trả lời", callback=simple
+    ))
     tree.add_command(app_commands.Command(name="resetmemoryglobal", description="OWNER_ONLY_SENTINEL", callback=simple))
     coupon = app_commands.Group(name="coupon", description="Gift code")
     coupon.add_command(app_commands.Command(name="codes", description="Danh sách code công khai", callback=simple))
@@ -69,6 +72,11 @@ class PetoHelpIntentTests(unittest.TestCase):
 
 
 class PetoHelpContextTests(unittest.TestCase):
+    def test_personalization_help_mentions_the_private_editor(self):
+        context = peto_help.build_peto_help_context(make_tree(), "Làm sao cá nhân hóa Peto?")
+        self.assertIn("/personalization", context)
+        self.assertIn("Mở ô nhập riêng", context)
+
     def test_registered_display_parameter_and_public_choice_names_are_used(self):
         tree = make_tree()
         context = peto_help.build_peto_help_context(tree, "Cách dùng /play?")

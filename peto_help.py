@@ -52,6 +52,8 @@ _TOPICS = (
     _Topic("media", ("download",), ("tai nhac", "tai video", "tai media", "download", "tai mp3", "tai mp4", "tai anh tiktok")),
     _Topic("art_ai", ("art", "wallpaper", "artecchi", "artnsfw", "artinfo", "saucy", "sticker", "emoji"),
            ("sticker", "emoji", "danbooru", "fanart", "wallpaper", "nguon anh", "tim anh")),
+    _Topic("art_ai", ("personalization",),
+           ("personalization", "ca nhan hoa", "tuy chinh cach tra loi", "custom instructions")),
     _Topic("art_ai", ("private", "andanh", "resetmemory"),
            ("chat", "tro chuyen", "an danh", "tri nho", "bo nho", "ghi nho", "dm", "study mode",
             "tao anh", "sua anh", "chinh anh", "xoa nen", "tach nen", "cat anh", "ghep anh", "doi nen",

@@ -1,6 +1,7 @@
 """Lịch sử AI theo kênh; trí nhớ dài hạn cá nhân dùng chung mọi server/DM."""
 
 from collections import deque
+from dataclasses import dataclass
 import re
 
 import aiosqlite
@@ -10,6 +11,14 @@ LEGACY_SCOPE = "legacy"
 DM_SCOPE = "dm"
 GLOBAL_MEMORY_SCOPE = "user:global"
 AI_BLACKLIST_DENIAL_MESSAGE = "Bạn không có quyền để chat với tôi."
+PERSONALIZATION_MAX_LENGTH = 1500
+
+
+@dataclass(frozen=True)
+class Personalization:
+    instructions: str
+    enabled: bool = True
+
 
 # Chế độ Ẩn danh chỉ giữ ngữ cảnh trong RAM, không ghi nội dung xuống SQLite.
 _anonymous_history: dict[tuple[str, int], deque[dict]] = {}
@@ -110,6 +119,15 @@ async def init_db() -> None:
                 scope TEXT NOT NULL,
                 anonymous INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (user_id, scope)
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_personalization (
+                user_id INTEGER PRIMARY KEY,
+                instructions TEXT NOT NULL,
+                enabled INTEGER NOT NULL
             )
             """
         )
@@ -498,6 +516,9 @@ async def clear_user(user_id: int) -> None:
             "DELETE FROM memory_summary_versions WHERE user_id = ?", (user_id,)
         )
         await db.execute(
+            "DELETE FROM user_personalization WHERE user_id = ?", (user_id,)
+        )
+        await db.execute(
             "DELETE FROM bot_response_provenance WHERE requester_user_id = ?",
             (user_id,),
         )
@@ -516,6 +537,7 @@ async def clear_all() -> None:
         await db.execute("DELETE FROM scoped_message_count")
         await db.execute("DELETE FROM explicit_user_memory")
         await db.execute("DELETE FROM memory_summary_versions")
+        await db.execute("DELETE FROM user_personalization")
         await db.execute("DELETE FROM bot_response_provenance")
         await db.commit()
 
@@ -965,14 +987,79 @@ async def set_summary(user_id: int, scope: str, summary: str) -> None:
         await db.commit()
 
 
+async def _read_personalization(
+    db: aiosqlite.Connection, user_id: int, scope: str
+) -> Personalization | None:
+    async with db.execute(
+        """
+        SELECT instructions, enabled FROM user_personalization AS preference
+        WHERE preference.user_id = ? AND NOT EXISTS (
+            SELECT 1 FROM privacy_mode
+            WHERE user_id = preference.user_id AND scope = ? AND anonymous != 0
+        )
+        """,
+        (user_id, scope),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return Personalization(row[0], bool(row[1])) if row else None
+
+
+async def get_personalization(user_id: int, scope: str) -> Personalization | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        return await _read_personalization(db, user_id, scope)
+
+
+async def update_personalization(
+    user_id: int,
+    scope: str,
+    *,
+    previous: Personalization | None,
+    replacement: Personalization | None,
+) -> bool:
+    """Apply an edit only if the form is current and anonymous mode is off."""
+    if replacement is not None:
+        instructions = replacement.instructions.strip()
+        if not 0 < len(instructions) <= PERSONALIZATION_MAX_LENGTH:
+            raise ValueError("Invalid personalization length")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        if await _is_anonymous_mode(db, user_id, scope):
+            return False
+        if await _read_personalization(db, user_id, scope) != previous:
+            return False
+        if replacement is None:
+            await db.execute(
+                "DELETE FROM user_personalization WHERE user_id = ?", (user_id,)
+            )
+        else:
+            await db.execute(
+                """
+                INSERT INTO user_personalization (user_id, instructions, enabled)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE
+                SET instructions = excluded.instructions, enabled = excluded.enabled
+                """,
+                (user_id, instructions, int(replacement.enabled)),
+            )
+        await db.commit()
+        return True
+
+
+async def _is_anonymous_mode(
+    db: aiosqlite.Connection, user_id: int, scope: str
+) -> bool:
+    async with db.execute(
+        "SELECT anonymous FROM privacy_mode WHERE user_id = ? AND scope = ?",
+        (user_id, scope),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return bool(row and row[0])
+
+
 async def is_anonymous_mode(user_id: int, scope: str) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT anonymous FROM privacy_mode WHERE user_id = ? AND scope = ?",
-            (user_id, scope),
-        )
-        row = await cursor.fetchone()
-        return bool(row and row[0])
+        return await _is_anonymous_mode(db, user_id, scope)
 
 
 async def set_anonymous_mode(user_id: int, scope: str, enabled: bool) -> None:
