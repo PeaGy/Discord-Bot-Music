@@ -10,6 +10,12 @@ extractor, tiến trình phụ hoặc chờ retry. Thời gian `open` cũng bao 
 HTTP client; phép đo này không tách riêng DNS, TLS hay độ trễ tunnel. Tiến trình mới
 có thể tốn thêm thời gian khởi tạo so với bot đang chạy.
 
+Thêm `--detail` để xem các hàm yt-dlp tốn thời gian sau lần đọc phản hồi Player API
+cuối cùng trên luồng chính. `total` gồm các hàm con, `self` là thời gian riêng;
+không cộng các dòng lồng nhau. Các hàm trong `jsc/`, `pot/` và `subprocess.py`
+giúp nhận diện xử lý challenge, yêu cầu PO token và thời gian chờ tiến trình con.
+Profiler có chi phí đo; dùng lượt chạy mặc định khi so sánh độ trễ tổng.
+
 Các script trong thư mục này chỉ dùng để kiểm tra thủ công và có thể gọi mạng.
 Chúng không được import khi bot chạy và không phải bộ test tự động.
 
