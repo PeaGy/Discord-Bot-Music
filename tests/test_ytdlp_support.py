@@ -112,28 +112,21 @@ class YoutubeYdlOptionsTests(unittest.TestCase):
             base = {"extractor_args": {"youtube": {"player_client": ["tv"]}}}
             self.assertEqual(youtube_ydl_options(base), base)
 
-    def test_bgutil_ipv6_url_is_forwarded_to_provider(self):
+    def test_bgutil_loopback_url_is_forwarded_to_provider(self):
         env = {
             "YTDLP_PROXY": "socks5://127.0.0.1:40000",
             "YTDLP_JS_RUNTIME": "node",
             "YTDLP_REMOTE_COMPONENTS": "ejs:github",
-            "YTDLP_BGUTIL_URL": "http://[::1]:4416",
+            "YTDLP_YOUTUBE_CLIENT": "",
             "YTDLP_COOKIE_FILE": "",
         }
-        with patch.dict(os.environ, env, clear=False):
-            options = youtube_ydl_options({})
-
-        self.assertEqual(
-            options["extractor_args"],
-            {
-                "youtube": {
-                    "player_client": ["web_embedded", "mweb"]
-                },
-                "youtubepot-bgutilhttp": {
-                    "base_url": ["http://[::1]:4416"]
-                },
-            },
-        )
+        for url in ("http://127.0.0.1:4416", "http://[::1]:4416"):
+            with self.subTest(url=url), patch.dict(os.environ, {**env, "YTDLP_BGUTIL_URL": url}):
+                options = youtube_ydl_options({})
+                self.assertEqual(options["extractor_args"], {
+                    "youtube": {"player_client": ["web_embedded", "mweb"]},
+                    "youtubepot-bgutilhttp": {"base_url": [url]},
+                })
 
     def test_youtube_client_can_be_overridden(self):
         env = {
