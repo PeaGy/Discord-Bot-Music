@@ -1,5 +1,15 @@
 # Manual diagnostics
 
+## Đo thời gian lấy metadata cho link YouTube
+
+Từ thư mục repo trên VPS, chạy `.venv/bin/python scripts/manual/profile_youtube_metadata.py 'LINK_YOUTUBE'`.
+Script gọi hàm lấy metadata của `/play` trong một tiến trình riêng, dùng cấu hình hiện tại.
+Chọn một video chưa có cache. Bảng in thời gian mở phiên yt-dlp, mở từng yêu cầu HTTP
+và đọc nội dung phản hồi. `unattributed` gồm mọi khoảng còn lại, có thể bao gồm xử lý
+extractor, tiến trình phụ hoặc chờ retry. Thời gian `open` cũng bao gồm chi phí của
+HTTP client; phép đo này không tách riêng DNS, TLS hay độ trễ tunnel. Tiến trình mới
+có thể tốn thêm thời gian khởi tạo so với bot đang chạy.
+
 Các script trong thư mục này chỉ dùng để kiểm tra thủ công và có thể gọi mạng.
 Chúng không được import khi bot chạy và không phải bộ test tự động.
 
