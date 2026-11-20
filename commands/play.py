@@ -68,6 +68,12 @@ def _audio_fallback_search_seed(query: str) -> dict:
 
 def get_song_info(query: str):
     canonical = canonical_youtube_url(query)
+    keyword_key = None
+    if query.strip() and "://" not in query and not is_youtube_url(query) and not is_soundcloud_url(query):
+        keyword_key = "keyword:" + " ".join(query.casefold().split())
+        remembered = music_library.cached_search_match(keyword_key)
+        if remembered:
+            return {**remembered, "source": "youtube"}
     if canonical and find_cached_audio_path(query):
         known = music_library.find_known_track_sync(canonical) or {}
         logger.info("Metadata từ cache cục bộ, bỏ qua YouTube: %s", canonical)
@@ -155,6 +161,8 @@ def get_song_info(query: str):
         )
     elif direct_fallback_eligible and not _has_playable_audio_format(info) and not cached_audio:
         raise ValueError("YouTube không trả về định dạng audio có thể phát.")
+    if keyword_key and (cached_audio or _has_playable_audio_format(info)):
+        music_library.remember_search_match(keyword_key, song["url"], song)
     return song
 
 
@@ -244,7 +252,7 @@ class Play(commands.Cog):
             and not song.get("youtube_metadata_failed")
             and int(song.get("duration") or 0) <= 600
         ):
-            asyncio.create_task(preload_audio(song["url"], delay=3.0))
+            asyncio.create_task(preload_audio(song.get("cached_youtube_url") or song["url"], delay=3.0))
         embed = discord.Embed(description=f"**{song['title']}** `[{format_duration(song['duration'])}]`")
         embed.set_author(name=f"Đã thêm vào hàng đợi (#{1 if front else len(queue)})", icon_url=interaction.user.display_avatar.url)
         if song.get("thumbnail"): embed.set_thumbnail(url=song["thumbnail"])

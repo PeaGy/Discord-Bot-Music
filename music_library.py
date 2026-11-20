@@ -12,6 +12,7 @@ from pathlib import Path
 import urllib.parse
 
 import aiosqlite
+from music.urls import canonical_youtube_url
 
 
 DB_PATH = os.getenv("MUSIC_LIBRARY_DB", "music_library.db")
@@ -122,6 +123,39 @@ def find_known_track_sync(url: str) -> dict | None:
     except (sqlite3.Error, OSError, ValueError):
         pass
     return None
+
+
+def cached_search_match(key: str) -> dict | None:
+    """A remembered selection is usable only while its completed audio exists."""
+    from cache_manager import find_cached_audio_path
+    try:
+        uri = Path(DB_PATH).resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute("SELECT title, author, url, duration, thumbnail FROM music_search_matches "
+                             "WHERE lookup_key=?", (key,)).fetchone()
+        if row and canonical_youtube_url(row["url"]) and find_cached_audio_path(row["url"]):
+            return dict(row)
+    except (OSError, sqlite3.Error):
+        pass
+    return None
+
+
+def remember_search_match(key: str, video_url: str, song: dict) -> None:
+    url = canonical_youtube_url(video_url)
+    if not url or not key:
+        return
+    try:
+        with closing(sqlite3.connect(DB_PATH, timeout=0.2)) as db, db:
+            db.execute("""CREATE TABLE IF NOT EXISTS music_search_matches (
+                lookup_key TEXT PRIMARY KEY, url TEXT NOT NULL, title TEXT, author TEXT,
+                duration INTEGER, thumbnail TEXT)""")
+            db.execute("""INSERT OR REPLACE INTO music_search_matches
+                          (lookup_key,url,title,author,duration,thumbnail) VALUES (?,?,?,?,?,?)""",
+                       (key, url, song.get("title"), song.get("author"), song.get("duration") or 0,
+                        song.get("thumbnail")))
+    except sqlite3.Error:
+        pass  # Optional index: a busy or read-only database must not break playback.
 
 
 async def init_db() -> None:

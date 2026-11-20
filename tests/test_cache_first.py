@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import cache_manager
 from commands.play import get_song_info
+from music.spotify import get_spotify_info
 from music.player import _play_next_locked
 from music.urls import canonical_youtube_url
 import music_library
@@ -201,6 +202,28 @@ class CacheLookupTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CachedMetadataTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        patches = ExitStack()
+        self.addCleanup(patches.close)
+        patches.enter_context(patch.object(music_library, "DB_PATH", str(Path(folder.name) / "library.db")))
+        patches.enter_context(patch.object(cache_manager, "CACHE_DIR", folder.name))
+
+    def test_keyword_replay_uses_disk_match_only_while_audio_exists(self):
+        result = {"title": "Shikairo Days", "webpage_url": URL, "formats": [{"url": "audio", "acodec": "opus"}]}
+        with patch("commands.play.extract_info_with_retry", return_value=result) as extract:
+            first = get_song_info("shikairo days")
+            path = Path(cache_manager.get_cache_paths(URL)[1])
+            path.write_bytes(b"cached")
+            self.assertEqual(get_song_info("  Shikairo   DAYS "), first)
+            extract.assert_called_once()
+            get_song_info("shikairo days live")
+            self.assertEqual(extract.call_count, 2)
+            path.unlink()
+            get_song_info("shikairo days")
+            self.assertEqual(extract.call_count, 3)
+
     def test_direct_cached_video_skips_all_youtube_metadata_requests(self):
         known = {"title": "Harry Styles - As It Was", "author": "Harry Styles", "duration": 167,
                  "source": "spotify", "search_query": "unused old query", "thumbnail": None}
@@ -289,7 +312,7 @@ class KnownTrackMetadataTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PlayerCachePriorityTests(unittest.IsolatedAsyncioTestCase):
-    async def run_player(self, song, *, cached=None, cache_error=None):
+    async def run_player(self, song, *, cached=None, cache_error=None, info=None):
         state = SimpleNamespace(queue=deque([song]), history=[], text_channel=None,
                                 now_playing_message=None, loop_mode="off", autoplay=False)
         vc = Mock()
@@ -306,7 +329,7 @@ class PlayerCachePriorityTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch("music.player.get_cached_audio_source", cache))
             stack.enter_context(patch("music.player.get_audio_source", download))
             stack.enter_context(patch("music.player._try_audio_fallback", fallback))
-            extract = stack.enter_context(patch("music.player.extract_info_with_retry", return_value={"url": URL}))
+            extract = stack.enter_context(patch("music.player.extract_info_with_retry", return_value=info or {"url": URL}))
             hint = stack.enter_context(patch("music.player._cached_audio_fallback_hint", return_value=(None, None)))
             volume = stack.enter_context(patch("music.player.discord.PCMVolumeTransformer"))
             temp = stack.enter_context(patch("music.player.get_long_audio_source", new=AsyncMock()))
@@ -348,6 +371,29 @@ class PlayerCachePriorityTests(unittest.IsolatedAsyncioTestCase):
                 calls.temp.assert_not_awaited()
                 calls.fallback.assert_not_awaited()
                 self.assertIs(calls.vc.play.call_args.args[0], cached)
+
+    async def test_spotify_search_is_remembered_for_other_links_to_same_track(self):
+        track_id = "A1" * 11
+        url = "https://open.spotify.com/track/" + track_id
+        song = {"title": "Song", "author": "Artist", "source": "spotify", "url": url,
+                "search_query": "Song Artist audio", "duration": 180}
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+            music_library, "DB_PATH", str(Path(folder) / "library.db")
+        ), patch.object(cache_manager, "CACHE_DIR", folder):
+            first = await self.run_player(song, info={"url": "stream", "webpage_url": URL})
+            first.extract.assert_called_once()
+            path = Path(cache_manager.get_cache_paths(URL)[1])
+            path.write_bytes(b"cached")
+            with patch("music.spotify.urllib.request.urlopen") as spotify:
+                replay = get_spotify_info(url + "?si=test")
+                spotify.assert_not_called()
+                second = await self.run_player(replay, cached=Mock())
+                second.cache.assert_awaited_once_with(URL)
+                second.extract.assert_not_called()
+                path.unlink()
+                spotify.return_value.read.return_value = b'<meta property="og:title" content="Refreshed">'
+                self.assertEqual(get_spotify_info(url)["title"], "Refreshed")
+                spotify.assert_called_once()
 
     async def test_miss_or_open_error_keeps_normal_download_path(self):
         for error in (None, OSError("cache file disappeared")):

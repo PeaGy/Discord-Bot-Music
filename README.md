@@ -364,6 +364,8 @@ Khi tạo cache, Peto đo nhanh bằng `ebur128`. Bài có đủ khoảng dư �
 
 Queue, loop, autoplay, 24/7 và phiên nút Study Mode nằm trong RAM nên mất khi restart. Database, playlist, favorites và trí nhớ AI vẫn còn.
 
+Khi tìm bài bằng tên hoặc phát một track Spotify, Peto nhớ video YouTube đã chọn trong `music_library.db`. Gõ lại cùng từ khóa (có thể đổi hoa/thường hoặc khoảng trắng) hoặc gửi lại cùng track Spotify sẽ phát từ file Opus nếu file vẫn còn. Nếu cache đã bị dọn, Peto tìm lại và cập nhật kết quả.
+
 Để ưu tiên chất lượng nhạc, đặt `PETO_CACHE_OPUS_COMPLEXITY=10` trong `.env` (hoặc bỏ trống để dùng mặc định FFmpeg). Khi bài ngắn chưa có cache, Peto đo âm lượng rồi phát từ các gói Opus đầu tiên trong lúc FFmpeg tiếp tục mã hóa. Lượt nghe khác có thể dùng chung lần mã hóa với vị trí đọc riêng. File cache chỉ xuất hiện sau khi mã hóa thành công. Thay đổi mức encoder chỉ áp dụng cho cache tạo mới.
 
 Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không chạy cùng bot.

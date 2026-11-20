@@ -23,6 +23,8 @@ from music.source_fallback import (
 from music.stream_source import open_fallback_stream, STREAM_STARTUP_TIMEOUT
 from music.timing import log_phase_timing, phase_timer
 from music.urls import canonical_youtube_url
+from music.spotify import spotify_track_id
+from music_library import remember_search_match
 from cache_manager import (
     get_audio_source,
     get_cached_audio_source,
@@ -427,7 +429,7 @@ async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
                 if duration <= 600:
                     from cache_manager import preload_audio
                     preload_delay = 3.0 if (vc.is_playing() or vc.is_paused()) else 0
-                    await preload_audio(next_song['url'], delay=preload_delay)
+                    await preload_audio(next_song.get("cached_youtube_url") or next_song["url"], delay=preload_delay)
                 
                 # Nếu bot đang dừng (do user skip quá nhanh hoặc API chậm) -> Ép phát luôn
                 if not vc.is_playing() and not vc.is_paused():
@@ -509,7 +511,7 @@ async def play_song_by_query(
         and not song.get("youtube_metadata_failed")
         and duration <= 600
     ):
-        asyncio.create_task(preload_audio(song["url"], delay=3.0))
+        asyncio.create_task(preload_audio(song.get("cached_youtube_url") or song["url"], delay=3.0))
 
     if not vc.is_playing() and not vc.is_paused():
         await play_next(bot, vc, text_channel)
@@ -598,7 +600,10 @@ async def _play_next_locked(
     cached_source = None
     if not is_radio:
         try:
-            cached_source = await get_cached_audio_source(song["url"])
+            cached_url = song.pop("cached_youtube_url", None) or song["url"]
+            cached_source = await get_cached_audio_source(cached_url)
+            if cached_source is not None:
+                song["url"] = cached_url
         except Exception as cache_error:
             logger.warning("Không mở được audio cache (%s), thử luồng thường", type(cache_error).__name__)
     if cached_source is not None:
@@ -650,6 +655,10 @@ async def _play_next_locked(
         )
         if "entries" in info:
             info = next((entry for entry in info["entries"] if entry), None)
+        if song.get("source") == "spotify" and info and info.get("url"):
+            track_id = spotify_track_id(song["url"])
+            if track_id:
+                remember_search_match("spotify:" + track_id, info.get("webpage_url"), song)
         return info
 
     if cached_source is None and not fallback_info and _needs_stream_lookup(
@@ -924,7 +933,7 @@ async def _play_next_locked(
             and not next_song.get("youtube_metadata_failed")
             and next_duration <= 600
         ):
-            asyncio.create_task(preload_audio(next_song['url'], delay=3.0))
+            asyncio.create_task(preload_audio(next_song.get("cached_youtube_url") or next_song["url"], delay=3.0))
             
     elif state.autoplay:
         # Nếu hàng đợi trống trơn NHƯNG Autoplay đang bật 
