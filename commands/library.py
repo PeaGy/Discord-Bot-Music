@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import music_library
+from music.resolver import resolve_song
 from music.player import play_next
 from music.state import get_guild_state
 from ytdlp_support import youtube_ydl_options
@@ -189,11 +190,8 @@ class MusicLibrary(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=bool(query))
         track = None
         if query:
-            from commands.play import get_song_info
-            from music.spotify import get_spotify_info, is_spotify_url
             try:
-                getter = get_spotify_info if is_spotify_url(query) else get_song_info
-                track = await asyncio.get_running_loop().run_in_executor(None, getter, query)
+                track = await asyncio.to_thread(resolve_song, query)
             except Exception as error:
                 logger.warning("Không lấy được metadata /playlist add query=%r: %s", query, error)
         else:

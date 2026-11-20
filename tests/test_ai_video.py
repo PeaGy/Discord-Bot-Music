@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from features.ai_chat import (
-    GrokChat,
-    _extract_video_assets,
+from features.ai_chat import GrokChat
+from features._ai_video import (
+    extract_video_assets,
     _run_video_tool,
     _video_ffmpeg_executable,
 )
@@ -49,10 +49,11 @@ class VideoUnderstandingTests(unittest.TestCase):
                 "-c:a", "aac", source,
             ])
 
-            duration, frames, audio_path = _extract_video_assets(
+            duration, frames, audio_path = extract_video_assets(
                 source,
                 directory,
                 6,
+                max_seconds=120,
             )
 
             self.assertGreater(duration, 1.8)

@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import cache_manager
+from music import download, long_audio
 
 
 class _DummyOpusSource:
@@ -44,7 +45,7 @@ class TemporaryFileAudioSourceTests(unittest.TestCase):
             old_time = time.time() - 100
             os.utime(stale_path, (old_time, old_time))
 
-            with patch.object(cache_manager, "LONG_AUDIO_TEMP_DIR", directory):
+            with patch.object(long_audio, "LONG_AUDIO_TEMP_DIR", directory):
                 cache_manager.cleanup_stale_long_audio_files(max_age=50)
 
             self.assertFalse(os.path.exists(stale_path))
@@ -91,7 +92,7 @@ class ShortAudioDownloadRetryTests(unittest.TestCase):
                 return "audio.webm"
 
         with patch.object(
-            cache_manager, "youtube_player_clients", return_value=("web_embedded", "mweb")
+            download, "youtube_player_clients", return_value=("web_embedded", "mweb")
         ):
             with patch.object(cache_manager.yt_dlp, "YoutubeDL", FakeYoutubeDL):
                 with patch.object(cache_manager.time, "sleep") as mocked_sleep:
@@ -122,7 +123,7 @@ class ShortAudioDownloadRetryTests(unittest.TestCase):
                 state["calls"] += 1
                 raise RuntimeError("HTTP Error 403: Forbidden")
 
-        with patch.object(cache_manager, "youtube_player_clients", return_value=()):
+        with patch.object(download, "youtube_player_clients", return_value=()):
             with patch.object(cache_manager.yt_dlp, "YoutubeDL", FailingYoutubeDL):
                 with self.assertRaises(RuntimeError):
                     cache_manager.download_raw_sync(
@@ -169,7 +170,7 @@ class ShortAudioDownloadRetryTests(unittest.TestCase):
         }
         with patch.dict(os.environ, env, clear=False):
             with patch.object(
-                cache_manager,
+                download,
                 "youtube_player_clients",
                 return_value=("web_embedded", "mweb"),
             ):

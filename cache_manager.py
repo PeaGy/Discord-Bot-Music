@@ -2,7 +2,6 @@ import os
 import hashlib
 import asyncio
 import logging
-import glob
 import subprocess
 import tempfile
 import time
@@ -11,8 +10,26 @@ from contextlib import asynccontextmanager
 
 import yt_dlp
 import discord
-from music.growing_opus import GrowingOpusFile
 from discord.oggparse import OggError, OggStream
+from music.audio_source import OPUS_PREROLL_FRAMES, OPUS_SILENCE_PACKET, OpusPrerollAudioSource
+from music.download import (
+    AUDIO_CACHE_DIR as CACHE_DIR,
+    AudioDownloadError,
+    can_continue_download_attempt as _can_continue_download_attempt,
+    is_valid_file as _is_valid_file,
+    remove_download_bundle,
+    youtube_download_attempt_specs as _youtube_download_attempt_specs,
+)
+from music.growing_opus import GrowingOpusFile
+from music.long_audio import (
+    LONG_AUDIO_TEMP_DIR,
+    LONG_AUDIO_TEMP_MAX_BYTES,
+    LONG_AUDIO_TEMP_MAX_DURATION,
+    LONG_AUDIO_TEMP_STALE_SECONDS,
+    TemporaryFileAudioSource,
+    cleanup_stale_long_audio_files,
+    get_long_audio_source,
+)
 from music.loudness import (
     LOUDNORM_TARGET,
     OPUS_EXPECTED_PACKET_LOSS,
@@ -25,71 +42,20 @@ from music.loudness import (
 from music.urls import canonical_youtube_url
 from music.timing import phase_timer, log_phase_timing
 from ytdlp_support import (
-    is_transient_ytdlp_error,
     ydl_options_for_player_client,
-    youtube_player_clients,
     youtube_ydl_options,
-    youtube_ydl_routes,
     take_youtube_download_seed,
 )
 
 
 logger = logging.getLogger(__name__)
 
-# ==============================
-# CACHE DIR
-# ==============================
-CACHE_DIR = "audio_cache"
-if not os.path.exists(CACHE_DIR):
-    os.makedirs(CACHE_DIR)
-
-LONG_AUDIO_TEMP_DIR = os.path.join(CACHE_DIR, "long_temp")
-os.makedirs(LONG_AUDIO_TEMP_DIR, exist_ok=True)
-
 DOWNLOAD_MP3_BITRATE = "128k"
 CACHE_FORMAT_VERSION = "v2_fec10"
-OPUS_PREROLL_FRAMES = 8  # 8 x 20 ms = 160 ms để ổn định nhịp gửi lúc bắt đầu
-OPUS_SILENCE_PACKET = b"\xF8\xFF\xFE"
-LONG_AUDIO_TEMP_MAX_DURATION = 2 * 60 * 60
-LONG_AUDIO_TEMP_MAX_BYTES = 300 * 1024 * 1024
-LONG_AUDIO_TEMP_STALE_SECONDS = 6 * 60 * 60
-
 _cache_locks = {}
 _playback_builds = {}
 _download_locks = {}
 _cache_build_semaphore = asyncio.Semaphore(1)
-_long_audio_download_semaphore = asyncio.Semaphore(2)
-
-
-class AudioDownloadError(RuntimeError):
-    """Lỗi chuẩn bị file âm thanh để gửi cho người dùng."""
-
-
-class OpusPrerollAudioSource(discord.AudioSource):
-    """Phát vài frame Opus im lặng trước khi đọc file thật.
-
-    FFmpeg được khởi động ngay khi tạo ``source`` nên khoảng đệm này cho tiến trình
-    đủ thời gian nạp packet đầu tiên, tránh làm audio thread trễ nhịp 20 ms của
-    Discord. Nguồn vẫn là Opus xuyên suốt và không bị encode lại.
-    """
-
-    def __init__(self, source, frames=OPUS_PREROLL_FRAMES):
-        if not source.is_opus():
-            raise TypeError("OpusPrerollAudioSource yêu cầu nguồn Opus.")
-        self.source = source
-        self.remaining_frames = max(0, int(frames))
-
-    def read(self):
-        if self.remaining_frames > 0:
-            self.remaining_frames -= 1
-            return OPUS_SILENCE_PACKET
-        return self.source.read()
-
-    def is_opus(self):
-        return True
-
-    def cleanup(self):
-        self.source.cleanup()
 
 
 class CachedOpusSource(discord.AudioSource):
@@ -139,36 +105,6 @@ def _open_cached_opus(path):
     return OpusPrerollAudioSource(discord.FFmpegOpusAudio(path, codec="copy", options="-vn"))
 
 
-class TemporaryFileAudioSource(discord.AudioSource):
-    """Audio source that removes its downloaded file when Discord is done with it."""
-
-    def __init__(self, source, filepath):
-        self.source = source
-        self.filepath = filepath
-        self._cleaned = False
-
-    def read(self):
-        return self.source.read()
-
-    def is_opus(self):
-        return self.source.is_opus()
-
-    def cleanup(self):
-        if self._cleaned:
-            return
-        self._cleaned = True
-        try:
-            self.source.cleanup()
-        finally:
-            try:
-                os.remove(self.filepath)
-                logger.info("Đã xóa audio tạm của bài dài: %s", self.filepath)
-            except FileNotFoundError:
-                pass
-            except OSError as error:
-                logger.warning("Không xóa được audio tạm %s: %s", self.filepath, error)
-
-
 def is_cache_build_active():
     """Cho lệnh chẩn đoán biết FFmpeg có đang tạo cache hay không."""
     return _cache_build_semaphore.locked()
@@ -181,194 +117,6 @@ def _get_lock(lock_store, url):
         lock = asyncio.Lock()
         lock_store[lock_key] = lock
     return lock
-
-
-def _is_valid_file(path):
-    return os.path.exists(path) and os.path.getsize(path) > 0
-
-
-def cleanup_stale_long_audio_files(max_age=LONG_AUDIO_TEMP_STALE_SECONDS):
-    """Remove abandoned long-track files left behind by a crash or forced shutdown."""
-    cutoff = time.time() - max(0, int(max_age))
-    try:
-        entries = os.scandir(LONG_AUDIO_TEMP_DIR)
-    except OSError as error:
-        logger.warning("Không quét được thư mục audio tạm: %s", error)
-        return
-
-    with entries:
-        for entry in entries:
-            try:
-                if entry.is_file() and entry.stat().st_mtime < cutoff:
-                    os.remove(entry.path)
-            except OSError:
-                continue
-
-
-def _remove_long_audio_bundle(prefix):
-    for path in glob.glob(f"{glob.escape(prefix)}*"):
-        try:
-            if os.path.isfile(path):
-                os.remove(path)
-        except OSError:
-            pass
-
-
-def _youtube_download_attempt_specs(base_options, url):
-    """Return client attempts for WARP first, then direct VPS egress."""
-    clients = youtube_player_clients()
-    if clients:
-        attempt_clients = clients[:2]
-        if len(attempt_clients) == 1:
-            attempt_clients = (attempt_clients[0], attempt_clients[0])
-    else:
-        # Preserve the old home-PC behavior: one automatic-client attempt.
-        attempt_clients = (None,)
-
-    return tuple(
-        (route_name, route_options, client)
-        for route_name, route_options in youtube_ydl_routes(
-            base_options,
-            query=url,
-        )
-        for client in attempt_clients
-    )
-
-
-def _can_continue_download_attempt(error, current_spec, next_spec):
-    current_route, _, current_client = current_spec
-    next_route, _, next_client = next_spec
-    if next_route != current_route:
-        return is_transient_ytdlp_error(error)
-    return next_client != current_client or is_transient_ytdlp_error(error)
-
-
-def _download_long_audio_sync(url, player_client=None, route_name=None):
-    """Download original long-form audio through yt-dlp without normalization."""
-    token = uuid.uuid4().hex
-    prefix = os.path.join(LONG_AUDIO_TEMP_DIR, f"long_{token}_")
-    outtmpl = f"{prefix}%(id)s.%(ext)s"
-    ydl_opts = youtube_ydl_options({
-        "format": "bestaudio[acodec^=opus]/bestaudio/best",
-        "outtmpl": outtmpl,
-        "quiet": True,
-        "noprogress": True,
-        "noplaylist": True,
-        "nocheckcertificate": True,
-        "continuedl": True,
-        "retries": 2,
-        "fragment_retries": 2,
-        "max_filesize": LONG_AUDIO_TEMP_MAX_BYTES,
-    })
-    available_routes = dict(youtube_ydl_routes(ydl_opts, query=url))
-    if route_name in available_routes:
-        ydl_opts = available_routes[route_name]
-    ydl_opts = ydl_options_for_player_client(ydl_opts, player_client)
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if "entries" in info:
-                info = next((entry for entry in info["entries"] if entry), None)
-            if not info:
-                raise AudioDownloadError("yt-dlp không trả về thông tin audio.")
-
-            filepath = ydl.prepare_filename(info)
-            if not _is_valid_file(filepath):
-                candidates = [
-                    path for path in glob.glob(f"{glob.escape(prefix)}*")
-                    if _is_valid_file(path) and not path.endswith(".part")
-                ]
-                if not candidates:
-                    raise AudioDownloadError("Không tìm thấy file audio dài sau khi tải.")
-                filepath = max(candidates, key=os.path.getmtime)
-
-            if os.path.getsize(filepath) > LONG_AUDIO_TEMP_MAX_BYTES:
-                raise AudioDownloadError("Audio dài vượt quá giới hạn 300 MiB.")
-
-            requested = info.get("requested_downloads") or []
-            selected = requested[0] if requested else info
-            codec = str(selected.get("acodec") or info.get("acodec") or "").lower()
-            return filepath, codec
-    except Exception:
-        _remove_long_audio_bundle(prefix)
-        raise
-
-
-async def get_long_audio_source(url, duration):
-    """Prepare a temporary local source for a proxied long track, with one retry."""
-    duration = int(duration or 0)
-    if duration > LONG_AUDIO_TEMP_MAX_DURATION:
-        raise AudioDownloadError(
-            "Bài dài vượt quá giới hạn phát tạm 2 giờ trên VPS."
-        )
-
-    cleanup_stale_long_audio_files()
-    base_options = youtube_ydl_options({})
-    attempt_specs = _youtube_download_attempt_specs(base_options, url)
-    last_error = None
-    total_attempts = len(attempt_specs)
-    for attempt, spec in enumerate(attempt_specs, start=1):
-        route_name, _, player_client = spec
-        filepath = None
-        try:
-            logger.info(
-                "Tải audio tạm cho bài dài "
-                "(lần %s/%s, route=%s, client=%s): %s",
-                attempt,
-                total_attempts,
-                route_name,
-                player_client or "auto",
-                url,
-            )
-            async with _long_audio_download_semaphore:
-                filepath, codec = await asyncio.to_thread(
-                    _download_long_audio_sync,
-                    url,
-                    player_client,
-                    route_name,
-                )
-            ffmpeg_source = discord.FFmpegOpusAudio(
-                filepath,
-                codec="copy" if "opus" in codec else "libopus",
-                bitrate=160,
-                options="-vn",
-            )
-            logger.info(
-                "Audio tạm bài dài sẵn sàng: %s (%s)",
-                filepath,
-                codec or "codec không rõ",
-            )
-            return TemporaryFileAudioSource(
-                OpusPrerollAudioSource(ffmpeg_source),
-                filepath,
-            )
-        except Exception as error:
-            last_error = error
-            if filepath:
-                try:
-                    os.remove(filepath)
-                except OSError:
-                    pass
-            logger.warning(
-                "Không chuẩn bị được audio tạm bài dài "
-                "(lần %s/%s, route=%s, client=%s): %s",
-                attempt,
-                total_attempts,
-                route_name,
-                player_client or "auto",
-                error,
-            )
-            if attempt < total_attempts and _can_continue_download_attempt(
-                error,
-                spec,
-                attempt_specs[attempt],
-            ):
-                await asyncio.sleep(3)
-                continue
-            break
-
-    raise AudioDownloadError("Không tải được audio tạm cho bài dài.") from last_error
 
 
 def get_cache_paths(url):
@@ -458,7 +206,7 @@ def download_raw_sync(url, raw_outtmpl):
                     ydl.cookiejar = seed.cookiejar
                 return _download_resolved_audio(ydl, seed.info, track_id)
         except Exception as error:
-            _remove_long_audio_bundle(raw_outtmpl.split("%", 1)[0])
+            remove_download_bundle(raw_outtmpl.split("%", 1)[0])
             logger.info(
                 "yt-dlp phase=download-seed-refresh track=%s reason=%s",
                 track_id, type(error).__name__,
@@ -486,7 +234,7 @@ def download_raw_sync(url, raw_outtmpl):
         except Exception as error:
             last_error = error
             prefix = raw_outtmpl.split("%", 1)[0]
-            _remove_long_audio_bundle(prefix)
+            remove_download_bundle(prefix)
             if attempt >= total_attempts:
                 raise
             next_spec = attempt_specs[attempt]

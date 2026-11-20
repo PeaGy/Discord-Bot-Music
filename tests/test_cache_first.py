@@ -10,8 +10,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 import cache_manager
-from commands.play import get_song_info
-from music.spotify import get_spotify_info
+from music.resolver import get_song_info, resolve_song
 from music.player import _play_next_locked
 from music.urls import canonical_youtube_url
 import music_library
@@ -212,24 +211,24 @@ class CachedMetadataTests(unittest.TestCase):
 
     def test_keyword_replay_uses_disk_match_only_while_audio_exists(self):
         result = {"title": "Shikairo Days", "webpage_url": URL, "formats": [{"url": "audio", "acodec": "opus"}]}
-        with patch("commands.play.extract_info_with_retry", return_value=result) as extract:
-            first = get_song_info("shikairo days")
+        with patch("music.resolver.extract_info_with_retry", return_value=result) as extract:
+            first = resolve_song("shikairo days")
             path = Path(cache_manager.get_cache_paths(URL)[1])
             path.write_bytes(b"cached")
-            self.assertEqual(get_song_info("  Shikairo   DAYS "), first)
+            self.assertEqual(resolve_song("  Shikairo   DAYS "), first)
             extract.assert_called_once()
-            get_song_info("shikairo days live")
+            resolve_song("shikairo days live")
             self.assertEqual(extract.call_count, 2)
             path.unlink()
-            get_song_info("shikairo days")
+            resolve_song("shikairo days")
             self.assertEqual(extract.call_count, 3)
 
     def test_direct_cached_video_skips_all_youtube_metadata_requests(self):
         known = {"title": "Harry Styles - As It Was", "author": "Harry Styles", "duration": 167,
                  "source": "spotify", "search_query": "unused old query", "thumbnail": None}
-        with patch("commands.play.find_cached_audio_path", return_value="audio.opus"), patch(
-            "commands.play.music_library.find_known_track_sync", return_value=known
-        ) as lookup, patch("commands.play.extract_info_with_retry") as extract:
+        with patch("music.resolver.find_cached_audio_path", return_value="audio.opus"), patch(
+            "music.resolver.music_library.find_known_track_sync", return_value=known
+        ) as lookup, patch("music.resolver.extract_info_with_retry") as extract:
             song = get_song_info(SHARE_URL)
         lookup.assert_called_once_with(URL)
         extract.assert_not_called()
@@ -240,17 +239,17 @@ class CachedMetadataTests(unittest.TestCase):
         self.assertNotIn("youtube_metadata_failed", song)
 
     def test_legacy_cache_without_metadata_remains_playable_without_network(self):
-        with patch("commands.play.find_cached_audio_path", return_value="audio.opus"), patch(
-            "commands.play.music_library.find_known_track_sync", return_value=None
-        ), patch("commands.play.extract_info_with_retry") as extract:
+        with patch("music.resolver.find_cached_audio_path", return_value="audio.opus"), patch(
+            "music.resolver.music_library.find_known_track_sync", return_value=None
+        ), patch("music.resolver.extract_info_with_retry") as extract:
             song = get_song_info(URL)
         extract.assert_not_called()
         self.assertIn("bản đã lưu", song["title"])
         self.assertEqual(song["url"], URL)
 
     def test_keyword_still_resolves_the_requested_song(self):
-        with patch("commands.play.find_cached_audio_path") as cache, patch(
-            "commands.play.extract_info_with_retry",
+        with patch("music.resolver.find_cached_audio_path") as cache, patch(
+            "music.resolver.extract_info_with_retry",
             return_value={"title": "As It Was", "webpage_url": URL,
                           "formats": [{"url": "https://cdn.test/audio", "acodec": "opus"}]},
         ) as extract:
@@ -269,9 +268,9 @@ class CachedMetadataTests(unittest.TestCase):
             self.assertTrue(kwargs["result_validator"](info))
             return info
 
-        with patch("commands.play.find_cached_audio_path", return_value="audio.opus"), patch(
-            "commands.play.audio_fallback_enabled", return_value=True
-        ), patch("commands.play.extract_info_with_retry", side_effect=extract) as network:
+        with patch("music.resolver.find_cached_audio_path", return_value="audio.opus"), patch(
+            "music.resolver.audio_fallback_enabled", return_value=True
+        ), patch("music.resolver.extract_info_with_retry", side_effect=extract) as network:
             song = get_song_info("Harry Styles As It Was")
         network.assert_called_once()
         self.assertNotIn("youtube_metadata_failed", song)
@@ -385,14 +384,14 @@ class PlayerCachePriorityTests(unittest.IsolatedAsyncioTestCase):
             path = Path(cache_manager.get_cache_paths(URL)[1])
             path.write_bytes(b"cached")
             with patch("music.spotify.urllib.request.urlopen") as spotify:
-                replay = get_spotify_info(url + "?si=test")
+                replay = resolve_song(url + "?si=test")
                 spotify.assert_not_called()
                 second = await self.run_player(replay, cached=Mock())
                 second.cache.assert_awaited_once_with(URL)
                 second.extract.assert_not_called()
                 path.unlink()
                 spotify.return_value.read.return_value = b'<meta property="og:title" content="Refreshed">'
-                self.assertEqual(get_spotify_info(url)["title"], "Refreshed")
+                self.assertEqual(resolve_song(url)["title"], "Refreshed")
                 spotify.assert_called_once()
 
     async def test_miss_or_open_error_keeps_normal_download_path(self):

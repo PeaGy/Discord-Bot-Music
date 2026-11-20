@@ -53,7 +53,8 @@ not part of the normal unit suite.
 - `features/`: event listeners, background jobs, AI, downloads, game systems, and
   rich Discord views.
 - `music/`: per-guild state, player pipeline, controls, and Spotify integration.
-- `cache_manager.py`: audio caching, normalization, and temporary long-track audio.
+- `cache_manager.py`: cached Opus and temporary MP3 downloads.
+- `music/long_audio.py`: temporary local playback for long YouTube tracks.
 - `ytdlp_support.py`: the single compatibility layer for yt-dlp proxy, JS runtime,
   PO-token provider, cookies, client selection, and transient retries.
 - `user_memory.py` / `bot_memory.db`: personal AI history and memory.

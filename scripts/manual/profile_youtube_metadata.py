@@ -150,7 +150,7 @@ def main():
     with open(os.devnull, "w") as sink, redirect_stdout(sink), redirect_stderr(sink):
         from dotenv import load_dotenv
         load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-        from commands.play import get_song_info
+        from music.resolver import get_song_info
         from yt_dlp import YoutubeDL
 
         status, events, start, end = profile(url, get_song_info, YoutubeDL, tail)

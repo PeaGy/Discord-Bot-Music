@@ -25,7 +25,7 @@ def trial(url, runtime):
     import yt_dlp
     from yt_dlp.extractor.youtube.jsc._builtin.deno import DenoJCP
     from yt_dlp.extractor.youtube.jsc._builtin.node import NodeJCP
-    from commands.play import get_song_info
+    from music.resolver import get_song_info
 
     provider = {"deno": DenoJCP, "node": NodeJCP}[runtime]
     run_js = provider._run_js_runtime

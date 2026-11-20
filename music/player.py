@@ -14,6 +14,7 @@ from music.controls import (
     edit_panel_message,
     send_panel_message,
 )
+from music.resolver import resolve_song
 from music.state import get_guild_state
 from music.source_fallback import (
     get_cached_audius_track_id,
@@ -443,13 +444,8 @@ async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
     except Exception as e:
         logger.exception("Autoplay thất bại (guild=%s): %s", guild_id, e)
         if trigger_play: await play_next(bot, vc, channel)
-# ==============================
-# 🎯 HÀM DÙNG CHUNG: THÊM BÀI + PHÁT (không phụ thuộc discord.Interaction)
-# ==============================
-# Được /play (commands/play.py) và Grok function calling
-# (features/ai_chat.py) cùng gọi vào -> tránh lặp code, chỉ 1 nơi giữ
-# logic thêm bài vào queue. Import trễ (bên trong hàm) để né circular import
-# vì commands/play.py có import ngược lại từ music/player.py.
+
+
 async def play_song_by_query(
     bot: discord.Client,
     guild: discord.Guild,
@@ -458,8 +454,6 @@ async def play_song_by_query(
     requester,
     query: str,
 ) -> dict:
-    from commands.play import get_song_info, is_spotify_url
-    from music.spotify import get_spotify_info
     vc = guild.voice_client
     if vc and vc.channel != voice_channel:
         return {"ok": False, "reason": f"Bot đang ở kênh voice khác: {vc.channel.name}"}
@@ -472,12 +466,9 @@ async def play_song_by_query(
 
     loop = bot.loop
     try:
-        if is_spotify_url(query):
-            song = await loop.run_in_executor(None, get_spotify_info, query)
-            if not song:
-                return {"ok": False, "reason": "Không lấy được thông tin bài hát Spotify"}
-        else:
-            song = await loop.run_in_executor(None, get_song_info, query)
+        song = await loop.run_in_executor(None, resolve_song, query)
+        if not song:
+            return {"ok": False, "reason": "Không lấy được thông tin bài hát Spotify"}
     except Exception as error:
         logger.warning(
             "Không lấy được metadata từ AI tool (guild=%s, query=%r): %s",

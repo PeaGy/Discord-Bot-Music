@@ -49,7 +49,7 @@ class DownloadHandoffTests(unittest.TestCase):
             stack.enter_context(patch.object(cache_manager, "_youtube_download_attempt_specs", return_value=(("direct", {}, None),)))
             stack.enter_context(patch.object(cache_manager, "take_youtube_download_seed", return_value=seed))
             stack.enter_context(patch.object(cache_manager.yt_dlp, "YoutubeDL", FakeYDL))
-            cleanup = stack.enter_context(patch.object(cache_manager, "_remove_long_audio_bundle"))
+            cleanup = stack.enter_context(patch.object(cache_manager, "remove_download_bundle"))
             logs = stack.enter_context(self.assertLogs("cache_manager", level="INFO"))
             result = cache_manager.download_raw_sync(URL, "raw.%(ext)s")
         return result, calls, sessions, cleanup.call_count, "\n".join(logs.output)

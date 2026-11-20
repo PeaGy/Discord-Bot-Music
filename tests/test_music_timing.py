@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from commands.play import Play, get_song_info
+from commands.play import Play
+from music.resolver import get_song_info
 from music.player import _play_next_locked, play_next
 from music.timing import phase_timer
 
@@ -73,7 +74,7 @@ class PlayTimingTests(unittest.IsolatedAsyncioTestCase):
             return vc
 
         interaction.user.voice.channel.connect.side_effect = connect
-        with patch("commands.play.get_song_info", side_effect=lookup), patch(
+        with patch("commands.play.resolve_song", side_effect=lookup), patch(
             "commands.play.get_guild_state", return_value=state
         ), patch("commands.play.play_next", new=AsyncMock()):
             await Play(Mock())._play(interaction, URL, front=False)
@@ -100,7 +101,7 @@ class PlayTimingTests(unittest.IsolatedAsyncioTestCase):
         song = {"title": SECRET, "duration": 180, "url": URL, "source": "youtube"}
         logger = Mock()
         with patch("commands.play.logger", logger), patch(
-            "commands.play.get_song_info", return_value=song
+            "commands.play.resolve_song", return_value=song
         ) as metadata, patch("commands.play.get_guild_state", return_value=state), patch(
             "commands.play.play_next", new=AsyncMock()
         ) as next_track:
@@ -119,7 +120,7 @@ class PlayTimingTests(unittest.IsolatedAsyncioTestCase):
         interaction.guild.voice_client = vc
         logger = Mock()
         with patch("commands.play.logger", logger), patch(
-            "commands.play.get_song_info", side_effect=RuntimeError(SECRET)
+            "commands.play.resolve_song", side_effect=RuntimeError(SECRET)
         ), patch("commands.play.get_guild_state", return_value=state), patch(
             "commands.play.start_idle_timer", new=AsyncMock()
         ), patch("commands.play.play_next", new=AsyncMock()) as next_track:
@@ -139,10 +140,10 @@ class PlayTimingTests(unittest.IsolatedAsyncioTestCase):
         for query, expected in [(URL, True), ("Artist song", True),
                                 ("https://soundcloud.com/artist/song", False)]:
             with self.subTest(query=query), patch(
-                "commands.play.find_cached_audio_path", return_value=None
-            ), patch("commands.play.audio_fallback_enabled", return_value=False), patch(
-                "commands.play.youtube_ydl_options", side_effect=lambda options: options
-            ), patch("commands.play.extract_info_with_retry", return_value={
+                "music.resolver.find_cached_audio_path", return_value=None
+            ), patch("music.resolver.audio_fallback_enabled", return_value=False), patch(
+                "music.resolver.youtube_ydl_options", side_effect=lambda options: options
+            ), patch("music.resolver.extract_info_with_retry", return_value={
                 "title": "Track", "duration": 180, "webpage_url": URL,
                 "formats": [{"url": f"https://cdn.test/{SECRET}", "acodec": "opus"}],
             }) as extract:
