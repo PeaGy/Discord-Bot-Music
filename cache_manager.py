@@ -14,8 +14,10 @@ import discord
 from music.loudness import (
     LOUDNORM_TARGET,
     OPUS_EXPECTED_PACKET_LOSS,
+    fast_measurement_command,
     measurement_command,
     normalization_command,
+    parse_linear_measurement,
     parse_loudness_stats as _parse_loudness_stats,
 )
 from music.urls import canonical_youtube_url
@@ -460,14 +462,21 @@ def download_raw_sync(url, raw_outtmpl):
 
 def measure_loudness_sync(filepath):
     """
-    PASS 1 (2-pass loudnorm): chỉ ĐO loudness thật của file, không sửa gì.
-    Chạy 1 lần duy nhất lúc cache bài hát -> không tốn CPU lúc đang phát nhạc.
+    Đo nhanh để chọn gain cố định; khi cần, đo bằng loudnorm để lấy offset.
+    Cả hai lượt đo dùng chung ngân sách thời gian khi tạo cache.
     """
-    cmd = measurement_command(filepath)
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
-        )
+        deadline = time.monotonic() + 120
+        for command, parse in ((fast_measurement_command, parse_linear_measurement),
+                               (measurement_command, _parse_loudness_stats)):
+            result = subprocess.run(
+                command(filepath), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=max(0, deadline - time.monotonic()),
+            )
+            if result.returncode == 0:
+                stats = parse(result.stderr)
+                if stats is not None:
+                    return stats
     except subprocess.TimeoutExpired:
         logger.warning("audio-normalization measure-error reason=timeout")
         return None
@@ -477,10 +486,8 @@ def measure_loudness_sync(filepath):
     if result.returncode != 0:
         logger.warning("audio-normalization measure-error reason=ffmpeg-exit")
         return None
-    stats = _parse_loudness_stats(result.stderr)
-    if stats is None:
-        logger.warning("audio-normalization measure-error reason=invalid-or-missing-stats")
-    return stats
+    logger.warning("audio-normalization measure-error reason=invalid-or-missing-stats")
+    return None
 
 
 def normalize_and_encode_sync(raw_path, final_path, stats):
@@ -492,6 +499,9 @@ def normalize_and_encode_sync(raw_path, final_path, stats):
     """
     cmd = normalization_command(raw_path, final_path, stats)
     result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=180)
+    if stats and "gain_db" in stats:
+        logger.info("audio-normalization mode=linear")
+        return
     # The FFmpeg summary is captured already; report only the known mode, not
     # arbitrary stderr (which can contain paths/URLs or credentials).
     for line in (result.stderr or "").splitlines():

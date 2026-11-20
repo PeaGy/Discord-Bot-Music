@@ -88,11 +88,33 @@ class LoudnessStatsParsingTests(unittest.TestCase):
 
 
 class LoudnessMeasurementTests(unittest.TestCase):
+    SUMMARY = "Summary:\n I: -24.4 LUFS\n LRA: 5.5 LU\n Peak: -13.1 dBFS\n"
+
+    def test_safe_linear_track_skips_second_measurement(self):
+        report = SimpleNamespace(returncode=0, stderr=self.SUMMARY)
+        with patch.object(cache_manager.subprocess, "run", return_value=report) as run:
+            stats = cache_manager.measure_loudness_sync("raw.opus")
+        run.assert_called_once()
+        self.assertIn("volume=8.40dB", cache_manager.normalization_command("raw", "out", stats))
+
+    def test_peak_range_and_invalid_probes_use_real_loudnorm_offset(self):
+        precise = SimpleNamespace(returncode=0, stderr=json.dumps({**STATS, "target_offset": "6.88"}))
+        for summary in (self.SUMMARY.replace("-13.1", "-9.9"), self.SUMMARY.replace("5.5", "12.0"),
+                        self.SUMMARY.replace("-24.4", "-70.0"), self.SUMMARY * 2, "missing"):
+            quick = SimpleNamespace(returncode=0, stderr=summary)
+            with self.subTest(summary=summary), patch.object(
+                cache_manager.subprocess, "run", side_effect=[quick, precise],
+            ) as run:
+                stats = cache_manager.measure_loudness_sync("raw.opus")
+                cmd = cache_manager.normalization_command("raw", "out", stats)
+                self.assertEqual(run.call_count, 2)
+                self.assertIn("offset=6.88:", cmd[cmd.index("-af") + 1])
+
     def test_successful_process_accepts_json_followed_by_summary(self):
         result = SimpleNamespace(returncode=0, stderr=json.dumps(STATS) + "\nsize=N/A speed=99x\n")
         with patch.object(cache_manager.subprocess, "run", return_value=result) as run:
             self.assertEqual(cache_manager.measure_loudness_sync("raw.webm"), STATS)
-        self.assertEqual(run.call_args.kwargs["timeout"], 120)
+        self.assertTrue(0 < run.call_args.kwargs["timeout"] <= 120)
         self.assertIn(f"loudnorm={cache_manager.LOUDNORM_TARGET}:print_format=json", run.call_args.args[0])
 
     def test_failed_process_cannot_supply_successful_measurement_even_with_valid_json(self):

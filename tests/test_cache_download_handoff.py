@@ -117,7 +117,7 @@ class QualityAndCacheTimingTests(unittest.TestCase):
             measured = cache_manager.measure_loudness_sync("raw.webm")
         self.assertEqual(measured, self.STATS)
         self.assertIn("loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", run.call_args.args[0])
-        self.assertEqual(run.call_args.kwargs["timeout"], 120)
+        self.assertTrue(0 < run.call_args.kwargs["timeout"] <= 120)
         with patch.object(cache_manager.subprocess, "run", return_value=SimpleNamespace(stderr="Normalization Type: Linear\n")) as run:
             with self.assertLogs("cache_manager", level="INFO") as logs:
                 cache_manager.normalize_and_encode_sync("raw.webm", "final.opus", self.STATS)

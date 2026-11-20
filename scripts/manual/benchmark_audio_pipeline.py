@@ -20,9 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from music.loudness import (
     LOUDNORM_TARGET,
+    fast_measurement_command,
     measurement_command,
     normalization_command,
     opus_encode_options,
+    parse_linear_measurement,
     parse_loudness_stats,
 )
 
@@ -216,12 +218,18 @@ def benchmark(executable, probe, seconds, repeats):
         probe_output(probe, source, seconds)
 
         def pipeline(variant):
-            measured = run_command(instrument(measurement_command(str(source)), executable, variant))
-            stats = parse_loudness_stats(measured.stderr)
+            measured = run_command(instrument(fast_measurement_command(str(source)), executable, variant))
+            stats = parse_linear_measurement(measured.stderr)
+            if stats is None:
+                precise = run_command(instrument(measurement_command(str(source)), executable, variant))
+                stats = parse_loudness_stats(precise.stderr)
+                for field in ("wall", "user", "system", "real"):
+                    first, second = getattr(measured, field), getattr(precise, field)
+                    setattr(measured, field, None if None in (first, second) else first + second)
             if stats is None:
                 raise BenchmarkError("Do am luong that bai; khong am tham chuyen sang single-pass.")
             encoded = run_command(instrument(normalization_command(str(source), str(output), stats), executable, variant))
-            mode = normalization_mode(encoded.stderr)
+            mode = "linear" if "gain_db" in stats else normalization_mode(encoded.stderr)
             # Independent verification always uses default; never included in timing.
             probe_output(probe, output, seconds)
             checked = run_command(instrument(measurement_command(str(output)), executable))

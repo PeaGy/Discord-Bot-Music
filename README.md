@@ -360,6 +360,8 @@ Gateway cho file vượt giới hạn Discord chạy tại `127.0.0.1:8765`; Clo
 | `audio_cache/` | Cache âm thanh đã xử lý |
 | `temp_downloads/` | File tải tạm thời |
 
+Khi tạo cache, Peto đo nhanh bằng `ebur128`. Bài có đủ khoảng dư ở đỉnh âm và dải âm lượng phù hợp được chỉnh bằng gain cố định trước khi mã hóa Opus 160 kbps. Với bài sát ngưỡng hoặc cần xử lý động, Peto đo lại bằng `loudnorm` để lấy đúng offset cho mục tiêu −16 LUFS.
+
 Queue, loop, autoplay, 24/7 và phiên nút Study Mode nằm trong RAM nên mất khi restart. Database, playlist, favorites và trí nhớ AI vẫn còn.
 
 Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không chạy cùng bot.

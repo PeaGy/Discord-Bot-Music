@@ -81,9 +81,38 @@ def measurement_command(filepath):
     ]
 
 
+def fast_measurement_command(filepath):
+    return ["ffmpeg", "-nostats", "-i", filepath, "-vn", "-af",
+            "ebur128=peak=true:framelog=verbose", "-f", "null", "-"]
+
+
+def parse_linear_measurement(stderr):
+    """Return a gain only for measurements safely inside the linear limits."""
+    summaries = re.split(r"\bSummary:\s*\n", stderr)
+    if len(summaries) != 2:
+        return None
+    stats = {}
+    for name, label, unit in (("input_i", "I", "LUFS"), ("input_tp", "Peak", "dBFS"),
+                              ("input_lra", "LRA", "LU")):
+        values = re.findall(rf"^\s*{label}:\s*(-?\d+(?:\.\d+)?)\s+{unit}\s*$",
+                            summaries[1], re.MULTILINE)
+        if len(values) != 1:
+            return None
+        stats[name] = float(values[0])
+    targets = dict(part.split("=") for part in LOUDNORM_TARGET.split(":"))
+    gain = float(targets["I"]) - stats["input_i"]
+    # The summary rounds to tenths. Leave headroom at both decision boundaries.
+    if not (-70 < stats["input_i"] < 0 and 0 < stats["input_lra"] < float(targets["LRA"])
+            and stats["input_tp"] + gain <= float(targets["TP"]) - 0.3):
+        return None
+    return {**stats, "gain_db": gain}
+
+
 def normalization_command(raw_path, final_path, stats):
     """Build the existing measured or fallback normalize-and-encode command."""
-    if stats:
+    if stats and "gain_db" in stats:
+        loudnorm_filter = f"volume={stats['gain_db']:.2f}dB"
+    elif stats:
         loudnorm_filter = (
             f"loudnorm={LOUDNORM_TARGET}:"
             f"measured_I={stats['input_i']}:measured_TP={stats['input_tp']}:"
