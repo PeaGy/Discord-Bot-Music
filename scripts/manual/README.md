@@ -2,6 +2,13 @@
 
 ## Đo thời gian lấy metadata cho link YouTube
 
+Để so sánh Node và Deno trên VPS khi cả hai đã có trong PATH, chạy
+`.venv/bin/python scripts/manual/compare_youtube_runtimes.py 'LINK_YOUTUBE'`.
+Chọn link chưa có cache, có JS challenge. Mỗi runtime chạy 3 lượt xen kẽ trong
+tiến trình riêng. Script kiểm tra runtime thực thi và có định dạng audio, báo
+trung vị metadata theo giây. Kết quả chỉ đo metadata; cần thử phát thực tế
+trước khi đổi cấu hình dịch vụ.
+
 Từ thư mục repo trên VPS, chạy `.venv/bin/python scripts/manual/profile_youtube_metadata.py 'LINK_YOUTUBE'`.
 Script gọi hàm lấy metadata của `/play` trong một tiến trình riêng, dùng cấu hình hiện tại.
 Chọn một video chưa có cache. Bảng in thời gian mở phiên yt-dlp, mở từng yêu cầu HTTP
