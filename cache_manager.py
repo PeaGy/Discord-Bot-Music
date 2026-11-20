@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 import yt_dlp
 import discord
+from music.growing_opus import GrowingOpusFile
 from discord.oggparse import OggError, OggStream
 from music.loudness import (
     LOUDNORM_TARGET,
@@ -54,6 +55,7 @@ LONG_AUDIO_TEMP_MAX_BYTES = 300 * 1024 * 1024
 LONG_AUDIO_TEMP_STALE_SECONDS = 6 * 60 * 60
 
 _cache_locks = {}
+_playback_builds = {}
 _download_locks = {}
 _cache_build_semaphore = asyncio.Semaphore(1)
 _long_audio_download_semaphore = asyncio.Semaphore(2)
@@ -111,8 +113,7 @@ class CachedOpusSource(discord.AudioSource):
         self.stream.close()
 
 
-def _open_cached_opus(path):
-    stream = open(path, "rb")
+def _read_cached_opus(stream):
     try:
         packets = OggStream(stream).iter_packets()
         head = next(packets, b"")
@@ -128,6 +129,13 @@ def _open_cached_opus(path):
         stream.close()
         raise
     stream.close()
+    return None
+
+
+def _open_cached_opus(path):
+    cached = _read_cached_opus(open(path, "rb"))
+    if cached is not None:
+        return cached
     return OpusPrerollAudioSource(discord.FFmpegOpusAudio(path, codec="copy", options="-vn"))
 
 
@@ -532,14 +540,16 @@ def measure_loudness_sync(filepath):
     return None
 
 
-def normalize_and_encode_sync(raw_path, final_path, stats):
+def normalize_and_encode_sync(raw_path, final_path, stats, *, progressive=False):
     """
     PASS 2: ưu tiên gain tuyến tính dựa trên số đo pass 1 (linear=true).
     FFmpeg có thể chuyển sang dynamic nếu giới hạn true peak/LRA không cho
     phép linear. Giữ nguyên mục tiêu -16 LUFS và chất lượng encode của cache;
-    toàn bộ xử lý hoàn tất trước khi phát, không normalize lại lúc phát.
+    mỗi gói được normalize và mã hóa một lần trước khi gửi sang Discord.
     """
     cmd = normalization_command(raw_path, final_path, stats)
+    if progressive:
+        cmd[-1:-1] = ["-flush_packets", "1"]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=180)
     if stats and "gain_db" in stats:
         logger.info("audio-normalization mode=linear")
@@ -554,12 +564,12 @@ def normalize_and_encode_sync(raw_path, final_path, stats):
             break
 
 
-def build_cache_sync(url, raw_outtmpl, final_path):
+def build_cache_sync(url, raw_outtmpl, final_path, playback=None):
     track_id = _cache_timing_id(url)
     started = time.perf_counter()
     with phase_timer(logger, "download-total", track_id=track_id):
         raw_path = download_raw_sync(url, raw_outtmpl)
-    staged_path = f"{final_path}.{uuid.uuid4().hex}.tmp.opus"
+    staged_path = playback.staged_path if playback else f"{final_path}.{uuid.uuid4().hex}.tmp.opus"
     try:
         measured_at = time.perf_counter()
         measure_outcome = "error"
@@ -573,13 +583,21 @@ def build_cache_sync(url, raw_outtmpl, final_path):
         else:
             logger.warning("audio-normalization measurement=unavailable strategy=single-pass track=%s", track_id)
         with phase_timer(logger, "normalize-encode", track_id=track_id):
-            normalize_and_encode_sync(raw_path, staged_path, stats)
+            if playback:
+                normalize_and_encode_sync(raw_path, staged_path, stats, progressive=True)
+            else:
+                normalize_and_encode_sync(raw_path, staged_path, stats)
         # Publish only a complete file. A concurrent cache-first /play must not
         # mistake the non-empty output of an unfinished encoder for a cache hit.
         with phase_timer(logger, "cache-publish", track_id=track_id):
-            os.replace(staged_path, final_path)
+            if playback:
+                playback.publish()
+            else:
+                os.replace(staged_path, final_path)
         log_phase_timing(logger, "cache-build-total", started, track_id=track_id)
     finally:
+        if playback:
+            playback.finish()  # Wake a reader even if the encoder or rename failed.
         for temporary_path in (raw_path, staged_path):
             try:
                 os.remove(temporary_path)
@@ -587,7 +605,7 @@ def build_cache_sync(url, raw_outtmpl, final_path):
                 pass
 
 
-async def ensure_audio_cached(url):
+async def _ensure_audio_cached(url, playback):
     """Trả về file Opus cache, tránh tải/encode trùng cùng một URL."""
     cached_path = await asyncio.to_thread(find_cached_audio_path, url)
     if cached_path:
@@ -610,7 +628,7 @@ async def ensure_audio_cached(url):
                 log_phase_timing(logger, "cache-slot-wait", slot_started, track_id=track_id)
                 # URL khác có thể đã tạo xong file trong lúc ta chờ semaphore.
                 if not _is_valid_file(final_path):
-                    await asyncio.to_thread(build_cache_sync, url, raw_outtmpl, final_path)
+                    await asyncio.to_thread(build_cache_sync, url, raw_outtmpl, final_path, playback)
 
         if not _is_valid_file(final_path):
             raise AudioDownloadError("Không thể tạo file cache cho bài hát này.")
@@ -688,16 +706,51 @@ async def get_cached_audio_source(url):
     return await asyncio.to_thread(_open_cached_opus, final_path)
 
 
+def _start_cache_build(url):
+    key = canonical_youtube_url(url) or url
+    if key in _playback_builds:
+        return _playback_builds[key]
+    playback = GrowingOpusFile(get_cache_paths(key)[1])
+    task = asyncio.create_task(_ensure_audio_cached(key, playback))
+    _playback_builds[key] = task, playback
+
+    def done(completed):
+        _playback_builds.pop(key, None)
+        if not completed.cancelled() and (error := completed.exception()) is not None:
+            logger.warning("audio-cache build failed: %s", type(error).__name__)
+
+    task.add_done_callback(done)
+    return task, playback
+
+
+async def ensure_audio_cached(url):
+    cached = await asyncio.to_thread(find_cached_audio_path, url)
+    if cached:
+        return cached
+    task, _ = _start_cache_build(url)
+    return await asyncio.shield(task)
+
+
 async def get_audio_source(url):
-    """Trả về nguồn Opus cache có preroll, không decode/encode lại."""
+    """Đọc Opus có sẵn hoặc bắt đầu phát trong lúc tạo cache."""
     cached_source = await get_cached_audio_source(url)
     if cached_source is not None:
         return cached_source
 
     logger.info("Cache miss, bắt đầu tải và normalize: %s", url)
-    final_path = await ensure_audio_cached(url)
-
-    logger.info("Đã cache và normalize: %s", final_path)
+    started = time.perf_counter()
+    # Skips/disconnects release the reader. The producer still owns its lock and
+    # finishes the same atomic cache for replays and concurrent download callers.
+    build, playback = _start_cache_build(url)
+    while not build.done():
+        await asyncio.wait((build,), timeout=0.1)
+        if not build.done() and await asyncio.to_thread(playback.ready):
+            source = await asyncio.to_thread(_read_cached_opus, playback.open_reader())
+            if source is not None:
+                log_phase_timing(logger, "progressive-opus-ready", started, track_id=_cache_timing_id(url))
+                return source
+            break
+    final_path = await asyncio.shield(build)
     return await asyncio.to_thread(_open_cached_opus, final_path)
 
 

@@ -4,6 +4,7 @@ from contextlib import ExitStack, closing
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -57,6 +58,58 @@ class YouTubeCacheURLTests(unittest.TestCase):
 
 
 class CacheLookupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_two_listeners_play_during_one_build_and_download_waits_for_publish(self):
+        def page(packets):
+            return (b"OggS" + bytes(22) + bytes([len(packets)]) + bytes(map(len, packets))
+                    + b"".join(packets))
+
+        head = b"OpusHead\x01\x02" + bytes(9)
+        prefix = page([head, b"OpusTags" + bytes(8)]) + page([b"a" * 200] * 200)
+        release = threading.Event()
+        raw = Path(self.directory.name) / "raw.webm"
+        raw.touch()
+        final = cache_manager.get_cache_paths(URL)[1]
+
+        def encode(_raw, staged, stats, *, progressive):
+            self.assertTrue(progressive)
+            Path(staged).write_bytes(prefix)
+            if not release.wait(5):
+                raise TimeoutError("Playback did not start before publication")
+            with open(staged, "ab") as stream:
+                stream.write(page([b"last"]))
+
+        with patch.object(cache_manager, "download_raw_sync", return_value=str(raw)) as download, patch.object(
+            cache_manager, "measure_loudness_sync", return_value=None
+        ), patch.object(cache_manager, "normalize_and_encode_sync", side_effect=encode):
+            complete = asyncio.create_task(cache_manager.ensure_audio_cached(URL))
+            try:
+                first, second = await asyncio.gather(cache_manager.get_audio_source(URL),
+                                                     cache_manager.get_audio_source(SHARE_URL))
+                self.assertFalse(complete.done())
+                self.assertFalse(Path(final).exists())
+                self.assertEqual(first.read(), second.read())
+                first.cleanup()
+            finally:
+                release.set()
+                await complete
+            try:
+                self.assertEqual([second.read() for _ in range(199)], [b"a" * 200] * 199)
+                self.assertEqual(second.read(), b"last")
+                self.assertEqual(second.read(), b"")
+            finally:
+                second.cleanup()
+            download.assert_called_once()
+
+    def test_failed_progressive_encoder_raises_instead_of_clean_eof(self):
+        output = cache_manager.GrowingOpusFile(str(Path(self.directory.name) / "final.opus"))
+        Path(output.staged_path).write_bytes(b"prefix")
+        with output.open_reader() as reader:
+            self.assertEqual(reader.read(6), b"prefix")
+            output.finish()
+            with self.assertRaises(OSError):
+                reader.read(1)
+        self.assertFalse(Path(output.final_path).exists())
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
