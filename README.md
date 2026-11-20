@@ -364,6 +364,8 @@ Khi tạo cache, Peto đo nhanh bằng `ebur128`. Bài có đủ khoảng dư �
 
 Queue, loop, autoplay, 24/7 và phiên nút Study Mode nằm trong RAM nên mất khi restart. Database, playlist, favorites và trí nhớ AI vẫn còn.
 
+Để ưu tiên tốc độ tạo cache, đặt `PETO_CACHE_OPUS_COMPLEXITY=0` trong `.env`. Giá trị 0–10 điều chỉnh công sức của encoder Opus và có thể ảnh hưởng chất lượng nghe ở cùng bitrate. Bỏ trống dùng mặc định FFmpeg. Tùy chọn áp dụng khi mã hóa bài mới. Khi phát cache Opus do Peto tạo, bot đọc trực tiếp các gói 20 ms đã mã hóa.
+
 Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không chạy cùng bot.
 
 ## Xử lý lỗi nhanh

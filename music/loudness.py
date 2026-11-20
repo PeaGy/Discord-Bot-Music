@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 import re
 
 
@@ -124,9 +125,12 @@ def normalization_command(raw_path, final_path, stats):
         # hơn là không normalize gì cả
         loudnorm_filter = f"loudnorm={LOUDNORM_TARGET}:print_format=summary"
 
+    # Only cache encodes opt in. Keep the existing files and other encoders compatible.
+    complexity = os.getenv("PETO_CACHE_OPUS_COMPLEXITY", "").strip()
+    speed_options = ["-compression_level", complexity] if re.fullmatch(r"[0-9]|10", complexity) else []
     return [
         "ffmpeg", "-y", "-i", raw_path,
         "-vn", "-af", loudnorm_filter,
-        *opus_encode_options(),
+        *speed_options, *opus_encode_options(),
         final_path,
     ]

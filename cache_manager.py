@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 import yt_dlp
 import discord
+from discord.oggparse import OggError, OggStream
 from music.loudness import (
     LOUDNORM_TARGET,
     OPUS_EXPECTED_PACKET_LOSS,
@@ -87,6 +88,47 @@ class OpusPrerollAudioSource(discord.AudioSource):
 
     def cleanup(self):
         self.source.cleanup()
+
+
+class CachedOpusSource(discord.AudioSource):
+    """Read Peto's local 20 ms Ogg Opus packets directly on the voice thread."""
+
+    def __init__(self, stream, packets, first):
+        self.stream = stream
+        self.packets = packets
+        self.first = first
+
+    def read(self):
+        if self.first is not None:
+            packet, self.first = self.first, None
+            return packet
+        return next(self.packets, b"")
+
+    def is_opus(self):
+        return True
+
+    def cleanup(self):
+        self.stream.close()
+
+
+def _open_cached_opus(path):
+    stream = open(path, "rb")
+    try:
+        packets = OggStream(stream).iter_packets()
+        head = next(packets, b"")
+        # Only the ordinary mono/stereo OpusHead written by our cache encoder.
+        if (len(head) == 19 and head[:9] == b"OpusHead\x01" and head[9] in (1, 2)
+                and head[16:19] == b"\x00\x00\x00" and next(packets, b"").startswith(b"OpusTags")):
+            first = next(packets, b"")
+            if first:
+                return CachedOpusSource(stream, packets, first)
+    except OggError:
+        pass
+    except BaseException:
+        stream.close()
+        raise
+    stream.close()
+    return OpusPrerollAudioSource(discord.FFmpegOpusAudio(path, codec="copy", options="-vn"))
 
 
 class TemporaryFileAudioSource(discord.AudioSource):
@@ -643,8 +685,7 @@ async def get_cached_audio_source(url):
     if not final_path:
         return None
     logger.info("Cache hit: %s", final_path)
-    opus_source = discord.FFmpegOpusAudio(final_path, codec="copy", options="-vn")
-    return OpusPrerollAudioSource(opus_source)
+    return await asyncio.to_thread(_open_cached_opus, final_path)
 
 
 async def get_audio_source(url):
@@ -657,8 +698,7 @@ async def get_audio_source(url):
     final_path = await ensure_audio_cached(url)
 
     logger.info("Đã cache và normalize: %s", final_path)
-    opus_source = discord.FFmpegOpusAudio(final_path, codec="copy", options="-vn")
-    return OpusPrerollAudioSource(opus_source)
+    return await asyncio.to_thread(_open_cached_opus, final_path)
 
 
 async def preload_audio(url, delay=0):

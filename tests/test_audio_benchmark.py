@@ -20,6 +20,16 @@ STATS = {"input_i": "-20", "input_tp": "-6", "input_lra": "5", "input_thresh": "
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_encoder_complexity_only_changes_cache_encode_for_valid_values(self):
+        for value in ("0", "5", "10", "", "-1", "11", "bad"):
+            with self.subTest(value=value), patch.dict(os.environ, {"PETO_CACHE_OPUS_COMPLEXITY": value}):
+                cmd = normalization_command("raw", "out", STATS)
+                if value in ("0", "5", "10"):
+                    self.assertEqual(cmd[cmd.index("-compression_level") + 1], value)
+                else:
+                    self.assertNotIn("-compression_level", cmd)
+                self.assertNotIn("-compression_level", opus_encode_options())
+
     def test_import_is_standalone_without_bot_cache_or_dependencies(self):
         root = str(Path(__file__).resolve().parents[1])
         code = (

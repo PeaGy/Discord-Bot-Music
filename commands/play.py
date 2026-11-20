@@ -189,6 +189,14 @@ class DuplicateConfirmView(discord.ui.View):
 class Play(commands.Cog):
     def __init__(self, bot): self.bot = bot
 
+    async def _lookup_song(self, query, guild_id):
+        with phase_timer(logger, "metadata-wait", guild_id=guild_id):
+            lookup = get_spotify_info if is_spotify_url(query) else get_song_info
+            song = await asyncio.to_thread(lookup, query)
+            if not song:
+                raise ValueError("metadata unavailable")
+            return song
+
     async def _play(self, interaction, query, *, front):
         guild_id = getattr(interaction.guild, "id", None)
         with phase_timer(logger, "interaction-defer", guild_id=guild_id):
@@ -199,6 +207,7 @@ class Play(commands.Cog):
         vc = interaction.guild.voice_client
         if vc and vc.channel != user_channel:
             return await interaction.followup.send(f"❌ Bot đang ở **{vc.channel.name}**.", ephemeral=True)
+        metadata = asyncio.create_task(self._lookup_song(query, guild_id))
         if not vc:
             try:
                 with phase_timer(logger, "voice-connect", guild_id=guild_id):
@@ -206,12 +215,12 @@ class Play(commands.Cog):
             except Exception as error:
                 logger.warning("Không kết nối được voice: %s", error)
                 return await interaction.followup.send("❌ Không thể kết nối voice lúc này.", ephemeral=True)
-        loop = asyncio.get_running_loop()
+            finally:
+                if not vc:
+                    metadata.cancel()
+                    await asyncio.gather(metadata, return_exceptions=True)
         try:
-            # Includes executor scheduling and extraction, not just network time.
-            with phase_timer(logger, "metadata-wait", guild_id=guild_id):
-                song = await loop.run_in_executor(None, get_spotify_info if is_spotify_url(query) else get_song_info, query)
-                if not song: raise ValueError("metadata unavailable")
+            song = await metadata
         except Exception as error:
             logger.warning("Không lấy được metadata /play (guild=%s): %s", interaction.guild.id, error)
             if not vc.is_playing() and not vc.is_paused(): await start_idle_timer(vc, channel=interaction.channel)

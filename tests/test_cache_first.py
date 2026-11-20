@@ -21,6 +21,24 @@ SHARE_URL = f"https://youtu.be/{VIDEO_ID}?si=test&t=42"
 
 
 class YouTubeCacheURLTests(unittest.TestCase):
+    def test_cached_source_sends_audio_packets_without_headers_or_preroll(self):
+        head = b"OpusHead\x01\x02" + bytes(9)
+        packets = [head, b"OpusTags" + bytes(8), b"first", b"second"]
+        # One Ogg page containing four complete packets.
+        page = b"OggS" + bytes(22) + bytes([4]) + bytes(map(len, packets)) + b"".join(packets)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cached.opus"
+            path.write_bytes(page)
+            with patch.object(cache_manager.discord, "FFmpegOpusAudio") as ffmpeg:
+                source = cache_manager._open_cached_opus(path)
+                try:
+                    self.assertTrue(source.is_opus())
+                    self.assertEqual([source.read() for _ in range(3)], [b"first", b"second", b""])
+                finally:
+                    source.cleanup()
+            ffmpeg.assert_not_called()
+            path.unlink()
+
     def test_url_aliases_identify_the_same_video_without_changing_id_case(self):
         for url in (URL, SHARE_URL, f"https://music.youtube.com/watch?v={VIDEO_ID}&list=RD123",
                     f"https://m.youtube.com/watch?v={VIDEO_ID}",

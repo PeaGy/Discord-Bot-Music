@@ -59,6 +59,26 @@ class MusicTimingHelperTests(unittest.TestCase):
 
 
 class PlayTimingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_metadata_starts_while_voice_is_connecting(self):
+        interaction, state, vc = self.make_interaction()
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+
+        def lookup(_query):
+            loop.call_soon_threadsafe(started.set)
+            return {"title": "Track", "duration": 10, "url": URL}
+
+        async def connect(**kwargs):
+            await asyncio.wait_for(started.wait(), timeout=3)
+            return vc
+
+        interaction.user.voice.channel.connect.side_effect = connect
+        with patch("commands.play.get_song_info", side_effect=lookup), patch(
+            "commands.play.get_guild_state", return_value=state
+        ), patch("commands.play.play_next", new=AsyncMock()):
+            await Play(Mock())._play(interaction, URL, front=False)
+        self.assertEqual(len(state.queue), 1)
+
     def make_interaction(self):
         guild = SimpleNamespace(id=123, voice_client=None)
         vc = Mock()
