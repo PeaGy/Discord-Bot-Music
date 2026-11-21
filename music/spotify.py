@@ -1,8 +1,8 @@
 import urllib.request
 import logging
 import re
-from urllib.parse import urlsplit
 import music_library
+from music.urls import spotify_track_id
 
 
 logger = logging.getLogger(__name__)
@@ -11,23 +11,13 @@ def is_spotify_url(query: str) -> bool:
     return "open.spotify.com" in query or "spotify:" in query
 
 
-def spotify_track_id(url):
-    text = url.strip()
-    match = re.fullmatch(r"spotify:track:([A-Za-z0-9]{22})", text)
-    if not match:
-        parsed = urlsplit(text)
-        if parsed.netloc.lower() != "open.spotify.com" or parsed.scheme not in ("https", "http"):
-            return None
-        match = re.fullmatch(r"/(?:intl-[\w-]+/)?track/([A-Za-z0-9]{22})/?", parsed.path)
-    return match[1] if match else None
-
 def get_spotify_info(url: str) -> dict:
     try:
         track_id = spotify_track_id(url)
         if track_id:
             known = music_library.cached_search_match("spotify:" + track_id)
             if known:
-                return {**known, "url": url, "cached_youtube_url": known["url"], "source": "spotify",
+                return {**known, "url": url, "playback_url": known["url"], "source": "spotify",
                         "search_query": f"{known['title']} {known['author']} audio"}
         if "track" not in url:
             raise ValueError("Only Spotify tracks are supported right now.")

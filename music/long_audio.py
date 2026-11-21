@@ -134,6 +134,39 @@ def _download_long_audio_sync(url, player_client=None, route_name=None):
         raise
 
 
+def _discard_cancelled_download(download: asyncio.Future) -> None:
+    try:
+        filepath, _ = download.result()
+    except (asyncio.CancelledError, Exception):
+        # The synchronous downloader already removes partial files on failure.
+        return
+    try:
+        os.remove(filepath)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        logger.warning("Không xóa được audio tạm sau khi hủy tải: %s", error)
+
+
+async def _download_long_audio(url, player_client, route_name):
+    slots = _long_audio_download_semaphore
+    await slots.acquire()
+    try:
+        download = asyncio.get_running_loop().run_in_executor(
+            None, _download_long_audio_sync, url, player_client, route_name,
+        )
+    except BaseException:
+        slots.release()
+        raise
+    # Canceling a listener does not stop its thread. Keep the slot until it exits.
+    download.add_done_callback(lambda _: slots.release())
+    try:
+        return await asyncio.shield(download)
+    except asyncio.CancelledError:
+        download.add_done_callback(_discard_cancelled_download)
+        raise
+
+
 async def get_long_audio_source(url, duration):
     """Prepare a temporary local source for a proxied long track, with one retry."""
     duration = int(duration or 0)
@@ -160,13 +193,7 @@ async def get_long_audio_source(url, duration):
                 player_client or "auto",
                 url,
             )
-            async with _long_audio_download_semaphore:
-                filepath, codec = await asyncio.to_thread(
-                    _download_long_audio_sync,
-                    url,
-                    player_client,
-                    route_name,
-                )
+            filepath, codec = await _download_long_audio(url, player_client, route_name)
             ffmpeg_source = discord.FFmpegOpusAudio(
                 filepath,
                 codec="copy" if "opus" in codec else "libopus",

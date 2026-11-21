@@ -5,7 +5,6 @@ import yt_dlp
 import asyncio
 import logging
 import music_library
-from cache_manager import preload_audio
 from ytdlp_support import youtube_ydl_options
 
 
@@ -57,7 +56,7 @@ class SearchSelect(discord.ui.Select):
 
         selected_index = int(self.values[0])
         selected_track = self.entries[selected_index]
-        from music.player import _youtube_entry_url, play_next
+        from music.player import _youtube_entry_url, play_next, preload_track
         
         # Cố gắng lấy thumbnail nếu có
         thumb = None
@@ -128,10 +127,8 @@ class SearchSelect(discord.ui.Select):
             # ==============================
             # ⚡ Chỉ tải trước bài kế tiếp, sau một khoảng đệm ngắn
             # ==============================
-            duration = int(song.get("duration") or 0)
-            is_radio = song.get("source") == "radio"
-            if len(queue) == 1 and not is_radio and duration <= 600:
-                asyncio.create_task(preload_audio(song['url'], delay=3.0))
+            if queue and queue[0] is song:
+                asyncio.create_task(preload_track(song, delay=3.0, queue=queue))
             #EMBED QUEUE
             embed = discord.Embed(
                 description=f"**{song['title']}** `[{format_duration(song['duration'])}]`",

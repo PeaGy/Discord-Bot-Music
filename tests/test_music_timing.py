@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from commands.play import Play
+from commands.play import DuplicateConfirmView, Play
+from commands.search import SearchSelect
 from music.resolver import get_song_info
 from music.player import _play_next_locked, play_next
 from music.timing import phase_timer
@@ -95,6 +96,104 @@ class PlayTimingTests(unittest.IsolatedAsyncioTestCase):
                                       followup=SimpleNamespace(send=AsyncMock()))
         state = SimpleNamespace(queue=deque(), history=[])
         return interaction, state, vc
+
+    async def test_spotify_queues_preload_for_the_same_item_and_rejects_repeat(self):
+        interaction, state, vc = self.make_interaction()
+        interaction.guild.voice_client = vc
+        vc.is_playing.return_value = True
+        track_id = "a1" * 11
+        url = "https://open.spotify.com/track/" + track_id
+        song = {"title": "Song", "duration": 180, "source": "spotify", "url": url}
+        with patch("commands.play.resolve_song", return_value=song) as resolve, patch(
+            "commands.play.get_guild_state", return_value=state
+        ), patch("commands.play.preload_track", new_callable=AsyncMock) as preload, patch(
+            "commands.play.DuplicateConfirmView"
+        ) as duplicate:
+            play = Play(Mock())
+            await play._play(interaction, url, front=False)
+            await asyncio.sleep(0)
+            item = state.queue.popleft()
+            self.assertIs(preload.await_args.args[0], item)
+            item["playback_url"] = URL
+            state.history.append(item)
+
+            uri = "spotify:track:" + track_id
+            resolve.return_value = {**song, "url": uri, "playback_url": URL}
+            await play._play(interaction, uri, front=False)
+        duplicate.assert_called_once()
+        self.assertFalse(state.queue)
+
+    async def test_playnext_preloads_new_head_even_when_queue_already_has_tracks(self):
+        interaction, state, vc = self.make_interaction()
+        interaction.guild.voice_client = vc
+        vc.is_playing.return_value = True
+        previous = {"title": "Waiting", "url": URL}
+        state.queue.append(previous)
+        url = "https://open.spotify.com/track/" + "a1" * 11
+        song = {"title": "Song", "duration": 180, "source": "spotify", "url": url}
+        interaction.response.edit_message = AsyncMock()
+        with patch("commands.play.resolve_song", return_value=song), patch(
+            "commands.play.get_guild_state", return_value=state
+        ), patch("commands.play.preload_track", new_callable=AsyncMock) as preload:
+            play = Play(Mock())
+            await play._play(interaction, url, front=True)
+            await asyncio.sleep(0)
+            first = state.queue[0]
+            self.assertIs(preload.await_args.args[0], first)
+            self.assertIs(state.queue[1], previous)
+
+            preload.reset_mock()
+            await play._play(interaction, url, front=True)
+            view = interaction.followup.send.await_args.kwargs["view"]
+            self.assertIsInstance(view, DuplicateConfirmView)
+            await view.confirm.callback(interaction)
+            await asyncio.sleep(0)
+            self.assertIs(preload.await_args.args[0], state.queue[0])
+            self.assertIs(state.queue[1], first)
+            preload.assert_awaited_once()
+
+    async def test_playnext_rechecks_queue_head_after_preload_delay(self):
+        for add_with_search in (False, True):
+            with self.subTest(add_with_search=add_with_search):
+                await self.check_playnext_preload_order(add_with_search)
+
+    async def check_playnext_preload_order(self, add_with_search):
+        interaction, state, vc = self.make_interaction()
+        interaction.guild.voice_client = vc
+        vc.is_playing.return_value = True
+        interaction.message = SimpleNamespace(delete=AsyncMock())
+        release_delay = asyncio.Event()
+        preload_started = asyncio.Event()
+        other_url = "https://www.youtube.com/watch?v=BBBBBBBBBBB"
+        songs = [
+            {"title": title, "duration": 180, "source": "youtube", "url": url}
+            for title, url in (("A", URL), ("B", other_url))
+        ]
+
+        async def wait_for_release(_):
+            await release_delay.wait()
+
+        lookups = songs[1:] if add_with_search else songs
+        with patch("commands.play.resolve_song", side_effect=lookups), patch(
+            "commands.play.get_guild_state", return_value=state
+        ), patch(
+            "music.state.get_guild_state", return_value=state
+        ), patch("music.player.asyncio.sleep", new=AsyncMock(side_effect=wait_for_release)), patch(
+            "music.player.preload_audio", new=AsyncMock(side_effect=lambda _: preload_started.set())
+        ) as preload:
+            play = Play(Mock())
+            if add_with_search:
+                select = SearchSelect([{**songs[0], "webpage_url": URL}], interaction)
+                select._values = ["0"]
+                await select.callback(interaction)
+            else:
+                await play._play(interaction, URL, front=True)
+            await play._play(interaction, other_url, front=True)
+            release_delay.set()
+            await asyncio.wait_for(preload_started.wait(), timeout=3)
+
+        self.assertEqual([item["title"] for item in state.queue], ["B", "A"])
+        preload.assert_awaited_once_with(other_url)
 
     async def test_slash_command_times_connect_metadata_and_queue_ui_without_extra_lookup(self):
         interaction, state, vc = self.make_interaction()

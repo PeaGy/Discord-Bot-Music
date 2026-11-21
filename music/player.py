@@ -5,6 +5,8 @@ import concurrent.futures
 import logging
 import random
 import time
+from collections import deque
+from functools import partial
 from music.controls import (
     MusicControl,
     create_error_panel,
@@ -23,9 +25,8 @@ from music.source_fallback import (
 )
 from music.stream_source import open_fallback_stream, STREAM_STARTUP_TIMEOUT
 from music.timing import log_phase_timing, phase_timer
-from music.urls import canonical_youtube_url
-from music.spotify import spotify_track_id
-from music_library import remember_search_match
+from music.urls import canonical_youtube_url, spotify_track_id
+from music_library import cached_search_match, read_search_match, remember_search_match
 from cache_manager import (
     get_audio_source,
     get_cached_audio_source,
@@ -92,10 +93,16 @@ def _schedule_from_audio_thread(bot, coroutine, *, guild_id, action):
     future.add_done_callback(report_result)
 
 
-async def _record_recent_safely(guild_id: int, song: dict) -> None:
+async def _record_recent_safely(
+    guild_id: int, song: dict, *, legacy_spotify_key: str | None = None,
+) -> None:
     try:
         import music_library
 
+        if legacy_spotify_key:
+            await asyncio.to_thread(
+                remember_search_match, legacy_spotify_key, song["playback_url"], song,
+            )
         await music_library.record_recent(guild_id, song)
     except Exception:
         logger.exception("Không thể lưu lịch sử nghe (guild=%s)", guild_id)
@@ -189,8 +196,10 @@ def _is_youtube_page_url(value: object) -> bool:
 
 def _needs_stream_lookup(song: dict, *, use_direct_stream: bool) -> bool:
     """Only resolve a stream URL when the selected playback path needs one."""
-    if use_direct_stream or song.get("source") == "spotify":
+    if use_direct_stream:
         return True
+    if song.get("source") == "spotify":
+        return not _spotify_video_url(song)
     if song.get("source") == "youtube":
         return not _is_youtube_page_url(song.get("url"))
     return False
@@ -207,6 +216,158 @@ def _youtube_entry_url(entry: dict) -> str | None:
     if len(raw_url) == 11 and "/" not in raw_url:
         return f"https://www.youtube.com/watch?v={raw_url}"
     return raw_url or None
+
+
+def _spotify_video_url(song: dict) -> str | None:
+    # Older library rows can already point at YouTube with source="spotify".
+    url = song.get("playback_url") or song["url"]
+    return url if canonical_youtube_url(url) else None
+
+
+def _legacy_spotify_key(song: dict) -> str | None:
+    # Older favorites/playlists retained only the YouTube video ID.
+    url = canonical_youtube_url(song["url"])
+    return "spotify-legacy:" + url.rsplit("=", 1)[-1] if url else None
+
+
+async def _restore_spotify_video(song: dict) -> str | None:
+    url = _spotify_video_url(song)
+    if url and song.get("playback_url"):
+        return url
+    legacy_key = _legacy_spotify_key(song)
+    if legacy_key:
+        saved = await asyncio.to_thread(read_search_match, legacy_key)
+    else:
+        track_id = spotify_track_id(song["url"])
+        saved = await asyncio.to_thread(cached_search_match, "spotify:" + track_id) if track_id else None
+    if saved and not song.get("playback_url"):
+        song["playback_url"] = saved["url"]
+        song["playback_duration"] = saved.get("playback_duration")
+    return _spotify_video_url(song)
+
+
+def _extract_stream_info(query: str, *, remember_for_download: bool) -> dict:
+    info = extract_info_with_retry(
+        query, YDL_OPTIONS, download=False, remember_for_download=remember_for_download,
+    )
+    if info and "entries" in info:
+        info = next((entry for entry in info["entries"] if entry), None)
+    if not info or not info.get("url"):
+        raise ValueError("yt-dlp không trả về stream URL")
+    return info
+
+
+def _spotify_video_needs_replacement(song: dict, error: Exception) -> bool:
+    if not song.get("search_query"):
+        return False
+    # Long-track downloads can wrap the original yt-dlp error.
+    current: BaseException | None = error
+    for _ in range(8):
+        if current is None:
+            break
+        message = str(current).casefold()
+        if isinstance(current, yt_dlp.utils.GeoRestrictedError) or any(marker in message for marker in (
+            "video unavailable", "video is unavailable", "private video",
+            "video is private", "video has been removed", "video has been deleted",
+            "video is no longer available", "not made this video available in your country",
+            "not available in your country", "blocked it in your country",
+        )):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+_spotify_searches: dict[int, asyncio.Task] = {}
+
+
+async def _search_spotify_video(song: dict) -> dict:
+    query = song.get("search_query") or song["url"]
+    if not query.startswith("ytsearch"):
+        query = f"ytsearch1:{query}"
+    info = await asyncio.to_thread(_extract_stream_info, query, remember_for_download=True)
+    url = canonical_youtube_url(_youtube_entry_url(info))
+    if not url:
+        raise ValueError("yt-dlp không trả về trang YouTube cho track Spotify")
+    song["playback_url"] = url
+    song["playback_duration"] = info.get("duration")
+    track_id = spotify_track_id(song["url"])
+    if track_id:
+        await asyncio.to_thread(remember_search_match, "spotify:" + track_id, url, song)
+    return info
+
+
+async def _resolve_spotify_video(song: dict) -> dict:
+    """Share a pending lookup between preloading and playback of one queue item."""
+    key = id(song)
+    task = _spotify_searches.get(key)
+    if task is None:
+        task = asyncio.create_task(_search_spotify_video(song))
+        _spotify_searches[key] = task
+
+        def finish(done: asyncio.Task) -> None:
+            _spotify_searches.pop(key, None)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finish)
+    return await asyncio.shield(task)
+
+
+async def _lookup_spotify_stream(song: dict) -> dict:
+    url = _spotify_video_url(song)
+    if not url:
+        return await _resolve_spotify_video(song)
+    try:
+        info = await asyncio.to_thread(_extract_stream_info, url, remember_for_download=True)
+        if info.get("duration"):
+            song["playback_duration"] = info["duration"]
+        return info
+    except Exception as error:
+        if not _spotify_video_needs_replacement(song, error):
+            raise
+        return await _resolve_spotify_video(song)
+
+
+async def _open_downloaded_audio(song, url, open_source, *, reuse_spotify_video):
+    try:
+        return await open_source(url)
+    except Exception as error:
+        if not reuse_spotify_video or not _spotify_video_needs_replacement(song, error):
+            raise
+        await _resolve_spotify_video(song)
+        replacement_url = song["playback_url"]
+        if canonical_youtube_url(replacement_url) == canonical_youtube_url(url):
+            raise
+        return await open_source(replacement_url)
+
+
+async def preload_track(song: dict, delay: float = 0, *, queue: deque[dict] | None = None) -> None:
+    if (
+        song.get("source") == "radio"
+        or song.get("stream_only")
+        or song.get("youtube_metadata_failed")
+        or int(song.get("duration") or 0) > 600
+    ):
+        return
+    if delay:
+        await asyncio.sleep(delay)
+    if queue is not None and (not queue or queue[0] is not song):
+        return
+    if song.get("source") != "spotify":
+        await preload_audio(song["url"])
+        return
+
+    try:
+        url = await _restore_spotify_video(song)
+        if not url:
+            if queue is not None and (not queue or queue[0] is not song):
+                return
+            await _resolve_spotify_video(song)
+            url = song["playback_url"]
+        if queue is None or (queue and queue[0] is song):
+            await preload_audio(url)
+    except Exception as error:
+        logger.warning("Không thể tải trước track Spotify: %s", type(error).__name__)
 
 
 def _can_use_audio_fallback(song: dict, error: BaseException | None = None) -> bool:
@@ -351,12 +512,12 @@ async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
     def fetch_autoplay_data():
         played_ids = []
         for h_song in history:
-            h_url = h_song.get("url", "")
+            h_url = h_song.get("playback_url") or h_song.get("url", "")
             h_match = re.search(r"(?:v=|/)([0-9A-Za-z_-]{11}).*", h_url)
             if h_match:
                 played_ids.append(h_match.group(1))
 
-        url = song.get("url", "")
+        url = song.get("playback_url") or song.get("url", "")
         video_id = None
         match = re.search(r"(?:v=|/)([0-9A-Za-z_-]{11}).*", url)
         if match:
@@ -428,9 +589,8 @@ async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
                 # KHỞI ĐỘNG TẢI NGẦM LUÔN!
                 duration = int(next_song.get("duration") or 0)
                 if duration <= 600:
-                    from cache_manager import preload_audio
                     preload_delay = 3.0 if (vc.is_playing() or vc.is_paused()) else 0
-                    await preload_audio(next_song.get("cached_youtube_url") or next_song["url"], delay=preload_delay)
+                    await preload_track(next_song, delay=preload_delay, queue=queue)
                 
                 # Nếu bot đang dừng (do user skip quá nhanh hoặc API chậm) -> Ép phát luôn
                 if not vc.is_playing() and not vc.is_paused():
@@ -491,18 +651,10 @@ async def play_song_by_query(
     if duplicate or (state.history and music_library.track_key(state.history[-1]) == key):
         location = "đang phát" if state.history and music_library.track_key(state.history[-1]) == key else f"đã ở vị trí #{duplicate}"
         return {"ok": False, "reason": f"Bài này {location}, nên Peto không thêm trùng"}
-    state.queue.append({**song, "requester": requester})
-
-    duration = int(song.get("duration") or 0)
-    is_radio = song.get("source") == "radio"
-    if (
-        (vc.is_playing() or vc.is_paused())
-        and len(state.queue) == 1
-        and not is_radio
-        and not song.get("youtube_metadata_failed")
-        and duration <= 600
-    ):
-        asyncio.create_task(preload_audio(song.get("cached_youtube_url") or song["url"], delay=3.0))
+    item = {**song, "requester": requester}
+    state.queue.append(item)
+    if (vc.is_playing() or vc.is_paused()) and len(state.queue) == 1:
+        asyncio.create_task(preload_track(item, delay=3.0, queue=state.queue))
 
     if not vc.is_playing() and not vc.is_paused():
         await play_next(bot, vc, text_channel)
@@ -570,11 +722,12 @@ async def _play_next_locked(
     song = queue.popleft()
     requester = song.get("requester")
     preparation_started = time.perf_counter()
-    timing_url = canonical_youtube_url(song.get("url"))
+    timing_url = canonical_youtube_url(song.get("playback_url") or song["url"])
     timing_track = timing_url.split("=")[-1] if timing_url else None
 
     duration = int(song.get("duration") or 0)
     is_radio = song.get("source") == "radio"
+    is_spotify = song.get("source") == "spotify"
     is_too_long = duration > 600
     use_long_temp_file = should_use_long_audio_temp(
         duration,
@@ -591,10 +744,9 @@ async def _play_next_locked(
     cached_source = None
     if not is_radio:
         try:
-            cached_url = song.pop("cached_youtube_url", None) or song["url"]
-            cached_source = await get_cached_audio_source(cached_url)
-            if cached_source is not None:
-                song["url"] = cached_url
+            cached_url = await _restore_spotify_video(song) if is_spotify else song["url"]
+            if cached_url:
+                cached_source = await get_cached_audio_source(cached_url)
         except Exception as cache_error:
             logger.warning("Không mở được audio cache (%s), thử luồng thường", type(cache_error).__name__)
     if cached_source is not None:
@@ -604,6 +756,8 @@ async def _play_next_locked(
                       "fallback_locator", "stream_only"):
             song.pop(field, None)
         logger.info("Ưu tiên cache cục bộ cho %r, bỏ qua YouTube/audio fallback", song.get("title"))
+    saved_spotify_url = _spotify_video_url(song) if is_spotify else None
+    reuse_spotify_video = saved_spotify_url is not None
 
     # /play can preserve initial YouTube page metadata even when the extractor
     # returns no playable formats. This is the earliest failure point, so try
@@ -635,28 +789,10 @@ async def _play_next_locked(
     # Cache/file-temp paths let yt-dlp download from the canonical page URL
     # directly.  Resolving a signed stream first would duplicate YouTube player
     # requests and that URL would be discarded immediately afterwards.
-    def extract_stream():
-        query = song.get("search_query") or song["url"]
-        if song.get("source") == "spotify" and not query.startswith("ytsearch"):
-            query = f"ytsearch1:{query}"
-
-        info = extract_info_with_retry(
-            query, YDL_OPTIONS, download=False,
-            remember_for_download=not is_radio and song.get("source") in {"youtube", "spotify"},
-        )
-        if "entries" in info:
-            info = next((entry for entry in info["entries"] if entry), None)
-        if song.get("source") == "spotify" and info and info.get("url"):
-            track_id = spotify_track_id(song["url"])
-            if track_id:
-                remember_search_match("spotify:" + track_id, info.get("webpage_url"), song)
-        return info
-
     if cached_source is None and not fallback_info and _needs_stream_lookup(
         song,
         use_direct_stream=use_direct_stream,
     ):
-        loop = bot.loop
         try:
             logger.info(
                 "yt-dlp phase=stream-metadata title=%r guild=%s",
@@ -664,11 +800,16 @@ async def _play_next_locked(
                 vc.guild.id,
             )
             with phase_timer(logger, "stream-metadata-wait", guild_id=vc.guild.id, track_id=timing_track):
-                info = await loop.run_in_executor(None, extract_stream)
-                if not info or not info.get("url"):
-                    raise ValueError("yt-dlp không trả về stream URL")
+                if is_spotify:
+                    info = await _lookup_spotify_stream(song)
+                else:
+                    query = song.get("search_query") or song["url"]
+                    info = await asyncio.to_thread(
+                        _extract_stream_info, query,
+                        remember_for_download=song.get("source") == "youtube",
+                    )
             source = info["url"]
-            if info.get("webpage_url"):
+            if not is_spotify and info.get("webpage_url"):
                 song["url"] = info["webpage_url"]
             song.pop("youtube_metadata_failed", None)
         except Exception as error:
@@ -789,6 +930,7 @@ async def _play_next_locked(
         if loading_msg:
             state.now_playing_message = loading_msg
 
+    playback_url = _spotify_video_url(song) if is_spotify else song["url"]
     try:
         # Radio luôn giữ đường stream cũ. Máy nhà cũng tiếp tục stream nhạc dài.
         # Trên VPS dùng proxy, yt-dlp và FFmpeg có IP ra khác nhau nên signed URL
@@ -813,7 +955,10 @@ async def _play_next_locked(
                 duration,
                 vc.guild.id,
             )
-            base_source = await get_long_audio_source(song["url"], duration)
+            base_source = await _open_downloaded_audio(
+                song, playback_url, partial(get_long_audio_source, duration=duration),
+                reuse_spotify_video=reuse_spotify_video,
+            )
         else:
             logger.info(
                 "Chuẩn bị cache %r, duration=%ss (guild=%s)",
@@ -821,7 +966,9 @@ async def _play_next_locked(
                 duration,
                 vc.guild.id,
             )
-            base_source = await get_audio_source(song['url'])
+            base_source = await _open_downloaded_audio(
+                song, playback_url, get_audio_source, reuse_spotify_video=reuse_spotify_video,
+            )
             song.pop("youtube_metadata_failed", None)
     except Exception as e:
         # Fallback already validates/rotates finite streams within one deadline.
@@ -893,7 +1040,13 @@ async def _play_next_locked(
                 audio_source,
                 after=after_playing,
             )
-        asyncio.create_task(_record_recent_safely(vc.guild.id, song))
+        legacy_spotify_key = None
+        if is_spotify and fallback_info is None and song.get("playback_url"):
+            if canonical_youtube_url(saved_spotify_url) != canonical_youtube_url(song["playback_url"]):
+                legacy_spotify_key = _legacy_spotify_key(song)
+        asyncio.create_task(
+            _record_recent_safely(vc.guild.id, song, legacy_spotify_key=legacy_spotify_key)
+        )
     except Exception as error:
         if history and history[-1] is song:
             history.pop()
@@ -915,17 +1068,8 @@ async def _play_next_locked(
     # Ngay khi bài hiện tại bắt đầu hát, tự động kiểm tra bài số 2 trong Queue
     if len(queue) > 0:
         # Nếu đã có bài sẵn trong hàng đợi -> Preload bài đó
-        next_song = queue[0]
-        next_duration = int(next_song.get("duration") or 0)
-        next_is_radio = next_song.get("source") == "radio"
-        if (
-            not next_is_radio
-            and not next_song.get("stream_only")
-            and not next_song.get("youtube_metadata_failed")
-            and next_duration <= 600
-        ):
-            asyncio.create_task(preload_audio(next_song.get("cached_youtube_url") or next_song["url"], delay=3.0))
-            
+        asyncio.create_task(preload_track(queue[0], delay=3.0, queue=queue))
+
     elif state.autoplay:
         # Nếu hàng đợi trống trơn NHƯNG Autoplay đang bật 
         # -> Gọi handle_autoplay để nó tự tìm bài mới và Preload ngầm!

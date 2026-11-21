@@ -12,7 +12,7 @@ from pathlib import Path
 import urllib.parse
 
 import aiosqlite
-from music.urls import canonical_youtube_url
+from music.urls import canonical_youtube_url, spotify_track_id
 
 
 DB_PATH = os.getenv("MUSIC_LIBRARY_DB", "music_library.db")
@@ -37,6 +37,10 @@ def normalize_playlist_name(name: str) -> tuple[str, str]:
 def _canonical_track_identity(track: dict) -> str:
     url = str(track.get("url") or "").strip()
     if url:
+        spotify_id = spotify_track_id(url)
+        if spotify_id:
+            # Keep the key used by existing canonical Spotify URLs in SQLite.
+            return f"spotify:track/{spotify_id.casefold()}"
         parsed = urllib.parse.urlparse(url)
         host = parsed.netloc.casefold().removeprefix("www.")
         if host in {"youtube.com", "m.youtube.com", "music.youtube.com"}:
@@ -101,6 +105,7 @@ def find_known_track_sync(url: str) -> dict | None:
     are fine: this must not initialize or migrate the music library at startup.
     """
     key = track_key({"url": url})
+    known = None
     try:
         uri = Path(DB_PATH).resolve().as_uri() + "?mode=ro"
         with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as db:
@@ -119,8 +124,54 @@ def find_known_track_sync(url: str) -> dict | None:
                 except sqlite3.Error:
                     continue
                 if row:
-                    return _row_to_track(row)
+                    candidate = _row_to_track(row)
+                    if candidate["source"] == "spotify":
+                        # Older rows use the YouTube URL with the Spotify catalog duration.
+                        candidate["duration"] = 0
+                    if known is None:
+                        known = candidate
+                    if candidate["duration"] > 0:
+                        known["duration"] = candidate["duration"]
+                        return known
+            canonical_url = canonical_youtube_url(url)
+            if canonical_url:
+                row = db.execute(
+                    "SELECT title, author, url, thumbnail, CASE WHEN lookup_key GLOB 'spotify*' "
+                    "THEN 0 ELSE duration END AS video_duration FROM music_search_matches "
+                    "WHERE url = ? AND title <> '' "
+                    "ORDER BY (video_duration > 0) DESC, (lookup_key GLOB 'keyword:*') DESC, rowid DESC "
+                    "LIMIT 1",
+                    (canonical_url,),
+                ).fetchone()
+                if row:
+                    if known is not None:
+                        known["duration"] = row["video_duration"] or 0
+                        return known
+                    return {"title": row["title"], "author": row["author"], "url": row["url"],
+                            "thumbnail": row["thumbnail"], "duration": row["video_duration"] or 0,
+                            "source": "youtube", "search_query": None}
     except (sqlite3.Error, OSError, ValueError):
+        pass
+    return known
+
+
+def read_search_match(key: str) -> dict | None:
+    """Read a remembered video without opening or rebuilding its audio."""
+    try:
+        uri = Path(DB_PATH).resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute("SELECT title, author, url, duration, thumbnail FROM music_search_matches "
+                             "WHERE lookup_key=?", (key,)).fetchone()
+            if row and canonical_youtube_url(row["url"]):
+                match = dict(row)
+                if key.startswith(("spotify:", "spotify-legacy:")):
+                    video = db.execute("SELECT duration FROM music_search_matches WHERE lookup_key=?",
+                                       ("video:" + row["url"],)).fetchone()
+                    if video:
+                        match["playback_duration"] = video["duration"]
+                return match
+    except (OSError, sqlite3.Error):
         pass
     return None
 
@@ -128,15 +179,12 @@ def find_known_track_sync(url: str) -> dict | None:
 def cached_search_match(key: str) -> dict | None:
     """A remembered selection is usable only while its completed audio exists."""
     from cache_manager import find_cached_audio_path
+
+    match = read_search_match(key)
     try:
-        uri = Path(DB_PATH).resolve().as_uri() + "?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as db:
-            db.row_factory = sqlite3.Row
-            row = db.execute("SELECT title, author, url, duration, thumbnail FROM music_search_matches "
-                             "WHERE lookup_key=?", (key,)).fetchone()
-        if row and canonical_youtube_url(row["url"]) and find_cached_audio_path(row["url"]):
-            return dict(row)
-    except (OSError, sqlite3.Error):
+        if match and find_cached_audio_path(match["url"]):
+            return match
+    except OSError:
         pass
     return None
 
@@ -150,12 +198,74 @@ def remember_search_match(key: str, video_url: str, song: dict) -> None:
             db.execute("""CREATE TABLE IF NOT EXISTS music_search_matches (
                 lookup_key TEXT PRIMARY KEY, url TEXT NOT NULL, title TEXT, author TEXT,
                 duration INTEGER, thumbnail TEXT)""")
-            db.execute("""INSERT OR REPLACE INTO music_search_matches
-                          (lookup_key,url,title,author,duration,thumbnail) VALUES (?,?,?,?,?,?)""",
-                       (key, url, song.get("title"), song.get("author"), song.get("duration") or 0,
-                        song.get("thumbnail")))
+            db.execute("CREATE INDEX IF NOT EXISTS idx_music_search_matches_url ON music_search_matches(url)")
+            durations = [(key, song.get("duration") or 0)]
+            if song.get("playback_duration") and canonical_youtube_url(song.get("playback_url")) == url:
+                durations.append(("video:" + url, song["playback_duration"]))
+            db.executemany("""INSERT OR REPLACE INTO music_search_matches
+                              (lookup_key,url,title,author,duration,thumbnail) VALUES (?,?,?,?,?,?)""",
+                           [(lookup, url, song.get("title"), song.get("author"), duration,
+                             song.get("thumbnail")) for lookup, duration in durations])
     except sqlite3.Error:
         pass  # Optional index: a busy or read-only database must not break playback.
+
+
+async def _matching_saved_keys(db, track: dict, key: str, rows) -> set[str]:
+    """Match current keys and Spotify identities written by older bot versions."""
+    keys = {stored_key for stored_key, _, _ in rows if stored_key == key}
+    url = str(track.get("url") or "")
+    spotify_id = spotify_track_id(url)
+    if not spotify_id and track.get("source") != "spotify":
+        return keys
+
+    if spotify_id:
+        keys.update(
+            stored_key for stored_key, saved_url, _ in rows
+            if spotify_track_id(saved_url) == spotify_id
+        )
+    candidates = [
+        (stored_key, saved_url) for stored_key, saved_url, source in rows
+        if source == "spotify" and stored_key not in keys
+        and (canonical_youtube_url(saved_url) if spotify_id else spotify_track_id(saved_url))
+    ]
+    if not candidates:
+        return keys
+
+    # Old playback replaced the Spotify URL with a YouTube URL. Bridge it only
+    # when search history uniquely identifies the Spotify track, even on a cache miss.
+    originals = ({canonical_youtube_url(saved_url) for _, saved_url in candidates}
+                 if spotify_id else {canonical_youtube_url(url)})
+    originals.discard(None)
+    if not originals:
+        return keys
+    # Each legacy row retains its original URL, even after its video is replaced.
+    # Check both URLs together so conflicting Spotify identities stay separate.
+    params = []
+    for original in originals:
+        params.extend((original, "spotify-legacy:" + original.rsplit("=", 1)[-1]))
+    values = ", ".join("(?, ?)" for _ in originals)
+    try:
+        cursor = await db.execute(
+            f"WITH legacy(original, alias_key) AS (VALUES {values}) "
+            "SELECT legacy.original, MIN(m.lookup_key) FROM legacy "
+            "LEFT JOIN music_search_matches a ON a.lookup_key = legacy.alias_key "
+            "JOIN music_search_matches m ON m.url IN (legacy.original, a.url) "
+            "WHERE m.lookup_key GLOB 'spotify:*' "
+            "GROUP BY legacy.original HAVING COUNT(*) = 1", params,
+        )
+        matched_ids = {original: lookup.removeprefix("spotify:")
+                       for original, lookup in await cursor.fetchall()}
+    except sqlite3.OperationalError as error:
+        # Older libraries may have no search index yet.
+        if "no such table: music_search_matches" not in str(error):
+            raise
+        return keys
+
+    for stored_key, saved_url in candidates:
+        original = canonical_youtube_url(saved_url if spotify_id else url)
+        if matched_ids.get(original) == (spotify_id or spotify_track_id(saved_url)):
+            keys.add(stored_key)
+    return keys
 
 
 async def init_db() -> None:
@@ -271,18 +381,19 @@ async def toggle_favorite(guild_id: int, user_id: int, track: dict) -> str:
         await db.execute("BEGIN IMMEDIATE")
         cursor = await db.execute(
             """
-            SELECT 1 FROM music_favorites
-            WHERE guild_id = ? AND user_id = ? AND track_key = ?
+            SELECT track_key, url, source FROM music_favorites
+            WHERE guild_id = ? AND user_id = ? AND (track_key = ? OR source = 'spotify')
             """,
             (guild_id, user_id, key),
         )
-        if await cursor.fetchone():
-            await db.execute(
+        matches = await _matching_saved_keys(db, track, key, await cursor.fetchall())
+        if matches:
+            await db.executemany(
                 """
                 DELETE FROM music_favorites
                 WHERE guild_id = ? AND user_id = ? AND track_key = ?
                 """,
-                (guild_id, user_id, key),
+                [(guild_id, user_id, matched_key) for matched_key in matches],
             )
             await db.commit()
             return "removed"
@@ -389,11 +500,13 @@ async def add_track_to_playlist(
             return "not_found"
 
         playlist_id = playlist[0]
+        key = track_key(track)
         cursor = await db.execute(
-            "SELECT 1 FROM music_playlist_tracks WHERE playlist_id = ? AND track_key = ?",
-            (playlist_id, track_key(track)),
+            "SELECT track_key, url, source FROM music_playlist_tracks "
+            "WHERE playlist_id = ? AND (track_key = ? OR source = 'spotify')",
+            (playlist_id, key),
         )
-        if await cursor.fetchone():
+        if await _matching_saved_keys(db, track, key, await cursor.fetchall()):
             await db.rollback()
             return "duplicate"
         cursor = await db.execute(
@@ -417,7 +530,7 @@ async def add_track_to_playlist(
             (
                 playlist_id,
                 last_position + 1,
-                track_key(track),
+                key,
                 *_track_values(track),
             ),
         )

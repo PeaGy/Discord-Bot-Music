@@ -3,6 +3,20 @@ import re
 from urllib.parse import parse_qs, urlsplit
 
 
+def spotify_track_id(url: str) -> str | None:
+    text = url.strip()
+    match = re.fullmatch(r"spotify:track:([A-Za-z0-9]{22})", text)
+    if not match:
+        try:
+            parsed = urlsplit(text)
+        except ValueError:
+            return None
+        if parsed.netloc.lower() != "open.spotify.com" or parsed.scheme not in ("https", "http"):
+            return None
+        match = re.fullmatch(r"/(?:intl-[\w-]+/)?track/([A-Za-z0-9]{22})/?", parsed.path)
+    return match[1] if match else None
+
+
 def canonical_youtube_url(value: str) -> str | None:
     """Identify an explicit video, never a search, playlist or lookalike host."""
     try:

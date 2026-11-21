@@ -6,8 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import music_library
-from cache_manager import preload_audio
-from music.player import play_next, start_idle_timer
+from music.player import play_next, preload_track, start_idle_timer
 from music.resolver import resolve_song
 from music.state import get_guild_state
 from music.timing import phase_timer
@@ -18,6 +17,16 @@ logger = logging.getLogger(__name__)
 def format_duration(seconds):
     minutes, seconds = divmod(int(seconds or 0), 60)
     return f"{minutes}:{seconds:02d}"
+
+
+def _enqueue_track(queue, song, requester, vc, *, front):
+    item = {**song, "requester": requester}
+    if front:
+        queue.appendleft(item)
+    else:
+        queue.append(item)
+    if queue[0] is item and (vc.is_playing() or vc.is_paused()):
+        asyncio.create_task(preload_track(item, delay=3.0, queue=queue))
 
 
 class DuplicateConfirmView(discord.ui.View):
@@ -35,8 +44,7 @@ class DuplicateConfirmView(discord.ui.View):
     @discord.ui.button(label="Vẫn thêm", emoji="➕", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction, _button):
         queue = get_guild_state(self.guild).queue
-        item = {**self.song, "requester": self.requester}
-        queue.appendleft(item) if self.front else queue.append(item)
+        _enqueue_track(queue, self.song, self.requester, self.vc, front=self.front)
         for child in self.children: child.disabled = True
         await interaction.response.edit_message(content=f"✅ Đã thêm **{self.song['title']}** lần nữa.", view=self)
         if not self.vc.is_playing() and not self.vc.is_paused():
@@ -97,15 +105,7 @@ class Play(commands.Cog):
             with phase_timer(logger, "duplicate-ui", guild_id=guild_id):
                 return await interaction.followup.send(f"⚠️ **{song['title']}** {location}. Vẫn thêm lần nữa?", view=view, ephemeral=True)
 
-        item = {**song, "requester": interaction.user}
-        queue.appendleft(item) if front else queue.append(item)
-        if (
-            (vc.is_playing() or vc.is_paused())
-            and len(queue) == 1
-            and not song.get("youtube_metadata_failed")
-            and int(song.get("duration") or 0) <= 600
-        ):
-            asyncio.create_task(preload_audio(song.get("cached_youtube_url") or song["url"], delay=3.0))
+        _enqueue_track(queue, song, interaction.user, vc, front=front)
         embed = discord.Embed(description=f"**{song['title']}** `[{format_duration(song['duration'])}]`")
         embed.set_author(name=f"Đã thêm vào hàng đợi (#{1 if front else len(queue)})", icon_url=interaction.user.display_avatar.url)
         if song.get("thumbnail"): embed.set_thumbnail(url=song["thumbnail"])

@@ -646,7 +646,7 @@ class MusicControl(discord.ui.LayoutView):
 
     async def download(self, interaction: discord.Interaction, button: discord.ui.Button):
         source_type = str(self.track.get("source") or "").lower()
-        track_url = self.track.get("url")
+        track_url = self.track.get("playback_url") or self.track.get("url")
 
         if self.track.get("stream_only"):
             return await interaction.response.send_message(
@@ -656,7 +656,7 @@ class MusicControl(discord.ui.LayoutView):
             )
 
         try:
-            duration = int(self.track.get("duration") or 0)
+            duration = int(self.track.get("playback_duration") or self.track.get("duration") or 0)
         except (TypeError, ValueError):
             duration = 0
 

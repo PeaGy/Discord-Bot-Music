@@ -1,7 +1,10 @@
+import asyncio
 import os
 import tempfile
 import time
 import unittest
+import threading
+from pathlib import Path
 from unittest.mock import patch
 
 import cache_manager
@@ -59,6 +62,40 @@ class LongAudioDurationTests(unittest.IsolatedAsyncioTestCase):
                 "https://www.youtube.com/watch?v=test",
                 cache_manager.LONG_AUDIO_TEMP_MAX_DURATION + 1,
             )
+
+    async def test_cancelled_download_cleans_file_and_holds_slot_until_thread_finishes(self):
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        slots = asyncio.Semaphore(1)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "long_track.webm"
+
+            def download_track(*args):
+                loop.call_soon_threadsafe(started.set)
+                if not release.wait(3):
+                    raise TimeoutError("test did not release the download")
+                path.write_bytes(b"audio")
+                return str(path), "opus"
+
+            with patch.object(long_audio, "_long_audio_download_semaphore", slots), patch.object(
+                long_audio, "_download_long_audio_sync", side_effect=download_track
+            ), patch.object(long_audio.discord, "FFmpegOpusAudio") as ffmpeg:
+                task = asyncio.create_task(long_audio.get_long_audio_source(
+                    "https://www.youtube.com/watch?v=H5v3kku4y6Q", 700,
+                ))
+                try:
+                    await asyncio.wait_for(started.wait(), 3)
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                    self.assertTrue(slots.locked())
+                finally:
+                    release.set()
+                await asyncio.wait_for(slots.acquire(), 3)
+                slots.release()
+                self.assertFalse(path.exists())
+                ffmpeg.assert_not_called()
 
 
 class ShortAudioDownloadRetryTests(unittest.TestCase):
