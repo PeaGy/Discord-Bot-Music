@@ -287,6 +287,61 @@ class KnownTrackMetadataTests(unittest.IsolatedAsyncioTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_spotify_html_entities_are_decoded_before_building_search_query(self):
+        link = "https://open.spotify.com/track/0KKkJNfGyhkQ5aFogxQAPU"
+        page = (
+            '<meta property="og:title" content="That&#x27;s What I Like">'
+            '<meta property="og:description" content="Bruno Mars &amp; Friends &middot; Album">'
+            '<meta property="og:image" content="https://img.test/cover?w=100&amp;h=100">'
+        )
+        with patch("music.spotify.urllib.request.urlopen") as fetch:
+            fetch.return_value.read.return_value = page.encode()
+            song = resolve_song(link)
+        self.assertEqual(song["title"], "That's What I Like")
+        self.assertEqual(song["author"], "Bruno Mars & Friends")
+        self.assertEqual(song["thumbnail"], "https://img.test/cover?w=100&h=100")
+        self.assertEqual(song["search_query"], "That's What I Like Bruno Mars & Friends audio")
+
+    async def test_existing_spotify_cache_and_history_are_repaired_exactly_once(self):
+        track_id = "0KKkJNfGyhkQ5aFogxQAPU"
+        link = "https://open.spotify.com/track/" + track_id
+        title = "That&#x27;s What I Like"
+        author = "Bruno Mars &amp; Friends"
+        legacy = {"url": link, "title": title, "author": author, "duration": 206, "source": "spotify",
+                  "search_query": f"{title} {author} audio", "playback_url": URL, "playback_duration": 210,
+                  "thumbnail": "https://img.test/cover?w=100&amp;h=100&copy=1"}
+        await music_library.init_db()
+        # Reproduce the schema and stored rows of a library from before this fix.
+        with closing(sqlite3.connect(self.db_path)) as db, db:
+            db.execute("DROP TABLE music_library_migrations")
+        music_library.remember_search_match("spotify:" + track_id, URL, legacy)
+        await music_library.record_recent(1, legacy)
+        await music_library.record_recent(2, {**legacy, "url": SHARE_URL, "source": "youtube"})
+        await music_library.init_db()
+
+        with patch.object(cache_manager, "CACHE_DIR", self.directory.name), patch(
+            "music.spotify.urllib.request.urlopen"
+        ) as fetch:
+            Path(cache_manager.get_cache_paths(URL)[1]).write_bytes(b"cached")
+            cached = resolve_song(link)
+        fetch.assert_not_called()
+        self.assertEqual(cached["playback_url"], URL)
+        self.assertEqual(cached["playback_duration"], 210)
+        recent, = await music_library.list_recent(1)
+        inherited, = await music_library.list_recent(2)
+        video = music_library.read_search_match("video:" + URL)
+        for track in (cached, recent, inherited, video):
+            self.assertEqual(track["title"], "That's What I Like")
+            self.assertEqual(track["author"], "Bruno Mars & Friends")
+            self.assertEqual(track["thumbnail"], "https://img.test/cover?w=100&h=100&copy=1")
+        self.assertEqual(cached["search_query"], "That's What I Like Bruno Mars & Friends audio")
+        self.assertEqual(recent["search_query"], cached["search_query"])
+
+        # A new, literal entity in an already-decoded title must survive a restart.
+        await music_library.record_recent(1, {**cached, "title": "Literal &quot;"})
+        await music_library.init_db()
+        self.assertEqual((await music_library.list_recent(1))[0]["title"], "Literal &quot;")
+
     async def test_missing_database_is_not_created(self):
         self.assertIsNone(music_library.find_known_track_sync(URL))
         self.assertFalse(Path(self.db_path).exists())

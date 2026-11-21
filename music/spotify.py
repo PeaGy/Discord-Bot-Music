@@ -1,4 +1,5 @@
 import urllib.request
+from html import unescape
 import logging
 import re
 import music_library
@@ -31,20 +32,17 @@ def get_spotify_info(url: str) -> dict:
         image_match = re.search(r'<meta property="og:image" content="([^"]+)"', html)
         duration_match = re.search(r'<meta name="music:duration" content="(\d+)"', html)
 
-        title = title_match.group(1) if title_match else "Unknown Title"
+        title = unescape(title_match.group(1)) if title_match else "Unknown Title"
         
         artist = "Unknown Artist"
         if desc_match:
-            desc = desc_match.group(1)
-            parts = desc.split(" · ")
-            if len(parts) > 0:
-                artist = parts[0]
+            artist = unescape(desc_match.group(1)).partition(" · ")[0]
 
-        thumbnail = image_match.group(1) if image_match else None
+        thumbnail = unescape(image_match.group(1)) if image_match else None
         duration = int(duration_match.group(1)) if duration_match else 0
         
         return {
-            "title": f"{title}",
+            "title": title,
             "author": artist,
             "duration": duration,
             "thumbnail": thumbnail,

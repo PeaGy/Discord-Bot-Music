@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import closing
+from html import unescape
 import os
 import re
 import secrets
@@ -268,12 +269,57 @@ async def _matching_saved_keys(db, track: dict, key: str, rows) -> set[str]:
     return keys
 
 
+async def _migrate_spotify_html_entities(db) -> None:
+    marker = await db.execute(
+        "INSERT OR IGNORE INTO music_library_migrations(name) VALUES ('spotify_html_entities_v1')"
+    )
+    if not marker.rowcount:
+        return
+
+    # Stored values are plain text. Only repair complete references, so a URL
+    # parameter such as &copy=1 is preserved even when another field is escaped.
+    entity = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
+
+    def decode(value):
+        return entity.sub(lambda match: unescape(match[0]), value) if value else value
+
+    await db.create_function("decode_spotify_html", 1, decode)
+    has_matches = await (await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='music_search_matches'"
+    )).fetchone()
+    spotify_matches = "(lookup_key GLOB 'spotify:*' OR lookup_key GLOB 'spotify-legacy:*' OR lookup_key GLOB 'video:*')"
+    if has_matches:
+        await db.create_function("canonical_video", 1, canonical_youtube_url)
+    for table in ("music_recent", "music_favorites", "music_playlist_tracks"):
+        scope = "source = 'spotify'"
+        if has_matches:
+            # A cached YouTube link may have copied its title from the Spotify match.
+            scope += (f" OR (source = 'youtube' AND EXISTS (SELECT 1 FROM music_search_matches m "
+                      f"WHERE m.url = canonical_video({table}.url) AND m.title = {table}.title "
+                      f"AND {spotify_matches}))")
+        await db.execute(
+            f"UPDATE {table} SET title=decode_spotify_html(title), author=decode_spotify_html(author), "
+            "search_query=decode_spotify_html(search_query), thumbnail=decode_spotify_html(thumbnail) "
+            "WHERE (title LIKE '%&%;%' OR author LIKE '%&%;%' OR search_query LIKE '%&%;%' "
+            f"OR thumbnail LIKE '%&%;%') AND ({scope})"
+        )
+    if has_matches:
+        await db.execute(
+            "UPDATE music_search_matches SET title=decode_spotify_html(title), author=decode_spotify_html(author), "
+            "thumbnail=decode_spotify_html(thumbnail) WHERE (title LIKE '%&%;%' OR author LIKE '%&%;%' "
+            f"OR thumbnail LIKE '%&%;%') AND {spotify_matches}"
+        )
+
+
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA foreign_keys=ON")
         await db.executescript(
             """
+            CREATE TABLE IF NOT EXISTS music_library_migrations (
+                name TEXT PRIMARY KEY
+            );
             CREATE TABLE IF NOT EXISTS music_favorites (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -358,6 +404,7 @@ async def init_db() -> None:
                 ON music_play_events(guild_id, played_at DESC);
             """
         )
+        await db.execute("BEGIN IMMEDIATE")
         columns = {
             row[1] for row in await (await db.execute("PRAGMA table_info(music_playlists)")).fetchall()
         }
@@ -371,6 +418,7 @@ async def init_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_music_playlist_share_code "
             "ON music_playlists(share_code) WHERE share_code IS NOT NULL"
         )
+        await _migrate_spotify_html_entities(db)
         await db.commit()
 
 
