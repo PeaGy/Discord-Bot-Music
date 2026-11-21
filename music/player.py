@@ -246,12 +246,19 @@ async def _restore_spotify_video(song: dict) -> str | None:
     return _spotify_video_url(song)
 
 
+class YouTubeSearchEmpty(ValueError):
+    """A YouTube search completed without returning any entries."""
+
+
 def _extract_stream_info(query: str, *, remember_for_download: bool) -> dict:
     info = extract_info_with_retry(
         query, YDL_OPTIONS, download=False, remember_for_download=remember_for_download,
     )
     if info and "entries" in info:
-        info = next((entry for entry in info["entries"] if entry), None)
+        entries = info["entries"]
+        if query.startswith("ytsearch") and entries is not None and not entries:
+            raise YouTubeSearchEmpty("YouTube không trả về kết quả tìm kiếm")
+        info = next((entry for entry in entries or () if entry), None)
     if not info or not info.get("url"):
         raise ValueError("yt-dlp không trả về stream URL")
     return info
@@ -284,7 +291,14 @@ async def _search_spotify_video(song: dict) -> dict:
     query = song.get("search_query") or song["url"]
     if not query.startswith("ytsearch"):
         query = f"ytsearch1:{query}"
-    info = await asyncio.to_thread(_extract_stream_info, query, remember_for_download=True)
+    try:
+        info = await asyncio.to_thread(_extract_stream_info, query, remember_for_download=True)
+    except YouTubeSearchEmpty:
+        title = (song.get("title") or "").strip()
+        original_terms = query.partition(":")[2].strip()
+        if not title or title.casefold() in {"unknown", "unknown title", original_terms.casefold()}:
+            raise
+        info = await asyncio.to_thread(_extract_stream_info, f"ytsearch1:{title}", remember_for_download=True)
     url = canonical_youtube_url(_youtube_entry_url(info))
     if not url:
         raise ValueError("yt-dlp không trả về trang YouTube cho track Spotify")
@@ -691,6 +705,27 @@ async def play_next(
         await _play_next_locked(bot, vc, channel, state)
 
 
+async def _notify_source_skip(channel, state, song, error, *, loading_message=None):
+    reason = ("Không tìm thấy bài này trên YouTube." if isinstance(error, YouTubeSearchEmpty)
+              else "Không lấy được nguồn phát cho bài này.")
+    view = create_error_panel(song, reason=reason, has_next=bool(state.queue))
+    if loading_message is not None:
+        try:
+            await edit_panel_message(loading_message, view)
+        except discord.HTTPException as exc:
+            logger.warning("Không cập nhật được thông báo bỏ qua (channel=%s, message=%s): %s",
+                           channel.id, loading_message.id, exc)
+        else:
+            # Leave the failure visible when the queue advances or ends.
+            if state.now_playing_message is loading_message:
+                state.now_playing_message = None
+            return
+    try:
+        await send_panel_message(channel, view)
+    except discord.HTTPException as exc:
+        logger.warning("Không gửi được thông báo bỏ qua (channel=%s): %s", channel.id, exc)
+
+
 async def _play_next_locked(
     bot: discord.Client,
     vc: discord.VoiceClient,
@@ -831,6 +866,7 @@ async def _play_next_locked(
                     logger, "source-prepare", preparation_started,
                     guild_id=vc.guild.id, track_id=timing_track, outcome="error",
                 )
+                await _notify_source_skip(channel, state, song, error)
                 return await _play_next_locked(bot, vc, channel, state)
 
     # ==============================
@@ -998,16 +1034,7 @@ async def _play_next_locked(
                 logger, "source-prepare", preparation_started,
                 guild_id=vc.guild.id, track_id=timing_track, outcome="error",
             )
-            if loading_msg:
-                try:
-                    await edit_panel_message(loading_msg, create_error_panel(song))
-                except Exception:
-                    pass
-            else:
-                try:
-                    await send_panel_message(channel, create_error_panel(song))
-                except Exception:
-                    pass
+            await _notify_source_skip(channel, state, song, e, loading_message=loading_msg)
             return await _play_next_locked(bot, vc, channel, state)
 
     # This total includes nested metadata/cache/loading phases. Ready means the

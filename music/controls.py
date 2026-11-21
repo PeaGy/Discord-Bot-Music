@@ -151,12 +151,13 @@ def create_loading_panel(track, *, long_track=False):
     )
 
 
-def create_error_panel(track):
+def create_error_panel(track, *, reason, has_next):
+    queue_status = "Chuyển sang bài tiếp theo." if has_next else "Hàng đợi không còn bài để phát."
     return MusicStatusPanel(
-        heading="❌ KHÔNG THỂ PHÁT",
+        heading="⏭️ ĐÃ BỎ QUA",
         description=(
             f"**{_safe_text(track.get('title'), 'Unknown')}**\n"
-            "-# Bài này sẽ được bỏ qua để tiếp tục hàng đợi."
+            f"{reason}\n-# {queue_status}"
         ),
         accent_color=PANEL_ERROR_COLOR,
         thumbnail_url=track.get("thumbnail"),
@@ -182,7 +183,7 @@ def create_queue_ended_panel(bot_user=None):
     return MusicStatusPanel(
         heading="✨ HẾT HÀNG ĐỢI",
         description=(
-            "Tất cả bài hát đã được phát xong.\n"
+            "Hàng đợi không còn bài để phát.\n"
             f"-# Dùng `/play` hoặc `/search` để nghe tiếp cùng {display_name}."
         ),
         accent_color=PANEL_SUCCESS_COLOR,

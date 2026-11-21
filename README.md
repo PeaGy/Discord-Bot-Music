@@ -368,6 +368,8 @@ Khi tìm bài bằng tên hoặc phát một track Spotify, Peto nhớ video You
 
 Với bài Spotify cũ trong playlist hoặc Favorites, nếu video YouTube bị gỡ hoặc bị chặn ở khu vực của bot, Peto tìm lại theo tên bài và nghệ sĩ. Sau khi phát được bản thay thế, Peto nhớ video đó cho lần sau. Khi mở link YouTube từ cache, Peto dùng thời lượng của video nếu đã biết, kể cả khi bản Spotify ngắn hơn.
 
+Nếu YouTube không trả kết quả cho một bài Spotify, Peto thử tìm thêm một lần bằng tên bài. Nếu vẫn không có bản phát được, Peto báo lý do trong kênh và chuyển sang bài kế tiếp hoặc báo hàng đợi đã hết.
+
 Để ưu tiên chất lượng nhạc, đặt `PETO_CACHE_OPUS_COMPLEXITY=10` trong `.env` (hoặc bỏ trống để dùng mặc định FFmpeg). Khi bài ngắn chưa có cache, Peto đo âm lượng rồi phát từ các gói Opus đầu tiên trong lúc FFmpeg tiếp tục mã hóa. Lượt nghe khác có thể dùng chung lần mã hóa với vị trí đọc riêng. File cache chỉ xuất hiện sau khi mã hóa thành công. Thay đổi mức encoder chỉ áp dụng cho cache tạo mới.
 
 Các kiểm tra mạng thủ công nằm trong `scripts/manual/`; chúng không chạy cùng bot.

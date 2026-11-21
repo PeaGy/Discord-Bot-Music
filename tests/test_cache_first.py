@@ -445,8 +445,9 @@ class SavedSpotifyCompatibilityTests(unittest.IsolatedAsyncioTestCase):
 
 class PlayerCachePriorityTests(unittest.IsolatedAsyncioTestCase):
     async def run_player(self, song, *, cached=None, cache_error=None, info=None, preload=False,
-                         extract_effect=None, download_effect=None, temp_effect=None, record=None):
-        state = SimpleNamespace(queue=deque([song]), history=[], text_channel=None,
+                         extract_effect=None, download_effect=None, temp_effect=None, record=None,
+                         following=()):
+        state = SimpleNamespace(queue=deque([song, *following]), history=[], text_channel=None,
                                 now_playing_message=None, loop_mode="off", autoplay=False)
         vc = Mock()
         vc.guild = SimpleNamespace(id=123)
@@ -457,8 +458,10 @@ class PlayerCachePriorityTests(unittest.IsolatedAsyncioTestCase):
         fallback = AsyncMock(return_value=None)
         downloaded = Mock()
         download = AsyncMock(return_value=downloaded, side_effect=download_effect)
+        channel = SimpleNamespace(id=789, send=AsyncMock(return_value=Mock()))
         with ExitStack() as stack:
             stack.enter_context(patch("music.player.cancel_idle_timer"))
+            idle = stack.enter_context(patch("music.player.start_idle_timer", new_callable=AsyncMock))
             stack.enter_context(patch("music.player.get_cached_audio_source", cache))
             stack.enter_context(patch("music.player.get_audio_source", download))
             stack.enter_context(patch("music.player._try_audio_fallback", fallback))
@@ -475,16 +478,66 @@ class PlayerCachePriorityTests(unittest.IsolatedAsyncioTestCase):
             loading = stack.enter_context(patch("music.player.create_loading_panel"))
             stack.enter_context(patch("music.player.MusicControl"))
             stack.enter_context(patch("music.player.create_radio_panel"))
-            stack.enter_context(patch("music.player.send_panel_message", new=AsyncMock(return_value=Mock())))
+            stack.enter_context(patch("music.player.edit_panel_message", new_callable=AsyncMock))
             stack.enter_context(patch("music.player._record_recent_safely", new=AsyncMock(side_effect=record)))
             preloader = stack.enter_context(patch("music.player.preload_audio", new_callable=AsyncMock))
             if preload:
                 await preload_track(song)
-            await _play_next_locked(bot, vc, Mock(), state)
+            await _play_next_locked(bot, vc, channel, state)
             await asyncio.sleep(0)
         return SimpleNamespace(vc=vc, cache=cache, fallback=fallback, download=download,
                                extract=extract, hint=hint, volume=volume, loading=loading, temp=temp,
-                               preloader=preloader, ffmpeg=ffmpeg)
+                               preloader=preloader, ffmpeg=ffmpeg, channel=channel, state=state, idle=idle)
+
+    def spotify_search_item(self):
+        return {"source": "spotify", "url": "spotify:track:" + "A1" * 11,
+                "title": "Undress Rehearsal - Hardtekk", "duration": 180,
+                "search_query": "Undress Rehearsal - Hardtekk Artist audio"}
+
+    async def test_empty_spotify_search_notifies_channel_and_advances_or_ends_queue(self):
+        next_song = {"source": "youtube", "url": URL, "title": "Next song", "duration": 180}
+        for following in ((next_song,), ()):
+            with self.subTest(has_next=bool(following)), patch("music.player.cached_search_match", return_value=None):
+                song = self.spotify_search_item()
+                with self.assertLogs("music.player", level="WARNING") as logs:
+                    calls = await self.run_player(song, info={"entries": []}, following=following)
+                self.assertIn("YouTube không trả về kết quả tìm kiếm", " ".join(logs.output))
+                self.assertEqual([c.args[0] for c in calls.extract.call_args_list],
+                                 ["ytsearch1:" + song["search_query"], "ytsearch1:" + song["title"]])
+                sent = calls.channel.send.await_args_list[0].kwargs
+                notice = sent["view"].children[0].children[0].content
+                self.assertIn(song["title"], notice)
+                self.assertIn("ĐÃ BỎ QUA", notice)
+                self.assertIn("Không tìm thấy bài này trên YouTube", notice)
+                self.assertFalse(sent["allowed_mentions"].everyone)
+                self.assertEqual(calls.state.history, list(following))
+                if following:
+                    self.assertIn("Chuyển sang bài tiếp theo", notice)
+                    calls.vc.play.assert_called_once()
+                    calls.download.assert_awaited_once_with(URL)
+                    calls.idle.assert_not_awaited()
+                else:
+                    self.assertIn("không còn bài để phát", notice)
+                    calls.channel.send.assert_awaited_once()
+                    calls.vc.play.assert_not_called()
+                    calls.idle.assert_awaited_once()
+
+    async def test_spotify_title_retry_can_play_and_missing_stream_does_not_trigger_retry(self):
+        song = self.spotify_search_item()
+        with patch("music.player.cached_search_match", return_value=None), patch("music.player.remember_search_match"):
+            calls = await self.run_player(song, extract_effect=[
+                {"entries": []}, {"entries": [{"url": "stream", "webpage_url": URL}]},
+            ])
+        self.assertEqual(calls.extract.call_count, 2)
+        calls.vc.play.assert_called_once()
+        calls.download.assert_awaited_once_with(URL)
+        with patch("music.player.cached_search_match", return_value=None):
+            calls = await self.run_player(self.spotify_search_item(), info={"entries": [{"id": VIDEO_ID}]})
+        calls.extract.assert_called_once()
+        calls.channel.send.assert_awaited_once()
+        notice = calls.channel.send.await_args.kwargs["view"].children[0].children[0].content
+        self.assertIn("Không lấy được nguồn phát", notice)
+        self.assertNotIn("Không tìm thấy", notice)
 
     async def test_cache_precedes_failed_metadata_and_stale_fallback_hint(self):
         song = {"title": "As It Was", "url": URL, "duration": 0, "source": "youtube",
