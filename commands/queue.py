@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from music.state import get_guild_state
+from music.state import active_track, get_guild_state
 
 
 def format_duration(seconds):
@@ -82,7 +82,7 @@ class QueueCommand(commands.Cog):
     @app_commands.command(name="queue", description="Hiển thị danh sách bài hát đang chờ")
     async def queue_cmd(self, interaction: discord.Interaction):
         state = get_guild_state(interaction.guild)
-        current = state.history[-1] if state.history else None
+        current = active_track(state, interaction.guild.voice_client)
         if not state.queue and not current:
             return await interaction.response.send_message("❌ Hàng đợi hiện đang trống!", ephemeral=True)
         view = QueuePagination(interaction, state.queue, current)

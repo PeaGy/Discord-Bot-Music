@@ -123,6 +123,38 @@ class PlayTimingTests(unittest.IsolatedAsyncioTestCase):
         duplicate.assert_called_once()
         self.assertFalse(state.queue)
 
+    async def test_play_last_track_again_after_queue_ends(self):
+        interaction, state, vc = self.make_interaction()
+        interaction.guild.voice_client = vc
+        song = {"title": "Nevada", "duration": 180, "url": URL}
+        state.history.append(song)
+        with patch("commands.play.resolve_song", return_value=song), patch(
+            "commands.play.get_guild_state", return_value=state
+        ), patch("commands.play.play_next", new_callable=AsyncMock) as play_next_mock:
+            await Play(Mock())._play(interaction, URL, front=False)
+        play_next_mock.assert_awaited_once()
+        self.assertEqual(state.queue[0]["url"], URL)
+        self.assertEqual(state.history, [song])
+        self.assertNotIn("view", interaction.followup.send.await_args.kwargs)
+
+    async def test_duplicate_warning_distinguishes_paused_and_queued_tracks(self):
+        song = {"title": "Nevada", "duration": 180, "url": URL}
+        for paused, expected in ((True, "đang tạm dừng"), (False, "đã ở vị trí #2")):
+            with self.subTest(paused=paused):
+                interaction, state, vc = self.make_interaction()
+                interaction.guild.voice_client = vc
+                vc.is_paused.return_value = paused
+                state.history.append(song)
+                state.queue.extend([{"url": "other"}, song])
+                with patch("commands.play.get_guild_state", return_value=state), patch(
+                    "commands.play.resolve_song", return_value=song
+                ):
+                    await Play(Mock())._play(interaction, URL, front=False)
+                warning = interaction.followup.send.await_args
+                self.assertIn(expected, warning.args[0])
+                self.assertIsInstance(warning.kwargs["view"], DuplicateConfirmView)
+                self.assertEqual(len(state.queue), 2)
+
     async def test_playnext_preloads_new_head_even_when_queue_already_has_tracks(self):
         interaction, state, vc = self.make_interaction()
         interaction.guild.voice_client = vc

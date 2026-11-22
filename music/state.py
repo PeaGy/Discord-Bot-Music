@@ -40,6 +40,12 @@ class GuildPlayerState:
 _guild_states: dict[int, GuildPlayerState] = {}
 
 
+def active_track(state: GuildPlayerState, vc) -> dict | None:
+    if vc and state.history and (vc.is_playing() or vc.is_paused()):
+        return state.history[-1]
+    return None
+
+
 def get_guild_state(guild_or_id: Any) -> GuildPlayerState:
     """Lấy state theo Guild, Interaction/Guild có ``id`` hoặc guild ID."""
     guild_id = getattr(guild_or_id, "id", guild_or_id)

@@ -17,7 +17,7 @@ from music.controls import (
     send_panel_message,
 )
 from music.resolver import resolve_song
-from music.state import get_guild_state
+from music.state import active_track, get_guild_state
 from music.source_fallback import (
     get_cached_audius_track_id,
     get_cached_soundcloud_page,
@@ -26,7 +26,7 @@ from music.source_fallback import (
 from music.stream_source import open_fallback_stream, STREAM_STARTUP_TIMEOUT
 from music.timing import log_phase_timing, phase_timer
 from music.urls import canonical_youtube_url, spotify_track_id
-from music_library import cached_search_match, read_search_match, remember_search_match
+from music_library import cached_search_match, read_search_match, remember_search_match, track_key
 from cache_manager import (
     get_audio_source,
     get_cached_audio_source,
@@ -620,6 +620,17 @@ async def handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=False):
         if trigger_play: await play_next(bot, vc, channel)
 
 
+def duplicate_track_location(state, vc, song) -> str | None:
+    key = track_key(song)
+    current = active_track(state, vc)
+    if current is not None and track_key(current) == key:
+        return "đang tạm dừng" if vc.is_paused() else "đang phát"
+    for position, item in enumerate(state.queue, 1):
+        if track_key(item) == key:
+            return f"đã ở vị trí #{position}"
+    return None
+
+
 async def play_song_by_query(
     bot: discord.Client,
     guild: discord.Guild,
@@ -655,15 +666,8 @@ async def play_song_by_query(
         return {"ok": False, "reason": "Không lấy được thông tin bài hát"}
 
     state = get_guild_state(guild)
-    import music_library
-    key = music_library.track_key(song)
-    duplicate = next(
-        (index for index, item in enumerate(state.queue, start=1)
-         if music_library.track_key(item) == key),
-        None,
-    )
-    if duplicate or (state.history and music_library.track_key(state.history[-1]) == key):
-        location = "đang phát" if state.history and music_library.track_key(state.history[-1]) == key else f"đã ở vị trí #{duplicate}"
+    location = duplicate_track_location(state, vc, song)
+    if location:
         return {"ok": False, "reason": f"Bài này {location}, nên Peto không thêm trùng"}
     item = {**song, "requester": requester}
     state.queue.append(item)

@@ -10,7 +10,7 @@ from discord.ext import commands
 import music_library
 from music.resolver import resolve_song
 from music.player import play_next
-from music.state import get_guild_state
+from music.state import active_track, get_guild_state
 from ytdlp_support import youtube_ydl_options
 
 
@@ -34,9 +34,7 @@ def format_duration(seconds) -> str:
 def current_track(interaction: discord.Interaction) -> dict | None:
     vc = interaction.guild.voice_client
     state = get_guild_state(interaction.guild)
-    if not vc or not (vc.is_playing() or vc.is_paused()) or not state.history:
-        return None
-    return state.history[-1]
+    return active_track(state, vc)
 
 
 def track_line(index: int, track: dict) -> str:

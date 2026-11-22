@@ -5,8 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import music_library
-from music.player import play_next, preload_track, start_idle_timer
+from music.player import duplicate_track_location, play_next, preload_track, start_idle_timer
 from music.resolver import resolve_song
 from music.state import get_guild_state
 from music.timing import phase_timer
@@ -96,11 +95,8 @@ class Play(commands.Cog):
             return await interaction.followup.send("❌ Không lấy được thông tin bài hát.", ephemeral=True)
 
         state = get_guild_state(interaction.guild); queue = state.queue
-        key = music_library.track_key(song)
-        position = next((i for i, item in enumerate(queue, 1) if music_library.track_key(item) == key), None)
-        current = bool(state.history and music_library.track_key(state.history[-1]) == key)
-        if position or current:
-            location = "đang phát" if current else f"đã ở vị trí #{position}"
+        location = duplicate_track_location(state, vc, song)
+        if location:
             view = DuplicateConfirmView(self.bot, interaction.user.id, interaction.guild, interaction.channel, vc, song, interaction.user, front)
             with phase_timer(logger, "duplicate-ui", guild_id=guild_id):
                 return await interaction.followup.send(f"⚠️ **{song['title']}** {location}. Vẫn thêm lần nữa?", view=view, ephemeral=True)

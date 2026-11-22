@@ -4,7 +4,6 @@ from discord.ext import commands
 import yt_dlp
 import asyncio
 import logging
-import music_library
 from ytdlp_support import youtube_ydl_options
 
 
@@ -56,7 +55,7 @@ class SearchSelect(discord.ui.Select):
 
         selected_index = int(self.values[0])
         selected_track = self.entries[selected_index]
-        from music.player import _youtube_entry_url, play_next, preload_track
+        from music.player import _youtube_entry_url, duplicate_track_location, play_next, preload_track
         
         # Cố gắng lấy thumbnail nếu có
         thumb = None
@@ -80,8 +79,6 @@ class SearchSelect(discord.ui.Select):
             pass
 
         from music.state import get_guild_state
-
-        queue = get_guild_state(interaction.guild).queue
 
         # 1. TỰ ĐỘNG KẾT NỐI VÀO VOICE GIỐNG LỆNH /PLAY
         voice_state = interaction.user.voice
@@ -112,11 +109,10 @@ class SearchSelect(discord.ui.Select):
                     ephemeral=True,
                 )
 
-        key = music_library.track_key(song)
-        duplicate = next((i for i, item in enumerate(queue, 1) if music_library.track_key(item) == key), None)
         state = get_guild_state(interaction.guild)
-        if duplicate or (state.history and music_library.track_key(state.history[-1]) == key):
-            location = "đang phát" if state.history and music_library.track_key(state.history[-1]) == key else f"đã ở vị trí #{duplicate}"
+        queue = state.queue
+        location = duplicate_track_location(state, vc, song)
+        if location:
             return await interaction.followup.send(f"⚠️ **{song.get('title', 'Bài này')}** {location}; dùng `/play` nếu bạn muốn xác nhận thêm trùng.", ephemeral=True)
 
         # Thêm bài hát vào hàng đợi
