@@ -18,6 +18,13 @@ class Admission:
         yield
 
 
+class PersonaMusicFactsTests(unittest.TestCase):
+    def test_persona_knows_loop_button_and_command(self):
+        self.assertIn("/loop", SYSTEM_PROMPT)
+        self.assertIn("nút **Loop**", SYSTEM_PROMPT)
+        self.assertIn("không có nút loop", SYSTEM_PROMPT)
+
+
 def make_chat():
     chat = GrokChat.__new__(GrokChat)
     chat.bot = SimpleNamespace(tree=make_tree(), user=SimpleNamespace(id=900), is_owner=AsyncMock(return_value=False))

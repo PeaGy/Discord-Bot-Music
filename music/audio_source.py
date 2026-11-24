@@ -30,5 +30,10 @@ class OpusPrerollAudioSource(discord.AudioSource):
     def is_opus(self):
         return True
 
+    @property
+    def _current_error(self):
+        # discord.py only inspects the source passed to VoiceClient.play.
+        return getattr(self.source, "_current_error", None)
+
     def cleanup(self):
         self.source.cleanup()

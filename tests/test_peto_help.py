@@ -43,7 +43,7 @@ class PetoHelpIntentTests(unittest.TestCase):
             "Peto ơi, làm sao mở nhạc?", "cach su dung /play", "Lệnh nào dùng để tạo playlist?",
             "Peto có những tính năng gì?", "Cách dùng /coupon subscribe?", "Hướng dẫn kiếm Peto Points",
             "How do I create a playlist?", "How to play music?", "How can I play music with Peto?",
-            "Peto có phát nhạc không?", "Cách chỉnh ảnh?", "Peto chỉ tôi cách xóa nền ảnh?",
+            "Peto có phát nhạc không?", "Peto có nút loop không?", "Cách chỉnh ảnh?", "Peto chỉ tôi cách xóa nền ảnh?",
             "Bạn làm được gì?", "Cách xem points?",
         )
         for text in examples:

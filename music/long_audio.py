@@ -48,6 +48,11 @@ class TemporaryFileAudioSource(discord.AudioSource):
     def is_opus(self):
         return self.source.is_opus()
 
+    @property
+    def _current_error(self):
+        # Keep FFmpeg's non-zero exit visible through the file-cleanup wrapper.
+        return getattr(self.source, "_current_error", None)
+
     def cleanup(self):
         if self._cleaned:
             return
@@ -134,6 +139,19 @@ def _download_long_audio_sync(url, player_client=None, route_name=None):
         raise
 
 
+def ffmpeg_opus_source_codec(source_codec: str) -> str | None:
+    """Argument for ``discord.FFmpegOpusAudio(codec=...)``.
+
+    discord.py treats ``opus``, ``libopus`` and ``copy`` as "the source is already
+    Opus" and emits ``-c:a copy``. Passing ``libopus`` therefore copies AAC into an
+    Opus container and ffmpeg exits immediately. Pass ``opus`` only for an Opus
+    source; otherwise pass ``None`` so discord.py encodes with ``libopus``.
+    """
+    if "opus" in str(source_codec or "").lower():
+        return "opus"
+    return None
+
+
 def _discard_cancelled_download(download: asyncio.Future) -> None:
     try:
         filepath, _ = download.result()
@@ -196,7 +214,7 @@ async def get_long_audio_source(url, duration):
             filepath, codec = await _download_long_audio(url, player_client, route_name)
             ffmpeg_source = discord.FFmpegOpusAudio(
                 filepath,
-                codec="copy" if "opus" in codec else "libopus",
+                codec=ffmpeg_opus_source_codec(codec),
                 bitrate=160,
                 options="-vn",
             )

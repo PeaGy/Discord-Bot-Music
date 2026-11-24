@@ -520,6 +520,14 @@ CORE_TOOL_RULES_PROMPT = """
 - Chỉ gọi `play_music`/`skip_music` khi người dùng thực sự yêu cầu phát/bỏ bài.
 """.strip()
 
+MUSIC_FACTS_PROMPT = """
+## Nhạc Peto làm được
+Peto phát nhạc trong server và có panel điều khiển trên tin đang phát.
+Có nút **Loop** và lệnh `/loop`. Cả hai cùng chuyển Off → Loop Track (lặp một bài)
+→ Loop Queue (lặp cả hàng đợi). Không được nói Peto không có nút loop, không có
+lệnh lặp, hoặc không lặp được bài.
+""".strip()
+
 IMAGE_TOOL_RULES_PROMPT = """
 ## Công cụ ảnh — chỉ áp dụng cho yêu cầu ảnh hiện tại
 - Có ảnh nguồn và người dùng muốn sửa/thêm/đổi: gọi `edit_image`.
@@ -673,6 +681,7 @@ SYSTEM_PROMPT = "\n\n".join(
         CONTINUITY_PROMPT,
         MEMORY_PRIVACY_PROMPT,
         CORE_TOOL_RULES_PROMPT,
+        MUSIC_FACTS_PROMPT,
         CONVERSATION_EXAMPLES_PROMPT,
     )
 )

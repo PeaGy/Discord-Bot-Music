@@ -1,14 +1,16 @@
 import asyncio
+import io
 import os
 import tempfile
 import time
 import unittest
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import cache_manager
 from music import download, long_audio
+from music.audio_source import OpusPrerollAudioSource
 
 
 class _DummyOpusSource:
@@ -37,6 +39,20 @@ class TemporaryFileAudioSourceTests(unittest.TestCase):
 
         self.assertFalse(os.path.exists(path))
         self.assertEqual(inner.cleanup_calls, 1)
+
+    def test_wrappers_expose_inner_ffmpeg_error(self):
+        descriptor, path = tempfile.mkstemp(suffix=".mp4")
+        os.close(descriptor)
+        inner = _DummyOpusSource()
+        inner._current_error = RuntimeError("FFmpeg exited with code 234")
+        source = long_audio.TemporaryFileAudioSource(
+            OpusPrerollAudioSource(inner, frames=0),
+            path,
+        )
+        try:
+            self.assertIs(source._current_error, inner._current_error)
+        finally:
+            source.cleanup()
 
     def test_stale_cleanup_keeps_recent_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -96,6 +112,48 @@ class LongAudioDurationTests(unittest.IsolatedAsyncioTestCase):
                 slots.release()
                 self.assertFalse(path.exists())
                 ffmpeg.assert_not_called()
+
+
+class LongAudioFfmpegCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_aac_source_encodes_with_libopus_instead_of_copy(self):
+        await self._assert_ffmpeg_codec("mp4a.40.2", "libopus")
+
+    async def test_opus_source_is_copied(self):
+        await self._assert_ffmpeg_codec("opus", "copy")
+
+    async def _assert_ffmpeg_codec(self, source_codec, expected):
+        descriptor, path = tempfile.mkstemp(suffix=".mp4")
+        os.close(descriptor)
+        captured = {}
+
+        def fake_popen(args, **kwargs):
+            captured["args"] = list(args)
+            process = Mock()
+            process.stdout = io.BytesIO(b"")
+            process.poll.return_value = None
+            process.pid = 123
+            return process
+
+        async def fake_download(*_args):
+            return path, source_codec
+
+        with patch.object(
+            long_audio, "youtube_download_attempt_specs", return_value=[("direct", {}, None)]
+        ), patch.object(long_audio, "cleanup_stale_long_audio_files"), patch.object(
+            long_audio, "_download_long_audio", fake_download
+        ), patch("discord.player.subprocess.Popen", side_effect=fake_popen):
+            source = await long_audio.get_long_audio_source(
+                "https://www.youtube.com/watch?v=XVovaNXG6B0",
+                3657,
+            )
+        try:
+            args = captured["args"]
+            codec = args[args.index("-c:a") + 1]
+            self.assertEqual(codec, expected)
+            if expected != "copy":
+                self.assertNotIn("copy", args)
+        finally:
+            source.cleanup()
 
 
 class ShortAudioDownloadRetryTests(unittest.TestCase):

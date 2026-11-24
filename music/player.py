@@ -45,6 +45,24 @@ from ytdlp_support import (
 
 logger = logging.getLogger(__name__)
 
+# A track that dies in the first few seconds never actually played. Showing
+# "Hết hàng đợi" makes a broken source look like a finished song.
+IMMEDIATE_PLAYBACK_FAILURE_SECONDS = 3
+PLAYBACK_START_FAILURE_REASON = (
+    "Không phát được bài này vì trình phát thoát ngay lúc bắt đầu."
+)
+
+
+def playback_failed_immediately(error, listened_seconds) -> bool:
+    """True when ffmpeg (or another source) dies before audible playback."""
+    if error is None:
+        return False
+    try:
+        listened = float(listened_seconds)
+    except (TypeError, ValueError):
+        listened = 0
+    return listened < IMMEDIATE_PLAYBACK_FAILURE_SECONDS
+
 # ==============================
 # YTDLP & FFMPEG OPTIONS
 # ==============================
@@ -709,6 +727,31 @@ async def play_next(
         await _play_next_locked(bot, vc, channel, state)
 
 
+async def _notify_playback_start_failure(channel, state, song, *, has_next):
+    """Leave a visible error instead of replacing the panel with queue-ended."""
+    view = create_error_panel(
+        song,
+        reason=PLAYBACK_START_FAILURE_REASON,
+        has_next=has_next,
+    )
+    message = state.now_playing_message
+    try:
+        if message is not None:
+            await edit_panel_message(message, view)
+        else:
+            await send_panel_message(channel, view)
+    except discord.HTTPException as exc:
+        logger.warning(
+            "Không gửi được thông báo ffmpeg thoát ngay (channel=%s): %s",
+            getattr(channel, "id", None),
+            exc,
+        )
+    else:
+        # Keep the failure on screen when the queue advances or ends.
+        if state.now_playing_message is message:
+            state.now_playing_message = None
+
+
 async def _notify_source_skip(channel, state, song, error, *, loading_message=None):
     reason = ("Không tìm thấy bài này trên YouTube." if isinstance(error, YouTubeSearchEmpty)
               else "Không lấy được nguồn phát cho bài này.")
@@ -877,9 +920,6 @@ async def _play_next_locked(
     # AFTER PLAYING CALLBACK
     # ==============================
     def after_playing(error):
-        if error:
-            logger.warning("Audio player báo lỗi (guild=%s): %s", vc.guild.id, error)
-
         guild_id = vc.guild.id
 
         is_skip = getattr(vc, 'skip_request', False)
@@ -891,6 +931,22 @@ async def _play_next_locked(
         if getattr(vc, "paused_at", None):
             paused += max(0, time.time() - vc.paused_at)
         listened = max(0, int(time.time() - started - paused))
+        failed_immediately = (
+            playback_failed_immediately(error, listened)
+            and not is_skip
+            and not is_prev
+            and not is_stop
+        )
+        if failed_immediately:
+            logger.error(
+                "ffmpeg thoát ngay khi bắt đầu phát %r (guild=%s, listened=%ss): %s",
+                song.get("title"),
+                guild_id,
+                listened,
+                error,
+            )
+        elif error:
+            logger.warning("Audio player báo lỗi (guild=%s): %s", guild_id, error)
         _schedule_from_audio_thread(
             bot,
             _record_play_event_safely(guild_id, song, listened, bool(is_skip or is_prev or is_stop)),
@@ -906,6 +962,39 @@ async def _play_next_locked(
             return
 
         if not vc or not vc.is_connected():
+            return
+
+        if failed_immediately:
+            # Do not loop a source that never started, and do not pretend the
+            # queue finished successfully when this was the last track.
+            has_next = bool(queue)
+            _schedule_from_audio_thread(
+                bot,
+                _notify_playback_start_failure(channel, state, song, has_next=has_next),
+                guild_id=guild_id,
+                action="báo ffmpeg thoát ngay",
+            )
+            if state.autoplay and not has_next and not is_prev:
+                _schedule_from_audio_thread(
+                    bot,
+                    handle_autoplay(bot, vc, channel, song, guild_id, trigger_play=True),
+                    guild_id=guild_id,
+                    action="autoplay",
+                )
+            elif has_next:
+                _schedule_from_audio_thread(
+                    bot,
+                    play_next(bot, vc, channel),
+                    guild_id=guild_id,
+                    action="phát bài kế tiếp",
+                )
+            else:
+                _schedule_from_audio_thread(
+                    bot,
+                    start_idle_timer(vc, channel=channel),
+                    guild_id=guild_id,
+                    action="chờ idle sau lỗi phát",
+                )
             return
 
         # 🔁 LOOP MODE
